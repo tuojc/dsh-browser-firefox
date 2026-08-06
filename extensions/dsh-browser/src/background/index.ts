@@ -105,7 +105,10 @@ async function pushBudgetToActiveTab(negotiated: BridgeCaps): Promise<void> {
 /** Route one tool.call frame to the active tab and answer over the bridge. */
 function routeToolCall(call: ToolCall): void {
   if (bridge === null) return
-  void dispatchToolCall(call, settings.sharePageContent).then((answer) => {
+  const budget = caps === null
+    ? undefined
+    : { maxItems: caps.maxInteractiveItems, maxChars: caps.snapshotMaxChars }
+  void dispatchToolCall(call, settings.sharePageContent, budget).then((answer) => {
     const socket = bridge
     if (socket === null) return
     if (answer.ok) {

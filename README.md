@@ -1,9 +1,8 @@
 # dsh 浏览器操作插件（dsh-browser）
 
-English | [中文](README.zh.md)
+[English](README.en.md) | **中文**
 
 <img width="1687" height="879" alt="2026-08-06_17-10-14" src="https://github.com/user-attachments/assets/39e2f960-4002-4e5b-b02d-b015e348980c" />
-
 
 让 dsh 的模型**直接读取并操作你在浏览器里打开的页面**：抓取页面内容、点击元素、填写表单、滚动与导航——全部在你自己的浏览器里执行，登录态、会话与 Cookie 完整保留。侧边栏面板是与模型对话的配套入口。
 
@@ -27,10 +26,10 @@ English | [中文](README.zh.md)
 ## 组成
 
 ```
-packages/browser/bridge-browser/    桥插件：token 认证 WS 通道 + browser_* 工具 + 线协议
-extensions/dsh-browser/             Chrome MV3 扩展：content script 在真实页面执行动作 + 侧边栏对话界面
-examples/browser-bridge.cordis.yml  dsh web overlay 示例（--config 引入）
-scripts/install.sh                  一键安装脚本
+packages/browser/bridge-browser/
+extensions/dsh-browser/
+examples/browser-bridge.cordis.yml
+scripts/install.sh
 ```
 
 ## 为什么这样设计
@@ -60,19 +59,27 @@ dsh web --config examples/browser-bridge.cordis.yml
 
 脚本会构建插件与扩展、复制到 `~/.dsh/browser-extension`、打开 `chrome://extensions`；按提示开启开发者模式并加载该目录即可。工具栏出现 DeepSeek 鲸鱼图标，点击打开侧边栏。
 
+**后续日常使用**无需重新安装扩展，只需在本仓库根目录启动 dsh：
+
+```sh
+dsh web --config examples/browser-bridge.cordis.yml --port 3080
+```
+
 **无需任何配置**：扩展自动探测本机 dsh 并连接（`/ext/bridge-config` 发现 + 回环免 token）。token/地址只在远程部署（`--host 0.0.0.0`）时才需要手动填写。
+
+**第三步：开始使用**：打开任意普通的 `http://` 或 `https://` 页面，点击工具栏的 DeepSeek 鲸鱼图标打开侧边栏；状态显示「已连接」后，可以直接对话，也可以先点「读取页面」。页面即使早于扩展安装或重载就已经打开，也会在第一次操作时自动补加载内容脚本，无需刷新页面。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不能注入扩展脚本，因此不支持读取和操作。
+
+更新代码后重新运行 `./scripts/install.sh`，再到 `chrome://extensions` 对「dsh 浏览器助手」点一次重新加载并重新打开侧边栏。Chrome 应加载脚本提示的稳定目录 `~/.dsh/browser-extension`；不要加载仓库中的源码目录 `extensions/dsh-browser/`。
 
 ## 开发
 
 插件包是宿主 SDK workspace 的成员（宿主 `pnpm-workspace.yaml` 经 `packages/browser/bridge-browser` 符号链接挂载，peer 依赖由宿主提供），插件包命令须在**宿主 checkout 根目录**（即本仓库的上一级 `..`）下执行；Chrome 扩展完全独立，命令在**本仓库根目录**下执行。
 
 ```sh
-# 插件包：在宿主 checkout 根目录执行（依赖随宿主 workspace 安装）
-pnpm --filter @deepseek-ai/dsh-bridge-browser run build       # tsc -b + tsdown，产出 lib/
-pnpm --filter @deepseek-ai/dsh-bridge-browser run typecheck   # tsc -b（extends 宿主 tsconfig.base）
-pnpm --filter @deepseek-ai/dsh-bridge-browser run test        # vitest（paths 指向宿主源码）
+pnpm --filter @deepseek-ai/dsh-bridge-browser run build
+pnpm --filter @deepseek-ai/dsh-bridge-browser run typecheck
+pnpm --filter @deepseek-ai/dsh-bridge-browser run test
 
-# 扩展：在本仓库根目录执行（首次克隆先 pnpm install）
 pnpm --filter dsh-browser-extension run build
 pnpm --filter dsh-browser-extension run test
 ```

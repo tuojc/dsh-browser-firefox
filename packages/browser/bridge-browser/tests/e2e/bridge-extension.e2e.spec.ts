@@ -227,7 +227,7 @@ describe('extension ↔ bridge e2e', () => {
     const extensionId = new URL(sw.url()).host
     const panel = await ctx.newPage()
     await panel.goto(`chrome-extension://${extensionId}/panel/index.html`)
-    await panel.waitForSelector('header', { timeout: 15_000 })
+    await panel.waitForSelector('header.topbar', { timeout: 15_000 })
 
     // Pin the bridge deterministically through the real settings UI (URL +
     // token). Auto-discovery is environment-dependent — a local dsh may own
@@ -241,7 +241,7 @@ describe('extension ↔ bridge e2e', () => {
     const initialSessions = sessions.list()
     const initialIds = new Set(initialSessions.map(session => session.id))
 
-    await panel.click('text=设置')
+    await panel.click('button[aria-label="打开设置"]')
     await panel.fill('input[placeholder*="自动检测"]', `ws://127.0.0.1:${port}`)
     await panel.fill('input[type="password"]', TOKEN)
     await panel.click('text=保存并连接')
@@ -258,15 +258,15 @@ describe('extension ↔ bridge e2e', () => {
     // reconnect to this composition. (Intermediate states like 未连接 can be
     // coalesced into one render frame, so only the end state is asserted.)
     await panel.waitForFunction(() => {
-      const status = document.querySelector('.status')
+      const status = document.querySelector('.connection')
       return status !== null && status.textContent !== null && status.textContent.includes('已连接')
     }, undefined, { timeout: 30_000 })
-    const statusText = await panel.textContent('.status')
+    const statusText = await panel.textContent('.connection')
 
     // Session deferral: opening the panel alone must NOT create a session.
     // Give the panel's ensureSession + history round trip a moment, then the
     // store must still equal the pre-save baseline (zero trace).
-    await panel.waitForSelector('.page-chip', { timeout: 30_000 })
+    await panel.waitForSelector('.context-card', { timeout: 30_000 })
     await panel.waitForTimeout(1_200)
     expect(sessions.list().length).toBe(initialSessions.length)
 

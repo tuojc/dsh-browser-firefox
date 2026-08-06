@@ -15,7 +15,7 @@ The **browser-operation end** of dsh: the model reads and operates the browser p
 | Fill forms | `browser_type` | Type text; `replace` clears first |
 | Keys | `browser_press` | Enter/Tab/Escape/arrows etc. |
 | Scroll | `browser_scroll` | Viewport scrolling (up/down/top/bottom) |
-| Navigate | `browser_navigate` / `back` / `forward` / `reload` | In-tab navigation, login state preserved |
+| Navigate | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | In-tab navigation, login state preserved |
 | Read region | `browser_get_text` | Lazy-loaded content / partial text |
 | Wait | `browser_wait` | Page load and render-settle detection |
 
@@ -31,7 +31,7 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
 
 - **background** (`src/background/`): bridge connection (token auth + exponential-backoff reconnect + keepalive), gateway RPC client, **tool dispatch to the active tab**.
 - **content script** (`src/content/`): text-only snapshot (readability main text + numbered interactive inventory + form fields), **stable element numbers** (`data-dsh-el`), delta changes, click/type/press/scroll/navigate actions, sensitive-field masking.
-- **panel** (`src/panel/`): React conversation UI (session list/history/live events/settings); messages render as Markdown (headings/lists/code blocks/tables, sanitized).
+- **panel** (`src/panel/`): React conversation UI (isolated session/history/live events/settings); messages render as Markdown (headings/lists/code blocks/tables, sanitized).
 - **Protocol**: `protocol.ts` in the `@deepseek-ai/dsh-bridge-browser` plugin is the single source of truth, shared by both ends (tsconfig paths point at the plugin source).
 
 ## Build
@@ -44,19 +44,29 @@ pnpm run test                # unit tests
 
 ## Install and use
 
-1. **Start dsh with the bridge plugin mounted** (in the host SDK checkout):
+The recommended path is the zero-configuration installer from the repository root:
+
+1. **Start dsh with the bridge plugin mounted**:
 
    ```sh
-   dsh web --config <dsh-browser>/examples/browser-bridge.cordis.yml
+   dsh web --config examples/browser-bridge.cordis.yml
    ```
 
-   The boot log prints `browser bridge: new token generated and persisted at ~/.dsh/ext-bridge-token`.
+   Port 3080 is used by default; append `--port <port>` when it is occupied.
 
-2. **Load the extension**: Chrome → `chrome://extensions` → Developer mode → Load unpacked → select this directory's `dist/`.
+2. **Build and install the extension**:
 
-3. **Configure**: click the extension icon to open the side panel → Settings → paste the Token (from the boot log or `~/.dsh/ext-bridge-token`) → save and connect.
+   ```sh
+   ./scripts/install.sh
+   ```
 
-4. **Use**: chat in the side panel. The model reads the current page via `browser_snapshot` (numbered inventory) and operates page elements directly with `browser_click`/`browser_type`/`browser_scroll` etc. The toolbar's "read page" button makes the model look at the current page first.
+   The script builds the bridge plugin and extension, copies the output to the stable directory `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory. Do not load the source directory `extensions/dsh-browser/`.
+
+3. **Use it**: open a normal `http://` or `https://` page and click the DeepSeek whale icon. The extension auto-discovers local dsh and loopback connections require no address or token; settings are only needed for remote deployment. Chat directly or click "Read page" first.
+
+Pages that were already open before extension installation or reload are instrumented automatically on the first action, so they do not require a manual refresh. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
+
+For extension-only development, run `pnpm run build` in this directory and load `dist/` directly. Rebuild and reload the extension from `chrome://extensions` after code changes.
 
 ## Why text-only
 
@@ -67,7 +77,7 @@ pnpm run test                # unit tests
 
 ## Permissions
 
-`sidePanel` (sidebar), `storage` (settings), `tabs` + `activeTab` + `scripting` (inject/message the active tab), `alarms` (SW keepalive), `http/https` (content-script injection everywhere). Only the **active tab** of the last-focused window is ever operated; the extension never switches tabs silently.
+`sidePanel` (sidebar), `storage` (settings), `tabs` + `activeTab` + `scripting` (inject/message the active tab, including lazy recovery for pages opened before install), `alarms` (SW keepalive), and `http/https` (content-script injection on normal pages). Only the **active tab** of the last-focused window is ever operated; the extension never switches tabs silently.
 
 ## Known limitations
 
@@ -75,3 +85,5 @@ pnpm run test                # unit tests
 - Cross-origin iframes are counted but not operated.
 - Captcha/image-only controls cannot be handled — the tool result reports "elements with no accessible name" and asks the user to complete that step manually.
 - No automatic token rotation.
+- Synthetic `browser_press` events do not trigger browser-native default actions such as Tab focus movement, arrow-key scrolling, or Enter activation; use manual input when a workflow depends on those defaults.
+- `browser_wait` considers page load plus a fixed quiet window, but does not observe continuously changing DOM state; a live-updating SPA may be reported as stable.

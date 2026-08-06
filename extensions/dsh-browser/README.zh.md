@@ -15,7 +15,7 @@ dsh 的**浏览器操作端**：让模型直接读取并操作你在浏览器里
 | 填写表单 | `browser_type` | 输入文本，`replace` 清空重填 |
 | 按键 | `browser_press` | Enter/Tab/Escape/方向键等 |
 | 滚动 | `browser_scroll` | 视口滚动（up/down/top/bottom） |
-| 导航 | `browser_navigate` / `back` / `forward` / `reload` | 当前标签页内跳转，登录态保留 |
+| 导航 | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | 当前标签页内跳转，登录态保留 |
 | 读区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
 | 等待 | `browser_wait` | 页面加载与渲染稳定检测 |
 
@@ -31,7 +31,7 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
 
 - **background**（`src/background/`）：桥连接（token 认证 + 指数退避重连 + 保活）、网关 RPC 客户端、**工具分发到活动标签页**。
 - **content script**（`src/content/`）：纯文本快照（可读性主文 + 编号交互清单 + 表单字段）、**稳定编号**（`data-dsh-el`）、delta 变化、点击/输入/按键/滚动/导航动作、敏感字段掩码。
-- **panel**（`src/panel/`）：React 对话界面（会话列表/历史/实时事件/设置），消息以 Markdown 渲染（标题/列表/代码块/表格等，已消毒）。
+- **panel**（`src/panel/`）：React 对话界面（独立会话/历史/实时事件/设置），消息以 Markdown 渲染（标题/列表/代码块/表格等，已消毒）。
 - **协议**：`@deepseek-ai/dsh-bridge-browser` 插件的 `protocol.ts` 是唯一事实源，两端共享（tsconfig paths 指向插件源码）。
 
 ## 构建
@@ -44,19 +44,29 @@ pnpm run test                # unit tests
 
 ## 安装与使用
 
-1. **启动 dsh 并挂载桥插件**（在宿主 SDK checkout）：
+推荐从仓库根目录使用零配置安装流程：
+
+1. **启动 dsh 并挂载桥插件**：
 
    ```sh
-   dsh web --config <dsh-browser>/examples/browser-bridge.cordis.yml
+   dsh web --config examples/browser-bridge.cordis.yml
    ```
 
-   启动日志会打印 `browser bridge: new token generated and persisted at ~/.dsh/ext-bridge-token`。
+   默认端口为 3080；如被占用，可追加 `--port <端口>`。
 
-2. **加载扩展**：Chrome → `chrome://extensions` → 开发者模式 → 加载已解压的扩展程序 → 选择本目录 `dist/`。
+2. **构建并安装扩展**：
 
-3. **配置**：点击扩展图标打开侧边栏 → 设置 → 填入 Token（从启动日志或 `~/.dsh/ext-bridge-token` 获取）→ 保存并连接。
+   ```sh
+   ./scripts/install.sh
+   ```
 
-4. **使用**：在侧边栏对话。模型会通过 `browser_snapshot` 读取当前页面（带编号的交互清单），用 `browser_click`/`browser_type`/`browser_scroll` 等直接操作页面元素。工具栏的"读取页面"按钮一键让模型先看当前页。
+   脚本会构建桥插件与扩展，把产物复制到稳定目录 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载这个稳定目录。不要加载源码目录 `extensions/dsh-browser/`。
+
+3. **开始使用**：打开普通的 `http://` 或 `https://` 页面，点击 DeepSeek 鲸鱼图标打开侧边栏。扩展会自动探测本机 dsh，回环连接无需填写地址或 Token；远程部署时才需要在设置中配置。可以直接对话，或先点「读取页面」。
+
+页面即使在扩展安装或重载之前已经打开，也会在第一次操作时自动补加载内容脚本，无需手动刷新。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不支持读取和操作。
+
+开发时也可在本目录运行 `pnpm run build`，然后直接加载 `dist/`。代码更新后需要重新构建，并在 `chrome://extensions` 中重新加载扩展。
 
 ## 纯文本优化（为什么这样做）
 
@@ -67,7 +77,7 @@ pnpm run test                # unit tests
 
 ## 权限说明
 
-`sidePanel`（侧边栏）、`storage`（设置）、`tabs` + `activeTab` + `scripting`（向活动标签页注入/发消息）、`alarms`（SW 保活）、`http/https`（内容脚本注入所有页面）。只操作**活动标签页**，绝不静默切页。
+`sidePanel`（侧边栏）、`storage`（设置）、`tabs` + `activeTab` + `scripting`（向活动标签页注入/发消息，并为安装前已打开的页面按需补注入）、`alarms`（SW 保活）、`http/https`（内容脚本注入普通网页）。只操作**活动标签页**，绝不静默切页。
 
 ## 已知限制
 
