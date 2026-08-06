@@ -1,6 +1,6 @@
 # dsh 浏览器操作插件（dsh-browser）
 
-[English](README.zh.md) | 中文
+[English](README.en.md) | **中文**
 
 <img width="1687" height="879" alt="2026-08-06_17-10-14" src="https://github.com/user-attachments/assets/39e2f960-4002-4e5b-b02d-b015e348980c" />
 
