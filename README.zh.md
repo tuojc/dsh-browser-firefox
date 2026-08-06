@@ -57,6 +57,12 @@ dsh web --config examples/browser-bridge.cordis.yml
 
 脚本会构建插件与扩展、复制到 `~/.dsh/browser-extension`、打开 `chrome://extensions`；按提示开启开发者模式并加载该目录即可。工具栏出现 DeepSeek 鲸鱼图标，点击打开侧边栏。
 
+**后续日常使用**无需重新安装扩展，只需在本仓库根目录启动 dsh：
+
+```sh
+dsh web --config examples/browser-bridge.cordis.yml --port 3080
+```
+
 **无需任何配置**：扩展自动探测本机 dsh 并连接（`/ext/bridge-config` 发现 + 回环免 token）。token/地址只在远程部署（`--host 0.0.0.0`）时才需要手动填写。
 
 **第三步：开始使用**：打开任意普通的 `http://` 或 `https://` 页面，点击工具栏的 DeepSeek 鲸鱼图标打开侧边栏；状态显示「已连接」后，可以直接对话，也可以先点「读取页面」。页面即使早于扩展安装或重载就已经打开，也会在第一次操作时自动补加载内容脚本，无需刷新页面。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不能注入扩展脚本，因此不支持读取和操作。

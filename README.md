@@ -59,6 +59,12 @@ Port 3080 is used by default. Append `--port <port>` if it is occupied.
 
 The installer builds the plugin and extension, copies the extension to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory.
 
+**For subsequent use**, the extension does not need to be installed again. Start dsh from this repository root with:
+
+```sh
+dsh web --config examples/browser-bridge.cordis.yml --port 3080
+```
+
 **No configuration is required for local use**: the extension discovers dsh through `/ext/bridge-config`, and loopback connections do not require a token. An address and token are only needed for remote deployment with `--host 0.0.0.0`.
 
 **Step 3 — use it**: open any normal `http://` or `https://` page and click the DeepSeek whale icon. When the side panel reports "Connected", chat normally or click "Read page" first. A page that was already open before the extension was installed or reloaded is instrumented automatically on the first action; no page refresh is needed. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
