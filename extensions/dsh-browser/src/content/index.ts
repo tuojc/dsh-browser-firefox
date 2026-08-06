@@ -18,6 +18,9 @@ let budget: SnapshotBudget = { maxItems: 60, maxForms: 30, maxChars: 12_000 }
 
 const ids = new ElementIds()
 
+const CONTENT_SCRIPT_LISTENER = '__dshBrowserContentScriptListener__'
+type ContentListener = typeof onMessage
+
 /** A tool-call result for the bridge. */
 export interface ToolResult {
   ok: boolean
@@ -25,7 +28,7 @@ export interface ToolResult {
   error?: { code: string; message: string }
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse: (response: ToolResult) => void) => {
+function onMessage(message: unknown, _sender: chrome.runtime.MessageSender, sendResponse: (response: ToolResult) => void): true | undefined {
   if (typeof message !== 'object' || message === null) return
   const msg = message as { type?: string }
   if (msg.type === 'DSH_BUDGET') {
@@ -49,4 +52,15 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse: (
     },
   )
   return true // async response
-})
+}
+
+// executeScript is used to recover tabs opened before extension install/reload.
+// Replace any stale listener left in the isolated world so a reload always
+// installs a listener belonging to the current extension context.
+const contentGlobal = globalThis as typeof globalThis & { [CONTENT_SCRIPT_LISTENER]?: ContentListener }
+const previousListener = contentGlobal[CONTENT_SCRIPT_LISTENER]
+if (previousListener !== undefined) {
+  try { chrome.runtime.onMessage.removeListener(previousListener) } catch { /* stale extension context */ }
+}
+contentGlobal[CONTENT_SCRIPT_LISTENER] = onMessage
+chrome.runtime.onMessage.addListener(onMessage)
