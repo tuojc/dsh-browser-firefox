@@ -12,6 +12,7 @@ export interface Row {
   seq: number
   kind: 'user' | 'assistant' | 'tool' | 'info'
   text: string
+  status?: 'running' | 'complete'
 }
 
 /** Minimal view of a SessionEvent (payload in `data`). */
@@ -46,18 +47,37 @@ export function rowFromEvent(event: SessionEventView): Row | null {
       // 渲染会污染对话流，必须跳过。
       const source = (event.data as { source?: { kind?: string } } | undefined)?.source
       if (source?.kind !== 'user') return null
-      return { seq: 0, kind: 'user', text: textFromBlocks(event.data?.content) }
+      const text = textFromBlocks(event.data?.content)
+      return text.trim() === '' ? null : { seq: 0, kind: 'user', text }
     }
-    case 'assistant/message':
-      return { seq: 0, kind: 'assistant', text: textFromBlocks(event.data?.message?.content) }
+    case 'assistant/message': {
+      // 工具调用也会产生 assistant/message，但其 content 可能只有 tool_use
+      // 等非文本块。不要为这种中间事件渲染一个空的 AI 气泡。
+      const text = textFromBlocks(event.data?.message?.content)
+      return text.trim() === '' ? null : { seq: 0, kind: 'assistant', text }
+    }
     default:
       return null
   }
 }
 
-/** 工具调用的展示名：带 index 参数时附上（如 browser_click #7）。 */
+const TOOL_LABELS: Record<string, string> = {
+  browser_snapshot: '读取页面',
+  browser_click: '点击元素',
+  browser_type: '填写内容',
+  browser_press: '按下按键',
+  browser_scroll: '滚动页面',
+  browser_navigate: '打开页面',
+  browser_back: '返回上一页',
+  browser_forward: '前进下一页',
+  browser_reload: '刷新页面',
+  browser_get_text: '提取文字',
+  browser_wait: '等待页面',
+}
+
+/** 工具调用的友好展示名：带 index 参数时附上（如「点击元素 #7」）。 */
 export function toolSummary(name: string, argsJson: unknown): string {
-  let summary = `⚙ ${name}`
+  let summary = TOOL_LABELS[name] ?? name
   try {
     const args = JSON.parse(String(argsJson ?? '{}')) as unknown
     if (typeof args === 'object' && args !== null && 'index' in args) {
@@ -74,8 +94,9 @@ export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq:
   if (kind === 'tool') {
     const last = rows[rows.length - 1]
     if (last?.kind === 'tool') {
-      return [...rows.slice(0, -1), { seq, kind: 'tool', text: `${last.text} → ${text}` }]
+      return [...rows.slice(0, -1), { seq, kind: 'tool', text: `${last.text} → ${text}`, status: 'running' }]
     }
+    return [...rows, { seq, kind, text, status: 'running' }]
   }
   return [...rows, { seq, kind, text }]
 }
@@ -84,7 +105,7 @@ export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq:
 export function completeLastTool(rows: Row[], seq: number): Row[] {
   const last = rows[rows.length - 1]
   if (last?.kind === 'tool') {
-    return [...rows.slice(0, -1), { ...last, seq, text: `${last.text} ✓` }]
+    return [...rows.slice(0, -1), { ...last, seq, status: 'complete' }]
   }
   return rows
 }
@@ -99,7 +120,7 @@ export function mergeHistoryRows(events: SessionEventView[], nextSeq: () => numb
     const label = pendingTool.total > shown.length
       ? `${shown.join(' → ')} 等${pendingTool.total}个工具`
       : shown.join(' → ')
-    rows.push({ seq: nextSeq(), kind: 'tool', text: label })
+    rows.push({ seq: nextSeq(), kind: 'tool', text: label, status: 'complete' })
     pendingTool = null
   }
   for (const ev of events) {
