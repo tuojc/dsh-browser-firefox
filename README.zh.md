@@ -1,27 +1,29 @@
-# dsh 浏览器操作插件（dsh-browser）
+# dsh Browser Control Plugin (dsh-browser)
 
-[English](README.md) | 中文
+English | [中文](README.md)
 
-让 dsh 的模型**直接读取并操作你在浏览器里打开的页面**：抓取页面内容、点击元素、填写表单、滚动与导航——全部在你自己的浏览器里执行，登录态、会话与 Cookie 完整保留。侧边栏面板是与模型对话的配套入口。
+<img width="1687" height="879" alt="2026-08-06_17-10-14" src="https://github.com/user-attachments/assets/39e2f960-4002-4e5b-b02d-b015e348980c" />
 
-纯文本设计：DeepSeek 模型无视觉，页面以结构化文本呈现（带编号的交互元素清单），模型用编号精确定位并操作任意元素，整条管线**全程无截图**。
+Let dsh models **read and operate pages open in your own browser**: extract content, click elements, fill forms, scroll, and navigate while preserving the page's login state, session, and cookies. The side panel provides the conversation UI.
 
-本仓库遵循 dsh-external 内测生态惯例：**只含插件本身，不含 DeepSeek Harness SDK 源码**；SDK 包全部以 `peerDependencies` 声明，运行时由宿主 Harness workspace 提供。
+The integration is text-only: DeepSeek models receive a structured text representation with a numbered interactive-element inventory. The entire model-facing pipeline operates without screenshots.
 
-## 核心能力
+This repository follows the dsh-external internal plugin convention: it contains only the plugin and extension, not the DeepSeek Harness SDK source. SDK packages are declared as `peerDependencies` and supplied by the host Harness workspace at runtime.
 
-| 能力 | 工具 | 说明 |
+## Core capabilities
+
+| Capability | Tool | Notes |
 |---|---|---|
-| 读取页面 | `browser_snapshot` | 结构化文本快照：标题/URL/正文/编号交互清单/表单字段（敏感值掩码）；`delta: true` 只返回变化 |
-| 点击元素 | `browser_click` | 按编号点击链接/按钮/复选框等 |
-| 填写表单 | `browser_type` | 输入文本（React/Vue 受控组件兼容），`replace` 清空重填 |
-| 按键 | `browser_press` | 键盘事件（Enter/Tab/Escape/方向键…） |
-| 滚动 | `browser_scroll` | 视口滚动（up/down/top/bottom） |
-| 页面导航 | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | 当前标签页内导航，保留登录态 |
-| 读取区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
-| 等待稳定 | `browser_wait` | 页面加载与渲染稳定检测 |
+| Read page | `browser_snapshot` | Structured text snapshot: title, URL, main text, numbered controls, and masked form fields; `delta: true` returns only changes |
+| Click element | `browser_click` | Click links, buttons, checkboxes, and other controls by inventory number |
+| Fill forms | `browser_type` | React/Vue-compatible input; `replace` clears the field first |
+| Press keys | `browser_press` | Keyboard events such as Enter, Tab, Escape, and arrow keys |
+| Scroll | `browser_scroll` | Viewport scrolling: up, down, top, and bottom |
+| Navigate | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | In-tab navigation with login state preserved |
+| Read region | `browser_get_text` | Lazy-loaded or partial page text |
+| Wait for stability | `browser_wait` | Page-load and render-settle detection |
 
-## 组成
+## Repository layout
 
 ```
 packages/browser/bridge-browser/
@@ -30,48 +32,48 @@ examples/browser-bridge.cordis.yml
 scripts/install.sh
 ```
 
-## 为什么这样设计
+## Why this design
 
-- **操作真实浏览器，而非无头浏览器**：页面就是用户正打开的那个，登录态/会话/Cookie 全保留——这是独立 Playwright 浏览器（如 `dsh-tool-browser`）做不到的。
-- **纯文本适配无视觉模型**：编号元素清单 + 跨快照稳定编号（模型可以说"点 7 号"）+ delta 增量（省 token）+ 敏感值掩码。
-- **隐私边界**：密码/卡号字段的值只以 `••••` 呈现，绝不离开页面。
-- **安全**：桥通道 token 认证（首帧 `hello`、常量时间比对）；特权网关方法对非回环来源一律拒绝；扩展只操作活动标签页。
+- **Operate the real browser, not a headless copy**: the model works in the page the user already has open, retaining logins, sessions, and cookies.
+- **Text-first model interface**: numbered controls, stable IDs across snapshots, delta updates, and masked sensitive values make pages usable without vision.
+- **Privacy boundary**: passwords and payment-card values are always rendered as `••••` and never leave the page.
+- **Security boundary**: the bridge uses token-authenticated handshakes; privileged gateway methods reject non-loopback callers; the extension only operates the active tab.
 
-## 安装与使用（零配置）
+## Zero-configuration install and use
 
-前提：`dsh` 已安装并可用；本仓库位于宿主 SDK checkout 的 `dsh-browser/` 子目录。
+Prerequisites: `dsh` is installed and available, and this repository is located as the `dsh-browser/` child of the host SDK checkout.
 
-**第一步：启动 dsh**（在本仓库根目录下执行；`--config` 路径相对当前目录）：
+**Step 1 — start dsh** from this repository root:
 
 ```sh
 dsh web --config examples/browser-bridge.cordis.yml
 ```
 
-默认端口 3080；被其他 `dsh web` 占用时，追加 `--port <端口>` 换一个。
+Port 3080 is used by default. Append `--port <port>` if it is occupied.
 
-**第二步：安装扩展（一条命令）**：
+**Step 2 — build and install the extension**:
 
 ```sh
 ./scripts/install.sh
 ```
 
-脚本会构建插件与扩展、复制到 `~/.dsh/browser-extension`、打开 `chrome://extensions`；按提示开启开发者模式并加载该目录即可。工具栏出现 DeepSeek 鲸鱼图标，点击打开侧边栏。
+The installer builds the plugin and extension, copies the extension to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory.
 
-**后续日常使用**无需重新安装扩展，只需在本仓库根目录启动 dsh：
+**For subsequent use**, the extension does not need to be installed again. Start dsh from this repository root with:
 
 ```sh
 dsh web --config examples/browser-bridge.cordis.yml --port 3080
 ```
 
-**无需任何配置**：扩展自动探测本机 dsh 并连接（`/ext/bridge-config` 发现 + 回环免 token）。token/地址只在远程部署（`--host 0.0.0.0`）时才需要手动填写。
+**No configuration is required for local use**: the extension discovers dsh through `/ext/bridge-config`, and loopback connections do not require a token. An address and token are only needed for remote deployment with `--host 0.0.0.0`.
 
-**第三步：开始使用**：打开任意普通的 `http://` 或 `https://` 页面，点击工具栏的 DeepSeek 鲸鱼图标打开侧边栏；状态显示「已连接」后，可以直接对话，也可以先点「读取页面」。页面即使早于扩展安装或重载就已经打开，也会在第一次操作时自动补加载内容脚本，无需刷新页面。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不能注入扩展脚本，因此不支持读取和操作。
+**Step 3 — use it**: open any normal `http://` or `https://` page and click the DeepSeek whale icon. When the side panel reports "Connected", chat normally or click "Read page" first. A page that was already open before the extension was installed or reloaded is instrumented automatically on the first action; no page refresh is needed. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
 
-更新代码后重新运行 `./scripts/install.sh`，再到 `chrome://extensions` 对「dsh 浏览器助手」点一次重新加载并重新打开侧边栏。Chrome 应加载脚本提示的稳定目录 `~/.dsh/browser-extension`；不要加载仓库中的源码目录 `extensions/dsh-browser/`。
+After updating the code, run `./scripts/install.sh` again, click Reload for "dsh Browser Assistant" in `chrome://extensions`, and reopen the side panel. Chrome should load `~/.dsh/browser-extension`; do not load the source directory `extensions/dsh-browser/`.
 
-## 开发
+## Development
 
-插件包是宿主 SDK workspace 的成员（宿主 `pnpm-workspace.yaml` 经 `packages/browser/bridge-browser` 符号链接挂载，peer 依赖由宿主提供），插件包命令须在**宿主 checkout 根目录**（即本仓库的上一级 `..`）下执行；Chrome 扩展完全独立，命令在**本仓库根目录**下执行。
+The bridge package is a member of the host SDK workspace through the `packages/browser/bridge-browser` symlink. Run bridge-package commands from the host checkout root (the parent directory of this repository). The Chrome extension is a standalone workspace; run its commands from this repository root.
 
 ```sh
 pnpm --filter @deepseek-ai/dsh-bridge-browser run build
@@ -82,14 +84,14 @@ pnpm --filter dsh-browser-extension run build
 pnpm --filter dsh-browser-extension run test
 ```
 
-注意：
+Notes:
 
-- 宿主使用前插件包必须先构建（`lib/` 供 Loader 加载）；`scripts/install.sh` 已代为执行，日常使用无需手动构建。
-- 宿主 checkout 以 `dsh-browser/` 存在为前提（符号链接悬空时宿主不受影响）；不需要插件时移走 `dsh-browser/` 并移除该符号链接即可。
+- The bridge plugin must be built before host use because the loader consumes `lib/`; `scripts/install.sh` handles this automatically.
+- The host checkout assumes this repository exists at `dsh-browser/`. To remove the plugin, move the repository out and remove the corresponding workspace symlink.
 
-## 安全
+## Security
 
-- 桥路径在 `/api` 信任栅栏之外，自带 bearer token 认证
-- 特权网关方法（`settings.*`/`credentials.*`/`host.open*`）对非回环来源一律拒绝
-- 单活动连接；纯文本管线（无截图）；密码/卡号值永不回传
-- 只操作活动标签页，绝不静默切页
+- The bridge path sits outside the `/api` trust boundary and performs its own bearer-token authentication.
+- Privileged gateway methods such as `settings.*`, `credentials.*`, and `host.open*` reject non-loopback sources.
+- The model-facing pipeline is text-only; passwords and payment-card values never leave the page.
+- Only the active tab is operated; the extension never switches tabs silently.
