@@ -44,6 +44,15 @@ describe('rowFromEvent', () => {
     expect(row).toEqual({ seq: 0, kind: 'assistant', text: '好的' })
   })
 
+  it('skips assistant events that contain only tool or blank blocks', () => {
+    expect(rowFromEvent(ev('assistant/message', {
+      message: { content: [{ type: 'tool_use', name: 'browser_snapshot' }] },
+    }))).toBeNull()
+    expect(rowFromEvent(ev('assistant/message', {
+      message: { content: [{ type: 'text', text: '   \n' }] },
+    }))).toBeNull()
+  })
+
   it('returns null for non-message events', () => {
     expect(rowFromEvent(ev('turn/start', {}))).toBeNull()
     expect(rowFromEvent(ev('tool/call', { name: 'browser_click' }))).toBeNull()
@@ -52,9 +61,10 @@ describe('rowFromEvent', () => {
 
 describe('toolSummary', () => {
   it('appends the inventory index when present', () => {
-    expect(toolSummary('browser_click', '{"index":7}')).toBe('⚙ browser_click #7')
-    expect(toolSummary('browser_snapshot', '{"delta":true}')).toBe('⚙ browser_snapshot')
-    expect(toolSummary('browser_navigate', 'not-json')).toBe('⚙ browser_navigate')
+    expect(toolSummary('browser_click', '{"index":7}')).toBe('点击元素 #7')
+    expect(toolSummary('browser_snapshot', '{"delta":true}')).toBe('读取页面')
+    expect(toolSummary('browser_navigate', 'not-json')).toBe('打开页面')
+    expect(toolSummary('custom_tool', '{}')).toBe('custom_tool')
   })
 })
 
@@ -62,12 +72,12 @@ describe('appendLiveRow / completeLastTool', () => {
   it('merges consecutive tool rows into one line (no tool spam)', () => {
     let rows: ReturnType<typeof appendLiveRow> = []
     rows = appendLiveRow(rows, 'user', '帮我操作页面', 1)
-    rows = appendLiveRow(rows, 'tool', '⚙ browser_snapshot', 2)
-    rows = appendLiveRow(rows, 'tool', '⚙ browser_click #7', 3)
-    rows = appendLiveRow(rows, 'tool', '⚙ browser_type #9', 4)
+    rows = appendLiveRow(rows, 'tool', '读取页面', 2)
+    rows = appendLiveRow(rows, 'tool', '点击元素 #7', 3)
+    rows = appendLiveRow(rows, 'tool', '填写内容 #9', 4)
     rows = completeLastTool(rows, 5)
     expect(rows.map((r) => r.kind)).toEqual(['user', 'tool'])
-    expect(rows[1]!.text).toBe('⚙ browser_snapshot → ⚙ browser_click #7 → ⚙ browser_type #9 ✓')
+    expect(rows[1]).toMatchObject({ text: '读取页面 → 点击元素 #7 → 填写内容 #9', status: 'complete' })
     rows = appendLiveRow(rows, 'assistant', '完成', 6)
     expect(rows.map((r) => r.kind)).toEqual(['user', 'tool', 'assistant'])
   })
@@ -94,7 +104,17 @@ describe('mergeHistoryRows', () => {
     expect(rows[0]!.text).toBe('操作页面')
     expect(rows[2]!.text).toBe('已点击')
     // 连续工具调用归并一行（不逐条刷屏）
-    expect(rows[1]!.text).toBe('⚙ browser_snapshot → ⚙ browser_click #7 → ⚙ browser_click #8')
+    expect(rows[1]).toMatchObject({ text: '读取页面 → 点击元素 #7 → 点击元素 #8', status: 'complete' })
+  })
+
+  it('does not restore empty assistant rows from history', () => {
+    let seq = 0
+    const rows = mergeHistoryRows([
+      ev('assistant/message', { message: { content: [{ type: 'tool_use', name: 'browser_snapshot' }] } }),
+      ev('tool/call', { name: 'browser_snapshot', arguments: '{}' }),
+      ev('tool/result', {}),
+    ], () => { seq += 1; return seq })
+    expect(rows).toEqual([{ seq: 1, kind: 'tool', text: '读取页面', status: 'complete' }])
   })
 
   it('handles empty history', () => {
