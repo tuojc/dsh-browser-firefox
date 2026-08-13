@@ -21,13 +21,14 @@ Workspace grouping is best-effort. If the composition has no workspace domain, d
 
 ## Usage
 
-Mount the plugin in the web composition (opt-in; nothing is registered otherwise):
+From the repository root, run the installer once to build the plugin and link it into the local dsh `web` profile, then start the pinned npm-installed runtime with the plugin overlay (opt-in; nothing is registered otherwise):
 
 ```sh
-dsh web --config apps/cli/config/browser-bridge.cordis.yml
+./scripts/install.sh
+pnpm start
 ```
 
-Then load `extensions/dsh-browser/dist` as an unpacked extension in Chrome, paste the token into its settings, and use the side panel.
+Then load `extensions/dsh-browser/dist` as an unpacked extension in Chrome and use the side panel. Loopback connections are discovered automatically and require no token entry; non-loopback deployments still require the configured bearer token.
 
 ## Security model
 
@@ -38,7 +39,7 @@ Then load `extensions/dsh-browser/dist` as an unpacked extension in Chrome, past
 
 ## Wire protocol
 
-Frames are JSON objects discriminated by `t`, defined in [`protocol.ts`](src/protocol.ts) — the single source of truth shared with the extension (imported from `@deepseek-ai/dsh-bridge-browser/protocol`).
+Frames are JSON objects discriminated by `t`, defined in [`protocol.ts`](src/protocol.ts) — the single source of truth shared with the extension through the workspace package's `./src/*` export. The built package also publishes `@deepseek-ai/dsh-bridge-browser/protocol` for external consumers.
 
 - Client → server: `hello` (auth + caps), `rpc` (gateway method passthrough), `tool.result`, `pong`.
 - Server → client: `hello.ok` (echoes negotiated caps), `rpc.result`, `event` (gateway event envelope, same shape as `/api/events.mux`), `tool.call`, `ping`, `error`.

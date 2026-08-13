@@ -32,41 +32,43 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
 - **background** (`src/background/`): bridge connection (token auth + exponential-backoff reconnect + keepalive), gateway RPC client, **tool dispatch to the active tab**.
 - **content script** (`src/content/`): text-only snapshot (readability main text + numbered interactive inventory + form fields), **stable element numbers** (`data-dsh-el`), delta changes, click/type/press/scroll/navigate actions, sensitive-field masking.
 - **panel** (`src/panel/`): React conversation UI (isolated session/history/live events/settings); messages render as Markdown (headings/lists/code blocks/tables, sanitized).
-- **Protocol**: `protocol.ts` in the `@deepseek-ai/dsh-bridge-browser` plugin is the single source of truth, shared by both ends (tsconfig paths point at the plugin source).
+- **Protocol**: `protocol.ts` in the `@deepseek-ai/dsh-bridge-browser` workspace package is the single source of truth, shared by both ends through the package's source export.
 
 ## Build
 
 ```sh
-pnpm install                 # in this directory (standalone workspace)
-pnpm run build               # outputs dist/
-pnpm run test                # unit tests
+pnpm install
+pnpm --filter dsh-browser-extension run build
+pnpm --filter dsh-browser-extension run test
 ```
+
+Run these commands from the repository root; the build outputs `extensions/dsh-browser/dist/`.
 
 ## Install and use
 
 The recommended path is the zero-configuration installer from the repository root:
 
-1. **Start dsh with the bridge plugin mounted**:
-
-   ```sh
-   dsh web --config examples/browser-bridge.cordis.yml
-   ```
-
-   Port 3080 is used by default; append `--port <port>` when it is occupied.
-
-2. **Build and install the extension**:
+1. **Build and install the extension**:
 
    ```sh
    ./scripts/install.sh
    ```
 
-   The script builds the bridge plugin and extension, copies the output to the stable directory `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory. Do not load the source directory `extensions/dsh-browser/`.
+   The script builds the bridge plugin, links it into the local dsh `web` profile, builds the extension, copies the output to the stable directory `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory. Do not load the source directory `extensions/dsh-browser/`.
+
+2. **Start dsh with the bridge plugin mounted**:
+
+   ```sh
+   pnpm start
+   ```
+
+   Port 3080 is used by default; append `--port <port>` when it is occupied.
 
 3. **Use it**: open a normal `http://` or `https://` page and click the DeepSeek whale icon. The extension auto-discovers local dsh and loopback connections require no address or token; settings are only needed for remote deployment. Chat directly or click "Read page" first.
 
 Pages that were already open before extension installation or reload are instrumented automatically on the first action, so they do not require a manual refresh. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
 
-For extension-only development, run `pnpm run build` in this directory and load `dist/` directly. Rebuild and reload the extension from `chrome://extensions` after code changes.
+For extension-only development, run `pnpm --filter dsh-browser-extension run build` from the repository root and load `extensions/dsh-browser/dist/` directly. Rebuild and reload the extension from `chrome://extensions` after code changes.
 
 ## Why text-only
 
