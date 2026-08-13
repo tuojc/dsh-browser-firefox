@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "dsh 浏览器助手",
-  "description": "让 dsh 模型直接读取并操作当前浏览器页面：点击元素、填写表单、滚动与导航（纯文本模式，保留登录态）。侧边栏提供对话入口。",
+  "description": "Chrome sidebar extension that lets DSH operate your browser directly—no vision capabilities required.",
   "version": "0.1.0",
   "minimum_chrome_version": "116",
   "permissions": [
