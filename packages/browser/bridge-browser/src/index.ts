@@ -17,15 +17,15 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { Context } from 'cordis'
-import z from 'schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-host-apiproxy'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
-import { dshHomePath } from '@deepseek-ai/dsh-paths'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
 import { registerBrowserTools } from './tools.ts'
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from './protocol.ts'
@@ -37,7 +37,7 @@ import { resolveToken } from './token.ts'
 export const name = 'bridge-browser'
 
 /** Services required by this plugin. */
-export const inject = ['httpServer', 'apiProxy', 'tools']
+export const inject = ['webServer', 'apiProxy', 'tools']
 
 /** Default per-tool-call budget (ms). */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
@@ -146,7 +146,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     path: BRIDGE_PATH,
     handler: (req, socket, head) => { server.handleUpgrade(req, socket, head) },
   }
-  ctx.effect(() => ctx.httpServer.registerUpgrade(route), 'bridge-browser: /ext/bridge upgrade route')
+  ctx.effect(() => ctx.webServer.registerUpgrade(route), 'bridge-browser: /ext/bridge upgrade route')
   // 异步 disposer：HMR/卸载时先等桥完全关闭（socket/泵/acceptor 静默）再继续。
   ctx.effect(() => () => server.close(), 'bridge-browser: bridge server')
 
@@ -159,10 +159,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     path: BRIDGE_CONFIG_PATH,
     handler: (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ wsUrl: `ws://127.0.0.1:${ctx.httpServer.port}${BRIDGE_PATH}` }))
+      res.end(JSON.stringify({ wsUrl: `ws://127.0.0.1:${ctx.webServer.port}${BRIDGE_PATH}` }))
     },
   }
-  ctx.effect(() => ctx.httpServer.register(configRoute), 'bridge-browser: /ext/bridge-config route')
+  ctx.effect(() => ctx.webServer.register(configRoute), 'bridge-browser: /ext/bridge-config route')
 
   ctx.effect(() => {
     const disposers = registerBrowserTools(ctx, server, {

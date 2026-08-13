@@ -21,13 +21,14 @@ dsh 的**浏览器操作桥**：在宿主 webserver 上挂载一个 **token 认�
 
 ## 使用
 
-在 web 组合中挂载本插件（默认不注册任何东西，显式启用）：
+在仓库根目录运行一次安装器，以构建插件并将其链接到本机 dsh 的 `web` profile；然后应用插件叠加配置，启动已固定版本、通过 npm 安装的运行时（选择启用；否则不注册任何内容）：
 
 ```sh
-dsh web --config apps/cli/config/browser-bridge.cordis.yml
+./scripts/install.sh
+pnpm start
 ```
 
-然后在 Chrome 中加载 `extensions/dsh-browser/dist`（解压扩展），在设置中粘贴 token，使用侧边栏。
+然后在 Chrome 中将 `extensions/dsh-browser/dist` 加载为已解压扩展，并使用侧边栏。扩展会自动发现回环连接，无需输入 token；非回环部署仍需要配置的 bearer token。
 
 ## 安全模型
 
@@ -38,7 +39,7 @@ dsh web --config apps/cli/config/browser-bridge.cordis.yml
 
 ## 线协议
 
-帧为按 `t` 判别的 JSON 对象，定义在 [`protocol.ts`](src/protocol.ts)——与扩展共享的唯一事实源（扩展从 `@deepseek-ai/dsh-bridge-browser/protocol` 导入）。
+帧为按 `t` 判别的 JSON 对象，定义在 [`protocol.ts`](src/protocol.ts)，是通过 workspace 包的 `./src/*` export 与扩展共享的真源。构建后的包还会发布 `@deepseek-ai/dsh-bridge-browser/protocol`，供外部消费方使用。
 
 - 客户端 → 服务端：`hello`（认证+caps）、`rpc`（网关方法透传）、`tool.result`、`pong`。
 - 服务端 → 客户端：`hello.ok`（回显协商后的 caps）、`rpc.result`、`event`（网关事件信封，与 `/api/events.mux` 同形）、`tool.call`、`ping`、`error`。

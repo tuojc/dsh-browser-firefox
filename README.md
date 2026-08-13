@@ -8,7 +8,7 @@
 
 纯文本设计：DeepSeek 模型无视觉，页面以结构化文本呈现（带编号的交互元素清单），模型用编号精确定位并操作任意元素，整条管线**全程无截图**。
 
-本仓库遵循 dsh-external 内测生态惯例：**只含插件本身，不含 DeepSeek Harness SDK 源码**；SDK 包全部以 `peerDependencies` 声明，运行时由宿主 Harness workspace 提供。
+本仓库是独立 pnpm workspace：根包从私有 npm 安装已锁定的 `@deepseek-ai/dsh` 内测版，桥接插件对同一发布线声明 peer/dev 依赖，Chrome 扩展通过 workspace 依赖共享桥协议；无需 DeepSeek Harness 源码 checkout。
 
 ## 核心能力
 
@@ -41,28 +41,33 @@ scripts/install.sh
 
 ## 安装与使用（零配置）
 
-前提：`dsh` 已安装并可用；本仓库位于宿主 SDK checkout 的 `dsh-browser/` 子目录。
+前提：Node.js `^22.19` 或 `>=24`、Corepack/pnpm，以及可读取 `@deepseek-ai` 私有包的 npm 凭据。pnpm 11 不读取项目级认证字段，请在用户级 `~/.npmrc` 使用环境变量引用，真实令牌不得写进仓库：
 
-**第一步：启动 dsh**（在本仓库根目录下执行；`--config` 路径相对当前目录）：
-
-```sh
-dsh web --config examples/browser-bridge.cordis.yml
+```ini
+@deepseek-ai:registry=https://registry.npmjs.org/
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}
 ```
 
-默认端口 3080；被其他 `dsh web` 占用时，追加 `--port <端口>` 换一个。
-
-**第二步：安装扩展（一条命令）**：
+**第一步：安装依赖与扩展**：
 
 ```sh
 ./scripts/install.sh
 ```
 
-脚本会构建插件与扩展、复制到 `~/.dsh/browser-extension`、打开 `chrome://extensions`；按提示开启开发者模式并加载该目录即可。工具栏出现 DeepSeek 鲸鱼图标，点击打开侧边栏。
+脚本按锁文件安装私有 npm 依赖、构建桥接插件、把本地插件链接到 dsh 的 `web` profile、构建扩展、复制到 `~/.dsh/browser-extension`，并打开 `chrome://extensions`；按提示开启开发者模式并加载该目录即可。
+
+**第二步：启动 dsh**（在本仓库根目录下执行）：
+
+```sh
+pnpm start
+```
+
+默认端口为 3080；被占用时执行 `pnpm start -- --port <port>`。工具栏出现 DeepSeek 鲸鱼图标后，点击即可打开侧边栏。
 
 **后续日常使用**无需重新安装扩展，只需在本仓库根目录启动 dsh：
 
 ```sh
-dsh web --config examples/browser-bridge.cordis.yml --port 3080
+pnpm start
 ```
 
 **无需任何配置**：扩展自动探测本机 dsh 并连接（`/ext/bridge-config` 发现 + 回环免 token）。token/地址只在远程部署（`--host 0.0.0.0`）时才需要手动填写。
@@ -73,9 +78,13 @@ dsh web --config examples/browser-bridge.cordis.yml --port 3080
 
 ## 开发
 
-插件包是宿主 SDK workspace 的成员（宿主 `pnpm-workspace.yaml` 经 `packages/browser/bridge-browser` 符号链接挂载，peer 依赖由宿主提供），插件包命令须在**宿主 checkout 根目录**（即本仓库的上一级 `..`）下执行；Chrome 扩展完全独立，命令在**本仓库根目录**下执行。
+桥接插件和 Chrome 扩展都属于本仓库 workspace；所有命令均在本仓库根目录执行。首次开发安装运行 `pnpm install`。
 
 ```sh
+pnpm run build
+pnpm run typecheck
+pnpm run test
+
 pnpm --filter @deepseek-ai/dsh-bridge-browser run build
 pnpm --filter @deepseek-ai/dsh-bridge-browser run typecheck
 pnpm --filter @deepseek-ai/dsh-bridge-browser run test
@@ -86,8 +95,8 @@ pnpm --filter dsh-browser-extension run test
 
 注意：
 
-- 宿主使用前插件包必须先构建（`lib/` 供 Loader 加载）；`scripts/install.sh` 已代为执行，日常使用无需手动构建。
-- 宿主 checkout 以 `dsh-browser/` 存在为前提（符号链接悬空时宿主不受影响）；不需要插件时移走 `dsh-browser/` 并移除该符号链接即可。
+- 启动前桥接插件必须已有 `lib/` 供 Loader 加载；`scripts/install.sh` 和根目录 `pnpm run build` 都会先构建插件再构建扩展。
+- `@deepseek-ai/dsh` 及桥接插件的 SDK 依赖锁在同一内测发布线；升级时必须同时更新清单、锁文件并重跑根目录检查。
 
 ## 安全
 

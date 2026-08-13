@@ -1,9 +1,17 @@
-# dsh-browser 独立 workspace：Chrome 扩展自包含安装。
-# 插件包（packages/browser/bridge-browser）是宿主 SDK workspace 的成员
-# （经宿主 pnpm-workspace.yaml 的符号链接挂载），不在本 workspace 内。
+# dsh-browser 独立 workspace：桥接插件与 Chrome 扩展自包含安装。
 packages:
   - extensions/*
+  - packages/*/*
 
-# 扩展经 vite 依赖 esbuild（原生二进制，需要其安装脚本）。
+# dsh 运行时与扩展构建依赖这些受信任包的安装脚本。
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
   esbuild: true
+  koffi: true
+  node-pty: true
+  protobufjs: true
+
+# 内测版 @deepseek-ai 包需要在发布后立即安装。
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/*'

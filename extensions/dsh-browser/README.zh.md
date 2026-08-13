@@ -32,41 +32,43 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
 - **background**（`src/background/`）：桥连接（token 认证 + 指数退避重连 + 保活）、网关 RPC 客户端、**工具分发到活动标签页**。
 - **content script**（`src/content/`）：纯文本快照（可读性主文 + 编号交互清单 + 表单字段）、**稳定编号**（`data-dsh-el`）、delta 变化、点击/输入/按键/滚动/导航动作、敏感字段掩码。
 - **panel**（`src/panel/`）：React 对话界面（独立会话/历史/实时事件/设置），消息以 Markdown 渲染（标题/列表/代码块/表格等，已消毒）。
-- **协议**：`@deepseek-ai/dsh-bridge-browser` 插件的 `protocol.ts` 是唯一事实源，两端共享（tsconfig paths 指向插件源码）。
+- **协议**：`@deepseek-ai/dsh-bridge-browser` workspace 包中的 `protocol.ts` 是两端共享的真源，具体通过该包的源码 export 共享。
 
 ## 构建
 
 ```sh
-pnpm install                 # in this directory (standalone workspace)
-pnpm run build               # outputs dist/
-pnpm run test                # unit tests
+pnpm install
+pnpm --filter dsh-browser-extension run build
+pnpm --filter dsh-browser-extension run test
 ```
+
+请在仓库根目录执行这些命令；构建产物输出到 `extensions/dsh-browser/dist/`。
 
 ## 安装与使用
 
 推荐从仓库根目录使用零配置安装流程：
 
-1. **启动 dsh 并挂载桥插件**：
-
-   ```sh
-   dsh web --config examples/browser-bridge.cordis.yml
-   ```
-
-   默认端口为 3080；如被占用，可追加 `--port <端口>`。
-
-2. **构建并安装扩展**：
+1. **构建并安装扩展**：
 
    ```sh
    ./scripts/install.sh
    ```
 
-   脚本会构建桥插件与扩展，把产物复制到稳定目录 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载这个稳定目录。不要加载源码目录 `extensions/dsh-browser/`。
+   脚本会构建桥插件，将其链接到本机 dsh 的 `web` profile，再构建扩展并把产物复制到稳定目录 `~/.dsh/browser-extension`，然后打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载这个稳定目录。不要加载源码目录 `extensions/dsh-browser/`。
+
+2. **启动 dsh 并挂载桥插件**：
+
+   ```sh
+   pnpm start
+   ```
+
+   默认端口为 3080；如被占用，可追加 `--port <port>`。
 
 3. **开始使用**：打开普通的 `http://` 或 `https://` 页面，点击 DeepSeek 鲸鱼图标打开侧边栏。扩展会自动探测本机 dsh，回环连接无需填写地址或 Token；远程部署时才需要在设置中配置。可以直接对话，或先点「读取页面」。
 
 页面即使在扩展安装或重载之前已经打开，也会在第一次操作时自动补加载内容脚本，无需手动刷新。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不支持读取和操作。
 
-开发时也可在本目录运行 `pnpm run build`，然后直接加载 `dist/`。代码更新后需要重新构建，并在 `chrome://extensions` 中重新加载扩展。
+如果只开发扩展，请在仓库根目录运行 `pnpm --filter dsh-browser-extension run build`，然后直接加载 `extensions/dsh-browser/dist/`。代码更新后需要重新构建，并在 `chrome://extensions` 中重新加载扩展。
 
 ## 纯文本优化（为什么这样做）
 

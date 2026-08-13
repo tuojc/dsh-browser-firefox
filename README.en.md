@@ -8,7 +8,7 @@ Let dsh models **read and operate pages open in your own browser**: extract cont
 
 The integration is text-only: DeepSeek models receive a structured text representation with a numbered interactive-element inventory. The entire model-facing pipeline operates without screenshots.
 
-This repository follows the dsh-external internal plugin convention: it contains only the plugin and extension, not the DeepSeek Harness SDK source. SDK packages are declared as `peerDependencies` and supplied by the host Harness workspace at runtime.
+This repository is a standalone pnpm workspace: the root package installs a pinned internal-testing release of `@deepseek-ai/dsh` from private npm, the bridge plugin declares peer and development dependencies on the same release line, and the Chrome extension shares the bridge protocol through a workspace dependency. No DeepSeek Harness source checkout is required.
 
 ## Core capabilities
 
@@ -41,28 +41,33 @@ scripts/install.sh
 
 ## Zero-configuration install and use
 
-Prerequisites: `dsh` is installed and available, and this repository is located as the `dsh-browser/` child of the host SDK checkout.
+Prerequisites: Node.js `^22.19` or `>=24`, Corepack/pnpm, and npm credentials that can read private `@deepseek-ai` packages. pnpm 11 does not read project-level authentication fields; reference the environment variable from the user-level `~/.npmrc`, and never write the real token into the repository:
 
-**Step 1 — start dsh** from this repository root:
-
-```sh
-dsh web --config examples/browser-bridge.cordis.yml
+```ini
+@deepseek-ai:registry=https://registry.npmjs.org/
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}
 ```
 
-Port 3080 is used by default. Append `--port <port>` if it is occupied.
-
-**Step 2 — build and install the extension**:
+**Step 1 — install dependencies and the extension**:
 
 ```sh
 ./scripts/install.sh
 ```
 
-The installer builds the plugin and extension, copies the extension to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory.
+The script installs private npm dependencies from the lockfile, builds the bridge plugin, links the local plugin into dsh's `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load that directory when prompted.
+
+**Step 2 — start dsh** from this repository root:
+
+```sh
+pnpm start
+```
+
+Port 3080 is used by default. Run `pnpm start -- --port <port>` if it is occupied. When the DeepSeek whale icon appears in the toolbar, click it to open the side panel.
 
 **For subsequent use**, the extension does not need to be installed again. Start dsh from this repository root with:
 
 ```sh
-dsh web --config examples/browser-bridge.cordis.yml --port 3080
+pnpm start
 ```
 
 **No configuration is required for local use**: the extension discovers dsh through `/ext/bridge-config`, and loopback connections do not require a token. An address and token are only needed for remote deployment with `--host 0.0.0.0`.
@@ -73,9 +78,13 @@ After updating the code, run `./scripts/install.sh` again, click Reload for "dsh
 
 ## Development
 
-The bridge package is a member of the host SDK workspace through the `packages/browser/bridge-browser` symlink. Run bridge-package commands from the host checkout root (the parent directory of this repository). The Chrome extension is a standalone workspace; run its commands from this repository root.
+The bridge plugin and Chrome extension are both members of this repository's workspace. Run all commands from the repository root. For the first development installation, run `pnpm install`.
 
 ```sh
+pnpm run build
+pnpm run typecheck
+pnpm run test
+
 pnpm --filter @deepseek-ai/dsh-bridge-browser run build
 pnpm --filter @deepseek-ai/dsh-bridge-browser run typecheck
 pnpm --filter @deepseek-ai/dsh-bridge-browser run test
@@ -86,8 +95,8 @@ pnpm --filter dsh-browser-extension run test
 
 Notes:
 
-- The bridge plugin must be built before host use because the loader consumes `lib/`; `scripts/install.sh` handles this automatically.
-- The host checkout assumes this repository exists at `dsh-browser/`. To remove the plugin, move the repository out and remove the corresponding workspace symlink.
+- The bridge plugin must have a built `lib/` before startup because the loader consumes it; both `scripts/install.sh` and the root `pnpm run build` build the plugin before the extension.
+- The SDK dependencies of `@deepseek-ai/dsh` and the bridge plugin are pinned to the same internal-testing release line. An upgrade must update the manifests and lockfile together and rerun the root checks.
 
 ## Security
 

@@ -1,0 +1,16 @@
+{
+  "name": "dsh-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone dsh browser bridge and Chrome extension workspace",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm --filter @deepseek-ai/dsh-bridge-browser run build && pnpm --filter dsh-browser-extension run build",
+    "start": "dsh --profile web --patch examples/browser-bridge.cordis.yml",
+    "test": "pnpm --filter @deepseek-ai/dsh-bridge-browser run test && pnpm --filter dsh-browser-extension run test",
+    "typecheck": "pnpm --filter @deepseek-ai/dsh-bridge-browser run typecheck && pnpm --filter dsh-browser-extension run typecheck"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.0.1-rc.5"
+  }
+}

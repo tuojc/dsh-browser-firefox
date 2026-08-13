@@ -1,7 +1,7 @@
 /**
  * REAL-composition coverage: a test-only cordis.yml booted through the
- * vendored Loader mounts the webserver, the minimal spine (sessions /
- * user-interaction / agents / system-prompt / tools), a test-only api host
+ * published Loader mounts the webserver, the minimal spine (sessions /
+ * user-questions / agents / system-prompt / tools), a test-only api host
  * providing `ctx.apiProxy` over `createApiProxy` (the same shape the apiproxy
  * package's own tests use), and the bridge plugin itself. A real WebSocket
  * client then authenticates over a real socket and drives real gateway RPCs
@@ -12,24 +12,23 @@
  * adapter) — RPCs exercised here (session.create/list) never touch the model.
  */
 
-import { mkdirSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { Context } from 'cordis'
-import Loader from '@cordisjs/plugin-loader'
-import Include from '@cordisjs/plugin-include'
+import { Context } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import Include from '@deepseek-ai/cordis-plugin-include'
 import WebSocket from 'ws'
-import HttpServer from '@deepseek-ai/dsh-host-webserver'
+import WebServer from '@deepseek-ai/dsh-host-webserver'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import UserInteractionService from '@deepseek-ai/dsh-user-interaction'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import LlmService from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import * as BridgeBrowser from '../src/index.ts'
 import { BRIDGE_PATH, type BridgeFrame } from '../src/protocol.ts'
@@ -55,13 +54,11 @@ afterEach(async () => {
  */
 const ApiHost = {
   name: 'api-host',
-  inject: ['sessions', 'userInteraction', 'agents'],
+  inject: ['sessions', 'userQuestions', 'agents'],
   apply(ctx: Context, config: { cwd: string }): void {
     ctx.provide('apiProxy', createApiProxy(ctx, {
-      provider: 'p',
-      model: 'm',
+      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
       cwd: config.cwd,
-      workspaceRoot: config.cwd,
     }))
   },
 }
@@ -69,20 +66,14 @@ const ApiHost = {
 /** Write a dist fixture and the composition cordis.yml, then boot it through the real Loader. */
 async function loadComposition(): Promise<{ ctx: Context; configPath: string; port: number }> {
   root = await mkdtemp(join(tmpdir(), 'dsh-bridge-browser-'))
-  const dist = join(root, 'dist')
-  mkdirSync(dist)
-  const distIndex = join(dist, 'index.html')
-  await writeFile(distIndex, '<head></head><body>shell</body>')
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-host-webserver'",
     '  config:',
     "    host: '127.0.0.1'",
     '    port: 0',
-    '    portConflict: increment',
-    `    distIndex: '${distIndex}'`,
     "- name: '@deepseek-ai/dsh-session'",
-    "- name: '@deepseek-ai/dsh-user-interaction'",
+    "- name: '@deepseek-ai/dsh-user-questions'",
     "- name: '@deepseek-ai/dsh-agent'",
     "- name: '@deepseek-ai/dsh-system-prompt'",
     "- name: '@deepseek-ai/dsh-tools'",
@@ -106,9 +97,9 @@ async function loadComposition(): Promise<{ ctx: Context; configPath: string; po
   await context.plugin(Loader)
   context.loader.builtins.include = Include
   const modules = new Map<string, unknown>([
-    ['@deepseek-ai/dsh-host-webserver', HttpServer],
+    ['@deepseek-ai/dsh-host-webserver', WebServer],
     ['@deepseek-ai/dsh-session', SessionStore],
-    ['@deepseek-ai/dsh-user-interaction', UserInteractionService],
+    ['@deepseek-ai/dsh-user-questions', UserQuestionService],
     ['@deepseek-ai/dsh-agent', AgentRegistry],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-tools', ToolRegistry],
@@ -129,8 +120,8 @@ async function loadComposition(): Promise<{ ctx: Context; configPath: string; po
     config: { path: pathToFileURL(configPath).href },
   })
   await context.loader.await()
-  const http = context.get('httpServer') as typeof HttpServer.prototype
-  return { ctx: context, configPath, port: http.port }
+  const web = context.get('webServer') as typeof WebServer.prototype
+  return { ctx: context, configPath, port: web.port }
 }
 
 /** 扩展上下文 Origin（回环免 token 的必要条件）。 */
