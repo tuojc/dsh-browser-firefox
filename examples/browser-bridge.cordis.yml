@@ -1,16 +1,15 @@
-# `dsh web` overlay: mount the browser bridge plugin.
+# `dsh --profile web` patch overlay: mount the browser bridge plugin.
 #
 # Opt-in by design: nothing is registered unless this overlay (or an
 # equivalent row) is applied. Usage:
 #
-#   cd <宿主 checkout>/dsh-browser
-#   dsh web --config examples/browser-bridge.cordis.yml
+#   cd dsh-browser
+#   pnpm start
 #
-# On first boot the plugin generates a bearer token, prints it in the boot
-# log, and persists it at ~/.dsh/ext-bridge-token (chmod 0600). Paste it into
-# the browser extension's settings page (open the side panel -> Settings).
-# To pin a fixed token (e.g. a shared team deployment), set DSH_EXT_TOKEN and
-# reference it below.
+# On first boot the plugin generates a bearer token and persists it at
+# ~/.dsh/ext-bridge-token (chmod 0600). Local extensions discover the bridge
+# without manual token entry. To pin a fixed token for a remote deployment,
+# set DSH_EXT_TOKEN and reference it below.
 # Extension-created sessions default to the ~/.dsh/browser-sessions workspace.
 # Set DSH_BROWSER_SESSION_WORKSPACE to choose another path, or to an empty
 # string to keep those sessions Ungrouped.
