@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { BridgeServer } from '../src/server.ts'
 import { BROWSER_TOOL_NAMES, registerBrowserTools } from '../src/tools.ts'
 

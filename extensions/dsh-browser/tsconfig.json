@@ -15,10 +15,7 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "types": ["chrome", "vite/client"],
-    "paths": {
-      "@deepseek-ai/dsh-bridge-browser/src/*": ["../../packages/browser/bridge-browser/src/*"]
-    }
+    "types": ["chrome", "vite/client"]
   },
   "include": ["src", "tests", "vite.shared.ts", "vite.background.config.ts", "vite.content.config.ts", "vite.panel.config.ts"]
 }

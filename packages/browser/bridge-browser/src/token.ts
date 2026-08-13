@@ -12,7 +12,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { dshHomePath } from '@deepseek-ai/dsh-paths'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
 /** File name of the persisted token inside the dsh home. */
 export const TOKEN_FILE_NAME = 'ext-bridge-token'

@@ -16,25 +16,24 @@
  *   pnpm --filter @deepseek-ai/dsh-bridge-browser exec vitest run tests/e2e/bridge-extension.e2e.ts
  */
 
-import { mkdirSync } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { Context } from 'cordis'
-import Loader from '@cordisjs/plugin-loader'
-import Include from '@cordisjs/plugin-include'
+import { Context } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import Include from '@deepseek-ai/cordis-plugin-include'
 import { chromium, type BrowserContext } from 'playwright-core'
-import HttpServer from '@deepseek-ai/dsh-host-webserver'
+import WebServer from '@deepseek-ai/dsh-host-webserver'
 import SessionStore from '@deepseek-ai/dsh-session'
-import UserInteractionService from '@deepseek-ai/dsh-user-interaction'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import LlmService from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
@@ -57,35 +56,27 @@ const SessionPersistenceStub = {
 const ApiHost = {
   name: 'api-host',
   // Mirrors ApiProxyService.inject for the services this composition provides;
-  // 'workspace' is REQUIRED — the gateway's workspace domain calls
-  // ctx.workspace property access, which cordis gates on the inject list.
-  inject: ['sessions', 'userInteraction', 'agents', 'workspace'],
+  // 'workspaceRegistry' is REQUIRED — the gateway's workspace domain calls
+  // the service property, which Cordis gates on the inject list.
+  inject: ['sessions', 'userQuestions', 'agents', 'workspaceRegistry'],
   apply(ctx: Context, config: { cwd: string }): void {
     ctx.provide('apiProxy', createApiProxy(ctx, {
-      provider: 'p',
-      model: 'm',
+      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
       cwd: config.cwd,
-      workspaceRoot: config.cwd,
     }))
   },
 }
 
 async function bootComposition(): Promise<{ ctx: Context; port: number; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-e2e-'))
-  const dist = join(root, 'dist')
-  mkdirSync(dist)
-  const distIndex = join(dist, 'index.html')
-  await writeFile(distIndex, '<head></head><body>shell</body>')
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-host-webserver'",
     '  config:',
     "    host: '127.0.0.1'",
     '    port: 3090',
-    '    portConflict: increment',
-    `    distIndex: '${distIndex}'`,
     "- name: '@deepseek-ai/dsh-session'",
-    "- name: '@deepseek-ai/dsh-user-interaction'",
+    "- name: '@deepseek-ai/dsh-user-questions'",
     "- name: '@deepseek-ai/dsh-agent'",
     "- name: '@deepseek-ai/dsh-system-prompt'",
     "- name: '@deepseek-ai/dsh-tools'",
@@ -115,9 +106,9 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
   await context.plugin(Loader)
   context.loader.builtins.include = Include
   const modules = new Map<string, unknown>([
-    ['@deepseek-ai/dsh-host-webserver', HttpServer],
+    ['@deepseek-ai/dsh-host-webserver', WebServer],
     ['@deepseek-ai/dsh-session', SessionStore],
-    ['@deepseek-ai/dsh-user-interaction', UserInteractionService],
+    ['@deepseek-ai/dsh-user-questions', UserQuestionService],
     ['@deepseek-ai/dsh-agent', AgentRegistry],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-tools', ToolRegistry],
@@ -140,7 +131,7 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
   } as unknown as NonNullable<typeof context.loader.internal>
   await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await context.loader.await()
-  const port = (context.get('httpServer') as { port: number }).port
+  const port = (context.get('webServer') as { port: number }).port
   return { ctx: context, port, root }
 }
 
@@ -228,6 +219,9 @@ describe('extension ↔ bridge e2e', () => {
     const panel = await ctx.newPage()
     await panel.goto(`chrome-extension://${extensionId}/panel/index.html`)
     await panel.waitForSelector('header.topbar', { timeout: 15_000 })
+    const discoveryUrl = `http://127.0.0.1:${port}/ext/bridge-config`
+    expect((await fetch(discoveryUrl)).status).toBe(200)
+    expect(await panel.evaluate(async (url) => (await fetch(url)).status, discoveryUrl)).toBe(200)
 
     // Pin the bridge deterministically through the real settings UI (URL +
     // token). Auto-discovery is environment-dependent — a local dsh may own
@@ -257,10 +251,10 @@ describe('extension ↔ bridge e2e', () => {
     // The panel must report "connected" after the token-authenticated
     // reconnect to this composition. (Intermediate states like 未连接 can be
     // coalesced into one render frame, so only the end state is asserted.)
-    await panel.waitForFunction(() => {
-      const status = document.querySelector('.connection')
-      return status !== null && status.textContent !== null && status.textContent.includes('已连接')
-    }, undefined, { timeout: 30_000 })
+    await expect.poll(
+      () => panel.locator('.connection').textContent(),
+      { timeout: 30_000 },
+    ).toContain('已连接')
     const statusText = await panel.textContent('.connection')
 
     // Session deferral: opening the panel alone must NOT create a session.
@@ -276,7 +270,7 @@ describe('extension ↔ bridge e2e', () => {
     await expect.poll(() => sessions.list().length, { timeout: 30_000 }).toBeGreaterThan(initialSessions.length)
 
     const createdSession = sessions.list().find(session => !initialIds.has(session.id))
-    const workspace = (context.get('workspace') as WorkspaceRegistry).list()[0]
+    const workspace = (context.get('workspaceRegistry') as WorkspaceRegistry).list()[0]
     expect(workspace?.path).toBe(await realpath(join(root as string, 'browser-sessions')))
     expect(workspace?.sessionIds).toContain(createdSession?.id)
     expect(createdSession?.header.cwd).toBe(workspace?.path)
