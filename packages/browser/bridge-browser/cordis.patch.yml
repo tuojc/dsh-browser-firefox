@@ -1,10 +1,8 @@
-# `dsh --profile web` patch overlay: mount the browser bridge plugin.
+# Browser bridge layer for the dsh `web` profile.
 #
-# Opt-in by design: nothing is registered unless this overlay (or an
-# equivalent row) is applied. Usage:
-#
-#   cd dsh-browser
-#   pnpm start
+# `dsh plugin --profile web add` registers this package's `dsh.bundle`
+# manifest, so both the repository launcher and `npx @deepseek-ai/dsh web`
+# apply this patch without an extra command-line option.
 #
 # On first boot the plugin generates a bearer token and persists it at
 # ~/.dsh/ext-bridge-token (chmod 0600). Local extensions discover the bridge
@@ -18,7 +16,7 @@
 #
 # Security: the bridge path carries its own token auth and refuses privileged
 # gateway methods (settings/credentials/open-*) for non-loopback remotes. Do
-# not run `dsh web --host 0.0.0.0` on untrusted networks with this overlay.
+# not run `dsh web --host 0.0.0.0` on untrusted networks with this layer.
 
 - insert:
     - id: bridge-browser

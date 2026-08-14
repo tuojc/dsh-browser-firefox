@@ -11,7 +11,7 @@ echo "== 1/4 构建桥插件 =="
 (cd "$ROOT" && pnpm install --frozen-lockfile >/dev/null 2>&1)
 (cd "$ROOT" && pnpm --filter @deepseek-ai/dsh-bridge-browser run build >/dev/null 2>&1)
 
-echo "== 2/4 链接桥插件到本机 web profile =="
+echo "== 2/4 注册桥插件 bundle 到本机 web profile =="
 (cd "$ROOT" && pnpm exec dsh plugin --profile web add "@deepseek-ai/dsh-bridge-browser@link:$PLUGIN" >/dev/null)
 
 echo "== 3/4 构建 Chrome 扩展 =="
@@ -35,4 +35,5 @@ echo ""
 echo "加载完成后："
 echo "  · 工具栏出现 DeepSeek 鲸鱼图标，点击打开侧边栏"
 echo "  · 扩展自动探测本机 dsh（无需填写地址/token）"
-echo "  · 先启动 dsh：cd $ROOT && pnpm start"
+echo "  · 启动固定版本：cd $ROOT && pnpm start"
+echo "  · 或启动 npm 最新版本：npx @deepseek-ai/dsh web"

@@ -5,6 +5,11 @@
   "author": "Yuxiang Lin",
   "license": "MIT",
   "private": true,
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -21,6 +26,7 @@
       "types": "./lib/types/invariant.d.ts",
       "default": "./lib/invariant.js"
     },
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
@@ -29,6 +35,7 @@
     "lib/invariant.js",
     "lib/protocol.js",
     "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
     "src"
   ],
   "peerDependencies": {
