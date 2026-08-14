@@ -53,6 +53,8 @@ curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main
 
 The remote installer downloads `main` into the installer-managed directory `~/.dsh/dsh-browser`, then installs the pinned public npm dependencies from the lockfile, builds the bridge plugin, registers its official bundle in dsh's local `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load the extension directory when prompted. Running the same command again updates the managed installation; keep source edits in a clone instead.
 
+**Already running dsh? Restart it after installing.** The installer registers the bridge bundle in dsh's local `web` profile, and dsh loads its profile only at startup. An instance started before the install keeps running without the bridge, so the side panel reports "Not connected" even though the extension loaded correctly. Stop that instance and start it again (Step 2); the extension then discovers the bridge automatically and needs no reconfiguration.
+
 Developers can clone the repository and run the same installer from any checkout. This mode uses the current branch without downloading or overwriting source files:
 
 ```sh
@@ -83,7 +85,15 @@ Both commands load the same browser bundle from the local `web` profile. Port 30
 
 **Step 3 — use it**: open any normal `http://` or `https://` page and click the DeepSeek whale icon. When the side panel reports "Connected", chat normally or click "Read page" first. A page that was already open before the extension was installed or reloaded is instrumented automatically on the first action; no page refresh is needed. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
 
-To update a managed installation, run the same `curl | bash` command again. To update a clone, pull or switch to the desired revision and run `./scripts/install.sh`. Then click Reload for "dsh Browser Assistant" in `chrome://extensions` and reopen the side panel. Chrome should load `~/.dsh/browser-extension`; do not load the source directory `extensions/dsh-browser/`.
+To update a managed installation, run the same `curl | bash` command again. To update a clone, pull or switch to the desired revision and run `./scripts/install.sh`. Then click Reload for "dsh Browser Assistant" in `chrome://extensions` and reopen the side panel. Chrome should load `~/.dsh/browser-extension`; do not load the source directory `extensions/dsh-browser/`. If dsh web is already running, restart it too so it reloads the updated `web` profile (see Troubleshooting).
+
+## Troubleshooting
+
+**Side panel stays "Not connected"**
+
+- Make sure dsh web is running locally (default `http://127.0.0.1:3080`).
+- Verify the bridge is loaded: open `http://127.0.0.1:3080/ext/bridge-config`. It should return JSON such as `{"wsUrl":"ws://127.0.0.1:3080/ext/bridge"}`. If it returns a web page instead of JSON, the running dsh predates the bridge registration — restart dsh and refresh the page; the extension reconnects on its own.
+- The extension probes ports 3080, 3081, and 3090 automatically. If dsh runs on another port — or you use a remote `--host 0.0.0.0` deployment — set the address (and bridge token) in the side panel settings.
 
 ## Development
 
