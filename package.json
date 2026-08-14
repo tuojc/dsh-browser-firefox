@@ -1,8 +1,10 @@
 {
   "name": "dsh-browser",
   "version": "0.1.0",
-  "private": true,
   "description": "Standalone dsh browser bridge and Chrome extension workspace",
+  "author": "Yuxiang Lin",
+  "license": "MIT",
+  "private": true,
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "pnpm --filter @deepseek-ai/dsh-bridge-browser run build && pnpm --filter dsh-browser-extension run build",
