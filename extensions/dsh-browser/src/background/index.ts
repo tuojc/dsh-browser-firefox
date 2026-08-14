@@ -18,7 +18,7 @@
 
 import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import { BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
 import { createRpc } from './rpc.ts'
 import { dispatchToolCall, type ToolCall } from './tools.ts'
@@ -39,6 +39,7 @@ const SETTINGS_DEFAULTS: Settings = {
 
 /** 自动探测的候选端口（dsh web 默认 3080；--port 覆盖的常见值）。 */
 const DISCOVERY_PORTS = [3080, 3081, 3090]
+const LEGACY_LOCAL_URL = 'ws://127.0.0.1:3080'
 
 /** 探测本机 dsh 的桥地址：fetch /ext/bridge-config 直到成功。 */
 async function discoverBridge(): Promise<string | undefined> {
@@ -57,6 +58,24 @@ async function discoverBridge(): Promise<string | undefined> {
   return undefined
 }
 
+/** Avoid opening a noisy loopback WebSocket until the local bridge responds. */
+async function probeBridge(url: string): Promise<boolean> {
+  try {
+    const target = new URL(url)
+    if (target.hostname !== '127.0.0.1') return true
+    target.protocol = target.protocol === 'wss:' ? 'https:' : 'http:'
+    target.pathname = BRIDGE_CONFIG_PATH
+    target.search = ''
+    target.hash = ''
+    const response = await fetch(target, { signal: AbortSignal.timeout(1_500) })
+    if (!response.ok) return false
+    const body = await response.json() as { wsUrl?: unknown }
+    return typeof body.wsUrl === 'string' && body.wsUrl.startsWith('ws://')
+  } catch {
+    return false
+  }
+}
+
 const STORAGE_KEY = 'dshSettings'
 
 let settings: Settings = { ...SETTINGS_DEFAULTS }
@@ -67,7 +86,12 @@ const panelPorts = new Set<chrome.runtime.Port>()
 
 async function loadSettings(): Promise<Settings> {
   const stored = await chrome.storage.local.get(STORAGE_KEY)
-  return { ...SETTINGS_DEFAULTS, ...(stored[STORAGE_KEY] as Partial<Settings> | undefined) }
+  const loaded = { ...SETTINGS_DEFAULTS, ...(stored[STORAGE_KEY] as Partial<Settings> | undefined) }
+  if (loaded.bridgeUrl === LEGACY_LOCAL_URL || loaded.bridgeUrl === `${LEGACY_LOCAL_URL}/`) {
+    loaded.bridgeUrl = ''
+    await chrome.storage.local.set({ [STORAGE_KEY]: loaded })
+  }
+  return loaded
 }
 
 async function persistSettings(next: Partial<Settings>): Promise<void> {
@@ -154,7 +178,7 @@ async function startBridge(): Promise<void> {
         broadcastStatus()
         void pushBudgetToActiveTab(negotiated)
       },
-    })
+    }, probeBridge)
     bridge = client
     rpc = createRpc(client)
   }
@@ -174,6 +198,7 @@ async function gatewayRpc(method: string, payload: unknown): Promise<unknown> {
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'dsh-panel') return
   panelPorts.add(port)
+  if (bridge === null) void startBridge()
   try { port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps }) } catch { /* port closed */ }
   port.onMessage.addListener((message: unknown) => {
     if (typeof message !== 'object' || message === null) return
@@ -219,7 +244,7 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== 'bridge-keepalive') return
-  if (bridge !== null && bridge.state === 'reconnecting') void startBridge()
+  if (bridge === null || bridge.state === 'reconnecting') void startBridge()
 })
 
 // ---- Boot ----

@@ -22,6 +22,9 @@ export interface BridgeSinks {
   onHelloOk(caps: BridgeCaps): void
 }
 
+/** Resolve whether opening a WebSocket is expected to succeed. */
+type BridgeProbe = (url: string) => Promise<boolean>
+
 const BACKOFF_BASE_MS = 500
 const BACKOFF_MAX_MS = 10_000
 const HELLO_ACK_TIMEOUT_MS = 5_000
@@ -39,7 +42,10 @@ export class BridgeClient {
   private token = ''
   private ackTimer: ReturnType<typeof setTimeout> | undefined
 
-  constructor(readonly sinks: BridgeSinks) {}
+  constructor(
+    readonly sinks: BridgeSinks,
+    private readonly probe: BridgeProbe = async () => true,
+  ) {}
 
   /** Current coarse state (mirrors the last emitted sink value). */
   state: BridgeState = 'stopped'
@@ -88,6 +94,14 @@ export class BridgeClient {
 
   private async loop(generation: number): Promise<void> {
     while (this.running && generation === this.generation) {
+      const reachable = await this.probe(this.url).catch(() => false)
+      if (!this.running || generation !== this.generation) return
+      if (!reachable) {
+        this.emitState('reconnecting')
+        await this.waitBeforeRetry()
+        continue
+      }
+
       const socket = new WebSocket(this.url)
       this.ws = socket
       this.emitState('connecting')
@@ -169,6 +183,10 @@ export class BridgeClient {
     }
     if (!this.running) return
     this.emitState('reconnecting')
+    await this.waitBeforeRetry()
+  }
+
+  private async waitBeforeRetry(): Promise<void> {
     this.attempt += 1
     const cap = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, this.attempt - 1))
     const delay = cap / 2 + Math.random() * (cap / 2)

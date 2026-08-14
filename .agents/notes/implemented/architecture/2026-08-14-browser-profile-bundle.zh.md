@@ -16,6 +16,8 @@ Status: implemented
 
 桥接包通过 workspace 脚本路径调用 `tsdown`。运行时配置、构建工具与插件代码全部位于本仓库或其声明的包依赖图中；任何命令都不会从父 checkout 或父目录的 `node_modules` 解析依赖。
 
+安装器会在原地更新稳定的已解压扩展目录，并区分首次安装与重新加载。扩展把原先的本机默认地址视为自动探测，在每次创建本机 WebSocket 前先探测桥接服务，并在打开侧边栏或保活闹钟触发时重试探测。这样可以避免 dsh 尚未运行时反复记录拒绝连接错误，并在服务可用后建立连接。
+
 ## 替代方案
 
 **保留根叠加配置并为 npx 记录额外参数。**这样会继续维护两条激活路径，也无法让标准 npm 命令按照 Harness 的文档直接工作。
@@ -24,7 +26,7 @@ Status: implemented
 
 ## 验证
 
-使用干净 lockfile 安装检查公开发布版的依赖图；通过包组装确认包含 `cordis.patch.yml`。在隔离的 home 中执行启动冒烟测试：把 bundle 添加到全新的 `web` profile，分别启动 `pnpm start` 与 `npx @deepseek-ai/dsh web`，并要求 `/ext/bridge-config` 成功响应。
+使用干净 lockfile 安装检查公开发布版的依赖图；通过包组装确认包含 `cordis.patch.yml`。在隔离的 home 中执行启动冒烟测试：把 bundle 添加到全新的 `web` profile，分别启动 `pnpm start` 与 `npx @deepseek-ai/dsh web`，并要求 `/ext/bridge-config` 成功响应。扩展测试要求本机可用性探测成功后才创建 WebSocket。
 
 ## 后果
 

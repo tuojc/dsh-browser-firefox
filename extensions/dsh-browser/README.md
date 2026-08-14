@@ -70,6 +70,8 @@ The recommended path is the zero-configuration installer from the repository roo
 
    Both commands load the same bundle from the local `web` profile. Port 3080 is used by default; append `--port <port>` when it is occupied.
 
+   Loading or reloading the extension before dsh starts is safe: local discovery waits for the bridge before opening a WebSocket, and opening the side panel triggers another discovery attempt.
+
 3. **Use it**: open a normal `http://` or `https://` page and click the DeepSeek whale icon. The extension auto-discovers local dsh and loopback connections require no address or token; settings are only needed for remote deployment. Chat directly or click "Read page" first.
 
 Pages that were already open before extension installation or reload are instrumented automatically on the first action, so they do not require a manual refresh. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.

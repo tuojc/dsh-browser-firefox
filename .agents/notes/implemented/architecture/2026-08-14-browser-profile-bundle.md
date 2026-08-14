@@ -16,6 +16,8 @@ The bridge package declares `dsh.bundle.patch` as `./cordis.patch.yml`, exports 
 
 The bridge build invokes `tsdown` through the workspace script path. Runtime configuration, build tools, and plugin code all live inside this repository or its declared package graph; no command resolves dependencies from a parent checkout or parent `node_modules` directory.
 
+The installer updates the stable unpacked-extension directory in place and distinguishes first installation from reloads. The extension treats the former loopback default as automatic discovery, probes a local bridge before opening each WebSocket, and retries discovery when the panel opens or the keepalive alarm fires. This avoids routine connection-refused errors while dsh is absent and connects after it becomes available.
+
 ## Alternatives considered
 
 **Keep the root overlay and document an extra npx flag.** This would preserve two activation paths and would not make the standard npm command work as documented by Harness.
@@ -24,7 +26,7 @@ The bridge build invokes `tsdown` through the workspace script path. Runtime con
 
 ## Verification
 
-A clean lockfile install checks the public release dependency graph. Package assembly confirms that `cordis.patch.yml` is included. Isolated-home startup smokes add the bundle to a fresh `web` profile, boot both `pnpm start` and `npx @deepseek-ai/dsh web`, and require a successful `/ext/bridge-config` response.
+A clean lockfile install checks the public release dependency graph. Package assembly confirms that `cordis.patch.yml` is included. Isolated-home startup smokes add the bundle to a fresh `web` profile, boot both `pnpm start` and `npx @deepseek-ai/dsh web`, and require a successful `/ext/bridge-config` response. Extension tests require a successful availability probe before constructing a loopback WebSocket.
 
 ## Consequences
 

@@ -126,7 +126,7 @@ export function App(): React.JSX.Element {
     void chrome.storage.local.get('dshSettings').then((stored) => {
       const raw = stored.dshSettings as Partial<PanelSettings> | undefined
       setSettings({
-        bridgeUrl: raw?.bridgeUrl ?? 'ws://127.0.0.1:3080',
+        bridgeUrl: raw?.bridgeUrl ?? '',
         token: raw?.token ?? '',
         sharePageContent: raw?.sharePageContent ?? 'ask',
       })
