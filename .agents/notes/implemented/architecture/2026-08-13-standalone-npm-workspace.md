@@ -6,7 +6,7 @@ English | [中文](2026-08-13-standalone-npm-workspace.zh.md)
 
 ## Problem
 
-The browser bridge repository depended on a sibling DeepSeek Harness source checkout for TypeScript project references, workspace dependencies, test resolution, and the `dsh` executable. That topology prevented the repository from installing, building, testing, or running against a published private npm release by itself.
+The browser bridge repository depended on a sibling DeepSeek Harness source checkout for TypeScript project references, workspace dependencies, test resolution, and the `dsh` executable. That topology prevented the repository from installing, building, testing, or running against a published npm release by itself.
 
 ## Decision
 
@@ -16,9 +16,9 @@ Published SDK packages use the scoped Cordis and Schemastery identities. Bridge 
 
 The extension depends on the local bridge workspace package and imports the protocol through its `./src/*` export. The root build orders the bridge before the extension, while the bridge's built `protocol` export remains available to external consumers.
 
-The published `dsh` launcher resolves out-of-tree plugins from the selected profile rather than the invoking workspace. The installer therefore links the built local bridge package into the `web` profile, while the startup command applies the repository overlay through the launcher's `--patch` option.
+The published `dsh` launcher resolves out-of-tree plugins from the selected profile rather than the invoking workspace. The installer therefore registers the built local bridge package with the `web` profile. The package's profile-layer activation contract is owned by the [browser profile bundle decision](2026-08-14-browser-profile-bundle.md).
 
-Private registry authentication stays outside the repository. The project `.npmrc` selects the registry without carrying credentials; pnpm 11 reads the `${NPM_TOKEN}` authentication reference from a trusted user-level npm configuration. The workspace explicitly allows only the install scripts required by the pinned dsh runtime and extension build.
+The project `.npmrc` selects the public registry without carrying credentials. The workspace explicitly allows only the install scripts required by the pinned dsh runtime and extension build.
 
 ## Alternatives considered
 
@@ -28,8 +28,8 @@ Private registry authentication stays outside the repository. The project `.npmr
 
 ## Verification
 
-The root `typecheck`, `build`, and `test` scripts cover both workspace packages. The bridge suite boots the published Loader and Harness services, and its Chromium test exercises discovery, WebSocket authentication, gateway RPC, deferred session creation, and workspace grouping through the built extension. A startup smoke test boots the npm-installed `web` profile with the repository overlay and reads the discovery endpoint.
+The root `typecheck`, `build`, and `test` scripts cover both workspace packages. The bridge suite boots the published Loader and Harness services, and its Chromium test exercises discovery, WebSocket authentication, gateway RPC, deferred session creation, and workspace grouping through the built extension. Startup smoke tests boot the registered `web` profile through both the workspace-pinned launcher and the public npm launcher, then read the discovery endpoint.
 
 ## Consequences
 
-A clean checkout installs and runs without Harness source, and the lockfile records the complete private npm dependency graph. Updating the npm release requires coordinated manifest, API, lockfile, and end-to-end verification changes. Installation requires private registry access and executes the explicitly allowlisted native build steps pulled in by the dsh runtime.
+A clean checkout installs and runs without Harness source or npm credentials, and the lockfile records the complete public npm dependency graph. Updating the npm release requires coordinated manifest, API, lockfile, and end-to-end verification changes. Installation executes the explicitly allowlisted native build steps pulled in by the dsh runtime.

@@ -10,7 +10,7 @@
 
 整个集成采用纯文本设计：页面会转换为结构化文本和带编号的交互元素清单，模型通过编号定位元素。面向模型的流水线不会传入截图。
 
-workspace 固定使用经过验证、已公开发布的 `@deepseek-ai/dsh` 版本，保证安装结果可复现。用户无需检出 DeepSeek Harness 源码，也无需配置 npm 凭据。DeepSeek Harness 目前处于开发者预览阶段，升级时可能需要同步调整依赖与 API。
+workspace 固定使用经过验证、已公开发布的 `@deepseek-ai/dsh` 版本，保证安装结果可复现。用户无需检出 DeepSeek Harness 源码、无需从父目录读取依赖，也无需配置 npm 凭据。DeepSeek Harness 目前处于开发者预览阶段，升级时可能需要同步调整依赖与 API。
 
 ## 核心能力
 
@@ -29,8 +29,8 @@ workspace 固定使用经过验证、已公开发布的 `@deepseek-ai/dsh` 版�
 
 ```
 packages/browser/bridge-browser/
+  cordis.patch.yml
 extensions/dsh-browser/
-examples/browser-bridge.cordis.yml
 scripts/install.sh
 ```
 
@@ -51,21 +51,23 @@ scripts/install.sh
 ./scripts/install.sh
 ```
 
-脚本按锁文件安装固定版本的公共 npm 依赖、构建桥接插件、把插件链接到 dsh 本机的 `web` profile、构建扩展、复制到 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。按提示开启开发者模式并加载该目录即可。
+脚本按锁文件安装固定版本的公共 npm 依赖、构建桥接插件、把它的官方 bundle 注册到 dsh 本机的 `web` profile、构建扩展、复制到 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。按提示开启开发者模式并加载该目录即可。
 
-**第二步：启动 dsh**（在本仓库根目录下执行）：
-
-```sh
-pnpm start
-```
-
-默认端口为 3080；被占用时执行 `pnpm start -- --port <port>`。工具栏出现 DeepSeek 鲸鱼图标后，点击即可打开侧边栏。
-
-**后续日常使用**无需重新安装扩展，只需在本仓库根目录启动 dsh：
+**第二步：启动 dsh**。使用仓库固定的版本：
 
 ```sh
 pnpm start
 ```
+
+或者直接运行 npm 上的最新公开版本：
+
+```sh
+npx @deepseek-ai/dsh web
+```
+
+两种命令都会从本机 `web` profile 加载同一个浏览器 bundle。默认端口为 3080；被占用时执行 `pnpm start -- --port <port>` 或 `npx @deepseek-ai/dsh web --port <port>`。工具栏出现 DeepSeek 鲸鱼图标后，点击即可打开侧边栏。
+
+**后续日常使用**无需重新安装扩展，执行上述任一启动命令即可。
 
 **本机使用无需任何配置**：扩展通过 `/ext/bridge-config` 自动发现 dsh，回环连接无需桥接 token。这个运行时安全 token 与 npm 认证无关；只有使用 `--host 0.0.0.0` 远程部署时才需要配置地址和桥接 token。
 

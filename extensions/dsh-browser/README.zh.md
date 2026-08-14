@@ -54,15 +54,21 @@ pnpm --filter dsh-browser-extension run test
    ./scripts/install.sh
    ```
 
-   脚本会构建桥插件，将其链接到本机 dsh 的 `web` profile，再构建扩展并把产物复制到稳定目录 `~/.dsh/browser-extension`，然后打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载这个稳定目录。不要加载源码目录 `extensions/dsh-browser/`。
+   脚本会构建桥插件，把它的官方 bundle 注册到本机 dsh 的 `web` profile，再构建扩展并把产物复制到稳定目录 `~/.dsh/browser-extension`，然后打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载这个稳定目录。不要加载源码目录 `extensions/dsh-browser/`。
 
-2. **启动 dsh 并挂载桥插件**：
+2. **启动 dsh 并挂载桥插件**。可以使用 workspace 固定的运行时：
 
    ```sh
    pnpm start
    ```
 
-   默认端口为 3080；如被占用，可追加 `--port <port>`。
+   或者使用 npm 上最新的公开运行时：
+
+   ```sh
+   npx @deepseek-ai/dsh web
+   ```
+
+   两种命令都会从本机 `web` profile 加载同一个 bundle。默认端口为 3080；如被占用，可追加 `--port <port>`。
 
 3. **开始使用**：打开普通的 `http://` 或 `https://` 页面，点击 DeepSeek 鲸鱼图标打开侧边栏。扩展会自动探测本机 dsh，回环连接无需填写地址或 Token；远程部署时才需要在设置中配置。可以直接对话，或先点「读取页面」。
 

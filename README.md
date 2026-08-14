@@ -10,7 +10,7 @@ Connect [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) to t
 
 The integration is text-only: pages become structured text with a numbered inventory of interactive elements, and the model addresses those elements by number. Screenshots never enter the model-facing pipeline.
 
-The workspace uses a pinned, publicly available `@deepseek-ai/dsh` release for reproducible installation. It requires neither a DeepSeek Harness source checkout nor npm credentials. DeepSeek Harness is currently a developer preview, so upgrades may require coordinated dependency and API updates.
+The workspace uses a pinned, publicly available `@deepseek-ai/dsh` release for reproducible installation. It requires neither a DeepSeek Harness source checkout, dependencies from a parent directory, nor npm credentials. DeepSeek Harness is currently a developer preview, so upgrades may require coordinated dependency and API updates.
 
 ## Core capabilities
 
@@ -29,8 +29,8 @@ The workspace uses a pinned, publicly available `@deepseek-ai/dsh` release for r
 
 ```
 packages/browser/bridge-browser/
+  cordis.patch.yml
 extensions/dsh-browser/
-examples/browser-bridge.cordis.yml
 scripts/install.sh
 ```
 
@@ -51,21 +51,23 @@ Prerequisites: Node.js `^22.19` or `>=24`, Corepack/pnpm, and Google Chrome. All
 ./scripts/install.sh
 ```
 
-The script installs the pinned public npm dependencies from the lockfile, builds the bridge plugin, links it into dsh's local `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load that directory when prompted.
+The script installs the pinned public npm dependencies from the lockfile, builds the bridge plugin, registers its official bundle in dsh's local `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load that directory when prompted.
 
-**Step 2 — start dsh** from this repository root:
-
-```sh
-pnpm start
-```
-
-Port 3080 is used by default. Run `pnpm start -- --port <port>` if it is occupied. When the DeepSeek whale icon appears in the toolbar, click it to open the side panel.
-
-**For subsequent use**, the extension does not need to be installed again. Start dsh from this repository root with:
+**Step 2 — start dsh**. Use the repository's pinned version:
 
 ```sh
 pnpm start
 ```
+
+Or run the latest public release directly from npm:
+
+```sh
+npx @deepseek-ai/dsh web
+```
+
+Both commands load the same browser bundle from the local `web` profile. Port 3080 is used by default; if it is occupied, run `pnpm start -- --port <port>` or `npx @deepseek-ai/dsh web --port <port>`. When the DeepSeek whale icon appears in the toolbar, click it to open the side panel.
+
+**For subsequent use**, the extension does not need to be installed again. Run either startup command above.
 
 **No configuration is required for local use**: the extension discovers dsh through `/ext/bridge-config`, and loopback connections do not require a bridge token. This runtime security token is unrelated to npm authentication; an address and bridge token are only needed for remote deployment with `--host 0.0.0.0`.
 

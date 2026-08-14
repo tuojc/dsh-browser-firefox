@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-浏览器桥仓库曾依赖同级的 DeepSeek Harness 源码 checkout，以提供 TypeScript 项目引用、workspace 依赖、测试解析与 `dsh` 可执行文件。这种拓扑使仓库无法独立针对已发布的私有 npm 版本完成安装、构建、测试或运行。
+浏览器桥仓库曾依赖同级的 DeepSeek Harness 源码 checkout，以提供 TypeScript 项目引用、workspace 依赖、测试解析与 `dsh` 可执行文件。这种拓扑使仓库无法独立针对已发布的 npm 版本完成安装、构建、测试或运行。
 
 ## 决策
 
@@ -16,9 +16,9 @@ Status: implemented
 
 扩展依赖本地桥接 workspace 包，并通过其 `./src/*` export 导入协议。根构建会先构建桥接包、再构建扩展；桥接包构建后的 `protocol` export 仍可供外部消费方使用。
 
-已发布的 `dsh` 启动器解析外部插件时，以所选 profile 而非发起调用的 workspace 为准。因此，安装器会把构建后的本地桥接包链接到 `web` profile；启动命令则通过启动器的 `--patch` 选项应用仓库叠加配置。
+已发布的 `dsh` 启动器解析外部插件时，以所选 profile 而非发起调用的 workspace 为准。因此，安装器会把构建后的本地桥接包注册到 `web` profile。包的 profile 层激活契约由[浏览器 profile bundle 决策](2026-08-14-browser-profile-bundle.zh.md)统一规定。
 
-私有注册表认证信息始终保留在仓库之外。项目 `.npmrc` 只选择注册表，不携带凭据；pnpm 11 从受信任的用户级 npm 配置中读取 `${NPM_TOKEN}` 认证引用。该 workspace 仅明确放行固定版本的 dsh 运行时与扩展构建所需的安装脚本。
+项目 `.npmrc` 只选择公共注册表，不携带凭据。该 workspace 仅明确放行固定版本的 dsh 运行时与扩展构建所需的安装脚本。
 
 ## 替代方案
 
@@ -28,8 +28,8 @@ Status: implemented
 
 ## 验证
 
-根目录的 `typecheck`、`build` 与 `test` 脚本覆盖两个 workspace 包。桥接套件会启动已发布的 Loader 与 Harness 服务，其 Chromium 测试通过构建后的扩展覆盖发现、WebSocket 认证、网关 RPC、延迟会话创建与 workspace 分组。一项启动冒烟测试会携带仓库叠加配置启动通过 npm 安装的 `web` profile，并读取发现端点。
+根目录的 `typecheck`、`build` 与 `test` 脚本覆盖两个 workspace 包。桥接套件会启动已发布的 Loader 与 Harness 服务，其 Chromium 测试通过构建后的扩展覆盖发现、WebSocket 认证、网关 RPC、延迟会话创建与 workspace 分组。启动冒烟测试会分别通过 workspace 固定的启动器与公共 npm 启动器运行已注册的 `web` profile，并读取发现端点。
 
 ## 后果
 
-干净 checkout 无需 Harness 源码即可安装与运行，lockfile 会记录完整的私有 NPM 依赖图。更新 npm 发布版时，需要协同修改 manifest、API、lockfile 与端到端验证。安装要求具备私有注册表访问权限，并会执行由 dsh 运行时拉取、已明确加入允许清单的原生构建步骤。
+干净 checkout 无需 Harness 源码或 npm 凭据即可安装与运行，lockfile 会记录完整的公共 npm 依赖图。更新 npm 发布版时，需要协同修改 manifest、API、lockfile 与端到端验证。安装会执行由 dsh 运行时拉取、已明确加入允许清单的原生构建步骤。

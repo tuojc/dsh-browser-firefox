@@ -21,11 +21,15 @@ dsh 的**浏览器操作桥**：在宿主 webserver 上挂载一个 **token 认�
 
 ## 使用
 
-在仓库根目录运行一次安装器，以构建插件并将其链接到本机 dsh 的 `web` profile；然后应用插件叠加配置，启动已固定版本、通过 npm 安装的运行时（选择启用；否则不注册任何内容）：
+在仓库根目录运行一次安装器，以构建插件并将它的官方 bundle 注册到本机 dsh 的 `web` profile；然后可以启动 workspace 固定的运行时，也可以启动 npm 上最新的公开运行时。两种启动方式都会加载同一个 profile bundle；构建工具只从当前 workspace 解析，绝不读取父 checkout 或父目录的 `node_modules`：
 
 ```sh
 ./scripts/install.sh
 pnpm start
+```
+
+```sh
+npx @deepseek-ai/dsh web
 ```
 
 然后在 Chrome 中将 `extensions/dsh-browser/dist` 加载为已解压扩展，并使用侧边栏。扩展会自动发现回环连接，无需输入 token；非回环部署仍需要配置的 bearer token。

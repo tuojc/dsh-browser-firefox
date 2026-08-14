@@ -21,11 +21,15 @@ Workspace grouping is best-effort. If the composition has no workspace domain, d
 
 ## Usage
 
-From the repository root, run the installer once to build the plugin and link it into the local dsh `web` profile, then start the pinned npm-installed runtime with the plugin overlay (opt-in; nothing is registered otherwise):
+From the repository root, run the installer once to build the plugin and register its official bundle in the local dsh `web` profile. Then start either the workspace-pinned runtime or the latest public runtime. Both launchers load the same profile bundle; build tools resolve only from this workspace and never from a parent checkout or parent `node_modules` directory:
 
 ```sh
 ./scripts/install.sh
 pnpm start
+```
+
+```sh
+npx @deepseek-ai/dsh web
 ```
 
 Then load `extensions/dsh-browser/dist` as an unpacked extension in Chrome and use the side panel. Loopback connections are discovered automatically and require no token entry; non-loopback deployments still require the configured bearer token.
