@@ -46,21 +46,31 @@ pnpm --filter dsh-browser-extension run test
 
 ## 安装与使用
 
-推荐从仓库根目录使用零配置安装流程：
+推荐的零配置命令无需安装 Git，也无需提前 clone：
 
 1. **构建并安装扩展**：
 
    ```sh
-   ./scripts/install.sh
+   curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
    ```
 
-   脚本会构建桥插件，把它的官方 bundle 注册到本机 dsh 的 `web` profile，再构建扩展并把产物复制到稳定目录 `~/.dsh/browser-extension`，然后打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载这个稳定目录。不要加载源码目录 `extensions/dsh-browser/`。
+   脚本会把托管 workspace 下载到 `~/.dsh/dsh-browser`，构建桥插件，把它的官方 bundle 注册到本机 dsh 的 `web` profile，再构建扩展并把产物复制到稳定目录 `~/.dsh/browser-extension`，然后打开 `chrome://extensions`。开启开发者模式，选择「加载已解压的扩展程序」，加载扩展目录。再次运行该命令会更新托管安装。
+
+   clone 得到的 checkout 也使用同一个安装器，而且不会下载或覆盖源码：
+
+   ```sh
+   git clone https://github.com/Lum1104/dsh-browser.git
+   cd dsh-browser
+   ./scripts/install.sh
+   ```
 
 2. **启动 dsh 并挂载桥插件**。可以使用 workspace 固定的运行时：
 
    ```sh
-   pnpm start
+   cd ~/.dsh/dsh-browser && pnpm start
    ```
+
+   如果使用 clone，请改为在仓库根目录运行 `pnpm start`。
 
    或者使用 npm 上最新的公开运行时：
 
@@ -76,7 +86,7 @@ pnpm --filter dsh-browser-extension run test
 
 页面即使在扩展安装或重载之前已经打开，也会在第一次操作时自动补加载内容脚本，无需手动刷新。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不支持读取和操作。
 
-如果只开发扩展，请在仓库根目录运行 `pnpm --filter dsh-browser-extension run build`，然后直接加载 `extensions/dsh-browser/dist/`。代码更新后需要重新构建，并在 `chrome://extensions` 中重新加载扩展。
+如果只开发扩展，请先 clone 仓库，在仓库根目录运行 `pnpm --filter dsh-browser-extension run build`，然后直接加载 `extensions/dsh-browser/dist/`。代码更新后需要重新构建，并在 `chrome://extensions` 中重新加载扩展。
 
 ## 纯文本优化（为什么这样做）
 

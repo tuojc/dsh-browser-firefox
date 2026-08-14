@@ -45,19 +45,29 @@ scripts/install.sh
 
 Prerequisites: Node.js `^22.19` or `>=24`, Corepack/pnpm, and Google Chrome. All required `@deepseek-ai` packages are available from the public npm registry; installation does not require an npm token.
 
-**Step 1 — install dependencies and the extension**:
+**Step 1 — install the bridge and extension**. The recommended command does not require Git or a local clone:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
+```
+
+The remote installer downloads `main` into the installer-managed directory `~/.dsh/dsh-browser`, then installs the pinned public npm dependencies from the lockfile, builds the bridge plugin, registers its official bundle in dsh's local `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load the extension directory when prompted. Running the same command again updates the managed installation; keep source edits in a clone instead.
+
+Developers can clone the repository and run the same installer from any checkout. This mode uses the current branch without downloading or overwriting source files:
+
+```sh
+git clone https://github.com/Lum1104/dsh-browser.git
+cd dsh-browser
 ./scripts/install.sh
 ```
 
-The script installs the pinned public npm dependencies from the lockfile, builds the bridge plugin, registers its official bundle in dsh's local `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load that directory when prompted.
-
-**Step 2 — start dsh**. Use the repository's pinned version:
+**Step 2 — start dsh**. For a managed installation, use its pinned version:
 
 ```sh
-pnpm start
+cd ~/.dsh/dsh-browser && pnpm start
 ```
+
+From a clone, run `pnpm start` in the repository root instead.
 
 Or run the latest public release directly from npm:
 
@@ -73,7 +83,7 @@ Both commands load the same browser bundle from the local `web` profile. Port 30
 
 **Step 3 — use it**: open any normal `http://` or `https://` page and click the DeepSeek whale icon. When the side panel reports "Connected", chat normally or click "Read page" first. A page that was already open before the extension was installed or reloaded is instrumented automatically on the first action; no page refresh is needed. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
 
-After updating the code, run `./scripts/install.sh` again, click Reload for "dsh Browser Assistant" in `chrome://extensions`, and reopen the side panel. Chrome should load `~/.dsh/browser-extension`; do not load the source directory `extensions/dsh-browser/`.
+To update a managed installation, run the same `curl | bash` command again. To update a clone, pull or switch to the desired revision and run `./scripts/install.sh`. Then click Reload for "dsh Browser Assistant" in `chrome://extensions` and reopen the side panel. Chrome should load `~/.dsh/browser-extension`; do not load the source directory `extensions/dsh-browser/`.
 
 ## Development
 

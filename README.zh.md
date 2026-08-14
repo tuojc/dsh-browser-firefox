@@ -45,19 +45,29 @@ scripts/install.sh
 
 前提：Node.js `^22.19` 或 `>=24`、Corepack/pnpm 和 Google Chrome。所需的 `@deepseek-ai` 包均已发布到公共 npm 注册表，安装不需要 npm token。
 
-**第一步：安装依赖与扩展**：
+**第一步：安装桥插件与扩展**。推荐命令无需安装 Git，也无需提前 clone：
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
+```
+
+远程安装器会把 `main` 下载到脚本托管目录 `~/.dsh/dsh-browser`，然后按锁文件安装固定版本的公共 npm 依赖、构建桥插件、把它的官方 bundle 注册到 dsh 本机的 `web` profile、构建扩展、复制到 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。按提示开启开发者模式并加载扩展目录即可。再次运行同一条命令会更新托管安装；如需修改源码，请使用 clone。
+
+开发者也可以 clone 仓库，并在任意 checkout 中运行同一个安装器。该模式直接使用当前分支，不会下载或覆盖源码：
+
+```sh
+git clone https://github.com/Lum1104/dsh-browser.git
+cd dsh-browser
 ./scripts/install.sh
 ```
 
-脚本按锁文件安装固定版本的公共 npm 依赖、构建桥接插件、把它的官方 bundle 注册到 dsh 本机的 `web` profile、构建扩展、复制到 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。按提示开启开发者模式并加载该目录即可。
-
-**第二步：启动 dsh**。使用仓库固定的版本：
+**第二步：启动 dsh**。托管安装可使用其中固定的版本：
 
 ```sh
-pnpm start
+cd ~/.dsh/dsh-browser && pnpm start
 ```
+
+如果使用 clone，请改为在仓库根目录运行 `pnpm start`。
 
 或者直接运行 npm 上的最新公开版本：
 
@@ -73,7 +83,7 @@ npx @deepseek-ai/dsh web
 
 **第三步：开始使用**：打开任意普通的 `http://` 或 `https://` 页面，点击工具栏的 DeepSeek 鲸鱼图标打开侧边栏；状态显示「已连接」后，可以直接对话，也可以先点「读取页面」。页面即使早于扩展安装或重载就已经打开，也会在第一次操作时自动补加载内容脚本，无需刷新页面。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不能注入扩展脚本，因此不支持读取和操作。
 
-更新代码后重新运行 `./scripts/install.sh`，再到 `chrome://extensions` 对「dsh 浏览器助手」点一次重新加载并重新打开侧边栏。Chrome 应加载脚本提示的稳定目录 `~/.dsh/browser-extension`；不要加载仓库中的源码目录 `extensions/dsh-browser/`。
+更新托管安装时，再次运行同一条 `curl | bash` 命令。更新 clone 时，拉取或切换到所需版本，再运行 `./scripts/install.sh`。然后到 `chrome://extensions` 对「dsh 浏览器助手」点一次重新加载并重新打开侧边栏。Chrome 应加载脚本提示的稳定目录 `~/.dsh/browser-extension`；不要加载仓库中的源码目录 `extensions/dsh-browser/`。
 
 ## 开发
 

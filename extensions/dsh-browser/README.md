@@ -46,21 +46,31 @@ Run these commands from the repository root; the build outputs `extensions/dsh-b
 
 ## Install and use
 
-The recommended path is the zero-configuration installer from the repository root:
+The recommended zero-configuration command does not require Git or a local clone:
 
 1. **Build and install the extension**:
 
    ```sh
-   ./scripts/install.sh
+   curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
    ```
 
-   The script builds the bridge plugin, registers its official bundle in the local dsh `web` profile, builds the extension, copies the output to the stable directory `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select that stable directory. Do not load the source directory `extensions/dsh-browser/`.
+   The script downloads a managed workspace to `~/.dsh/dsh-browser`, builds the bridge plugin, registers its official bundle in the local dsh `web` profile, builds the extension, copies the output to the stable directory `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode, choose Load unpacked, and select the extension directory. Running the command again updates the managed installation.
+
+   A cloned checkout uses the same installer without downloading or overwriting source files:
+
+   ```sh
+   git clone https://github.com/Lum1104/dsh-browser.git
+   cd dsh-browser
+   ./scripts/install.sh
+   ```
 
 2. **Start dsh with the bridge plugin mounted**. Use either the workspace-pinned runtime:
 
    ```sh
-   pnpm start
+   cd ~/.dsh/dsh-browser && pnpm start
    ```
+
+   From a clone, run `pnpm start` in the repository root instead.
 
    Or the latest public runtime:
 
@@ -76,7 +86,7 @@ The recommended path is the zero-configuration installer from the repository roo
 
 Pages that were already open before extension installation or reload are instrumented automatically on the first action, so they do not require a manual refresh. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
 
-For extension-only development, run `pnpm --filter dsh-browser-extension run build` from the repository root and load `extensions/dsh-browser/dist/` directly. Rebuild and reload the extension from `chrome://extensions` after code changes.
+For extension-only development, clone the repository, run `pnpm --filter dsh-browser-extension run build` from its root, and load `extensions/dsh-browser/dist/` directly. Rebuild and reload the extension from `chrome://extensions` after code changes.
 
 ## Why text-only
 

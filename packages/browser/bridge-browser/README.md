@@ -21,18 +21,22 @@ Workspace grouping is best-effort. If the composition has no workspace domain, d
 
 ## Usage
 
-From the repository root, run the installer once to build the plugin and register its official bundle in the local dsh `web` profile. Then start either the workspace-pinned runtime or the latest public runtime. Both launchers load the same profile bundle; build tools resolve only from this workspace and never from a parent checkout or parent `node_modules` directory:
+The remote installer downloads an installer-managed workspace, builds the plugin, and registers its official bundle in the local dsh `web` profile. It requires neither Git nor a local clone:
 
 ```sh
-./scripts/install.sh
-pnpm start
+curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
+cd ~/.dsh/dsh-browser && pnpm start
 ```
+
+Developers can instead clone the repository and run `./scripts/install.sh` followed by `pnpm start` from that checkout. The local mode uses the current branch without downloading or overwriting source files. Both installation modes register the same profile bundle; build tools resolve only from the selected workspace and never from a parent checkout or parent `node_modules` directory.
+
+The latest public runtime also loads the registered bundle:
 
 ```sh
 npx @deepseek-ai/dsh web
 ```
 
-Then load `extensions/dsh-browser/dist` as an unpacked extension in Chrome and use the side panel. Loopback connections are discovered automatically and require no token entry; non-loopback deployments still require the configured bearer token.
+The installer copies the unpacked extension to `~/.dsh/browser-extension` and opens `chrome://extensions`. Load that stable directory in Chrome and use the side panel. Loopback connections are discovered automatically and require no token entry; non-loopback deployments still require the configured bearer token.
 
 ## Security model
 

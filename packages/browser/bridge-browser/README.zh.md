@@ -21,18 +21,22 @@ dsh 的**浏览器操作桥**：在宿主 webserver 上挂载一个 **token 认�
 
 ## 使用
 
-在仓库根目录运行一次安装器，以构建插件并将它的官方 bundle 注册到本机 dsh 的 `web` profile；然后可以启动 workspace 固定的运行时，也可以启动 npm 上最新的公开运行时。两种启动方式都会加载同一个 profile bundle；构建工具只从当前 workspace 解析，绝不读取父 checkout 或父目录的 `node_modules`：
+远程安装器会下载一个由脚本托管的 workspace，构建插件，并将它的官方 bundle 注册到本机 dsh 的 `web` profile。该方式无需 Git，也无需提前 clone：
 
 ```sh
-./scripts/install.sh
-pnpm start
+curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
+cd ~/.dsh/dsh-browser && pnpm start
 ```
+
+开发者也可以 clone 仓库，在 checkout 中依次运行 `./scripts/install.sh` 和 `pnpm start`。本地模式直接使用当前分支，不会下载或覆盖源码。两种安装模式都会注册同一个 profile bundle；构建工具只从选定的 workspace 解析，绝不读取父 checkout 或父目录的 `node_modules`。
+
+npm 上最新的公开运行时也会加载已注册的 bundle：
 
 ```sh
 npx @deepseek-ai/dsh web
 ```
 
-然后在 Chrome 中将 `extensions/dsh-browser/dist` 加载为已解压扩展，并使用侧边栏。扩展会自动发现回环连接，无需输入 token；非回环部署仍需要配置的 bearer token。
+安装器会把已解压扩展复制到 `~/.dsh/browser-extension` 并打开 `chrome://extensions`。在 Chrome 中加载这个稳定目录，然后使用侧边栏。扩展会自动发现回环连接，无需输入 token；非回环部署仍需要配置的 bearer token。
 
 ## 安全模型
 
