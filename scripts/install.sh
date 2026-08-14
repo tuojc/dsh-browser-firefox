@@ -157,3 +157,5 @@ print_pair "• 扩展会自动发现本机 dsh，无需填写地址或 token" "
 printf '• 启动固定版本：cd %q && pnpm start\n' "$ROOT"
 printf '   Start the pinned version: cd %q && pnpm start\n' "$ROOT"
 print_pair "• 或启动 npm 最新版本：npx @deepseek-ai/dsh web" "Or start the latest npm version: npx @deepseek-ai/dsh web"
+printf '\n'
+print_pair "如果用得顺手，欢迎在 GitHub 点个 Star 支持我们：https://github.com/Lum1104/dsh-browser" "If dsh-browser is useful to you, we'd appreciate a Star on GitHub: https://github.com/Lum1104/dsh-browser"
