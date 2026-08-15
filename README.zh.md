@@ -53,6 +53,8 @@ curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main
 
 远程安装器会把 `main` 下载到脚本托管目录 `~/.dsh/dsh-browser`，然后按锁文件安装固定版本的公共 npm 依赖、构建桥插件、把它的官方 bundle 注册到 dsh 本机的 `web` profile、构建扩展、复制到 `~/.dsh/browser-extension`，并打开 `chrome://extensions`。按提示开启开发者模式并加载扩展目录即可。再次运行同一条命令会更新托管安装；如需修改源码，请使用 clone。
 
+**安装前 dsh 已在运行？装完请重启 dsh。** 安装器把桥接 bundle 注册进 dsh 本机的 `web` profile，而 dsh 只在启动时加载 profile。安装前就已启动的实例不会带上桥接，因此侧边栏会一直显示「未连接」——即使扩展已正确加载。停掉该实例并按第二步重新启动即可；扩展会自动发现桥接，无需重新配置。
+
 开发者也可以 clone 仓库，并在任意 checkout 中运行同一个安装器。该模式直接使用当前分支，不会下载或覆盖源码：
 
 ```sh
@@ -83,7 +85,15 @@ npx @deepseek-ai/dsh web
 
 **第三步：开始使用**：打开任意普通的 `http://` 或 `https://` 页面，点击工具栏的 DeepSeek 鲸鱼图标打开侧边栏；状态显示「已连接」后，可以直接对话，也可以先点「读取页面」。页面即使早于扩展安装或重载就已经打开，也会在第一次操作时自动补加载内容脚本，无需刷新页面。`chrome://`、Chrome Web Store 等浏览器内置或受保护页面不能注入扩展脚本，因此不支持读取和操作。
 
-更新托管安装时，再次运行同一条 `curl | bash` 命令。更新 clone 时，拉取或切换到所需版本，再运行 `./scripts/install.sh`。然后到 `chrome://extensions` 对「dsh 浏览器助手」点一次重新加载并重新打开侧边栏。Chrome 应加载脚本提示的稳定目录 `~/.dsh/browser-extension`；不要加载仓库中的源码目录 `extensions/dsh-browser/`。
+更新托管安装时，再次运行同一条 `curl | bash` 命令。更新 clone 时，拉取或切换到所需版本，再运行 `./scripts/install.sh`。然后到 `chrome://extensions` 对「dsh 浏览器助手」点一次重新加载并重新打开侧边栏。Chrome 应加载脚本提示的稳定目录 `~/.dsh/browser-extension`；不要加载仓库中的源码目录 `extensions/dsh-browser/`。若 dsh web 正在运行，也请重启它，使其重新加载更新后的 `web` profile（见「故障排查」）。
+
+## 故障排查
+
+**侧边栏一直显示「未连接」**
+
+- 确认本机 dsh web 正在运行（默认 `http://127.0.0.1:3080`）。
+- 确认桥接已加载：浏览器打开 `http://127.0.0.1:3080/ext/bridge-config`，应返回类似 `{"wsUrl":"ws://127.0.0.1:3080/ext/bridge"}` 的 JSON。如果返回的是网页而不是 JSON，说明当前运行的 dsh 早于桥接注册——重启 dsh 并刷新页面即可，扩展会自动重连。
+- 扩展会自动探测 3080/3081/3090 端口。若 dsh 运行在其它端口，或使用 `--host 0.0.0.0` 远程部署，请在侧边栏设置中填写地址与桥接 token。
 
 ## 开发
 
