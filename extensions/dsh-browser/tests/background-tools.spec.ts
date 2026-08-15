@@ -45,7 +45,10 @@ describe('dispatchToolCall', () => {
   it('uses an already-loaded content script without injecting', async () => {
     const chromeMock = mockChrome({ tab: { id: 7, url: 'https://example.com' } })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toEqual(OK)
+    const answer = await dispatchToolCall(CALL, 'ask')
+    expect(answer.ok).toBe(true)
+    expect((answer.result as { text: string }).text).toContain('page')
+    expect((answer.result as { text: string }).text).toContain('UNTRUSTED_PAGE_CONTENT')
     expect(chromeMock.sendMessage).toHaveBeenCalledTimes(1)
     expect(chromeMock.executeScript).not.toHaveBeenCalled()
   })
@@ -57,7 +60,9 @@ describe('dispatchToolCall', () => {
       responses: [new Error('Could not establish connection. Receiving end does not exist.'), OK],
     })
 
-    await expect(dispatchToolCall(CALL, 'ask', budget)).resolves.toEqual(OK)
+    const answer = await dispatchToolCall(CALL, 'ask', budget)
+    expect(answer.ok).toBe(true)
+    expect((answer.result as { text: string }).text).toContain('page')
     expect(chromeMock.executeScript).toHaveBeenCalledWith({
       target: { tabId: 7, allFrames: true },
       files: ['content.js'],
@@ -145,6 +150,18 @@ describe('dispatchToolCall', () => {
       args: { index: 3 },
       budget: { maxItems: 60, maxChars: 12_000 },
     }, { frameId: 8 })
+  })
+
+  it('wraps browser_get_text output in the same untrusted-content boundary', async () => {
+    const call: ToolCall = { id: 'tool-text', name: 'browser_get_text', args: {} }
+    mockChrome({ tab: { id: 24, url: 'https://app.example/' }, responses: [{ ok: true, result: { text: 'page text' } }] })
+
+    const answer = await dispatchToolCall(call, 'auto', { maxItems: 10, maxChars: 1_000 })
+
+    const text = (answer.result as { text: string }).text
+    expect(text).toContain('page text')
+    expect(text).toContain('UNTRUSTED_PAGE_CONTENT')
+    expect(text.length).toBeLessThanOrEqual(1_000)
   })
 
   it('forces a full snapshot for a newly navigated frame before resuming deltas', async () => {

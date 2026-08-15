@@ -91,6 +91,7 @@ For extension-only development, clone the repository, run `pnpm --filter dsh-bro
 ## Why text-only
 
 - **Snapshot as the view**: the model's entire view of the page is structured text (title/URL/main/numbered elements/forms), budgeted at 12k chars (plugin-configurable, negotiated to the extension via `hello.ok`).
+- **Page text is untrusted input**: snapshots and targeted text reads are enclosed in a fresh nonce-bound trust marker and explicitly tell the model never to treat page-authored commands as instructions. This is defense in depth; extension-side action approval is the enforcement boundary.
 - **Stable numbering**: element numbers persist across snapshots (WeakMap + `data-dsh-el`), so the model can say "click 7"; a large page change explicitly reports "numbers reindexed".
 - **Delta mode**: `browser_snapshot({delta:true})` returns only changed element numbers, saving tokens.
 - **Privacy**: password/credit-card values always render as `••••` and never leave the page; accessible names never use a sensitive field's current value.

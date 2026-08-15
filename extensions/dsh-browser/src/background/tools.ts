@@ -16,6 +16,7 @@ import {
   listTabFrames,
   type TabFrame,
 } from './frames.ts'
+import { wrapUntrustedContent } from './untrusted.ts'
 
 /** A tool call from the bridge. */
 export interface ToolCall {
@@ -99,12 +100,6 @@ function answerText(answer: ToolAnswer): string | undefined {
   return typeof text === 'string' ? text : undefined
 }
 
-function capText(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text
-  const suffix = '\n…(跨 frame 快照已按总预算截断)'
-  return `${text.slice(0, Math.max(0, maxChars - suffix.length))}${suffix}`
-}
-
 async function snapshotAllFrames(
   tabId: number,
   tabUrl: string | undefined,
@@ -158,7 +153,7 @@ async function snapshotAllFrames(
   }
 
   snapshotDocumentsByTab.set(tabId, new Map(frames.map((frame) => [frame.frameId, frameDocumentKey(frame)])))
-  return { ok: true, result: { text: capText(sections.join('\n'), budget.maxChars) } }
+  return { ok: true, result: { text: wrapUntrustedContent(sections.join('\n'), budget.maxChars) } }
 }
 
 function frameHeader(frame: TabFrame): string {
@@ -180,7 +175,12 @@ async function dispatchOnce(
     return unavailable(`frame ${frameId} 不存在或已经导航，请重新 browser_snapshot`)
   }
   const response = await sendAction(tabId, call, frameId, budget)
-  return isToolAnswer(response) ? response : unavailable('页面内容脚本返回了无效响应')
+  if (!isToolAnswer(response)) return unavailable('页面内容脚本返回了无效响应')
+  if (call.name !== 'browser_get_text') return response
+  const text = answerText(response)
+  return text === undefined
+    ? response
+    : { ok: true, result: { text: wrapUntrustedContent(text, budget.maxChars) } }
 }
 
 /**
