@@ -384,7 +384,7 @@ describe('extension ↔ bridge e2e', () => {
       agent,
       questions: [
         {
-          id: 'transport',
+          id: 'constructor',
           header: 'Transport',
           question: 'Which transport should the sidebar use?',
           detail: 'Choose the primary connection for this session.',
@@ -394,7 +394,7 @@ describe('extension ↔ bridge e2e', () => {
           ],
         },
         {
-          id: 'extras',
+          id: 'constructor',
           question: 'Which optional capabilities should be enabled?',
           options: [{ label: 'Delta snapshots' }, { label: 'Stable element IDs' }],
           multiSelect: true,
@@ -407,15 +407,41 @@ describe('extension ↔ bridge e2e', () => {
     expect(await questionCard.textContent()).toContain('Which transport should the sidebar use?')
     expect(await questionCard.textContent()).toContain('Choose the primary connection for this session.')
     await questionCard.locator('.question-item').nth(0).locator('.question-option', { hasText: 'WebSocket' }).click()
-    await questionCard.locator('.question-item').nth(1).locator('.question-option', { hasText: 'Delta snapshots' }).click()
     await questionCard.locator('.question-item').nth(1).locator('.question-custom').fill('Session-scoped confirmations')
+    await questionCard.locator('.question-item').nth(1).locator('.question-option', { hasText: 'Delta snapshots' }).click()
     await questionCard.locator('.question-actions .primary').click()
     await expect(answer).resolves.toEqual({
       answers: [
-        { id: 'transport', selected: ['WebSocket'] },
-        { id: 'extras', selected: ['Delta snapshots'], custom: 'Session-scoped confirmations' },
+        { id: 'constructor', selected: ['WebSocket'] },
+        { id: 'constructor', selected: ['Delta snapshots'], custom: 'Session-scoped confirmations' },
       ],
     })
+    await questionCard.waitFor({ state: 'hidden', timeout: 15_000 })
+
+    // Concurrent asks stay queued by rpcId. Resolving the first reveals the
+    // second, and dismissing that second ask must produce a schema-valid
+    // cancelled RpcError that actually rejects the host Promise.
+    const firstConcurrentAnswer = context.userQuestions.ask({
+      agent,
+      questions: [{ id: '__proto__', question: 'Answer the first concurrent question.' }],
+    })
+    const secondConcurrentOutcome = context.userQuestions.ask({
+      agent,
+      questions: [{ id: 'toString', question: 'Dismiss the second concurrent question.' }],
+    }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    )
+    await questionCard.waitFor({ state: 'visible', timeout: 15_000 })
+    await expect.poll(() => questionCard.textContent()).toContain('Answer the first concurrent question.')
+    await questionCard.locator('.question-custom').fill('first answer')
+    await questionCard.locator('.question-actions .primary').click()
+    await expect(firstConcurrentAnswer).resolves.toEqual({
+      answers: [{ id: '__proto__', selected: [], custom: 'first answer' }],
+    })
+    await expect.poll(() => questionCard.textContent()).toContain('Dismiss the second concurrent question.')
+    await questionCard.locator('.question-actions .secondary').click()
+    expect(await secondConcurrentOutcome).toMatchObject({ ok: false, error: { code: 'ASK_CANCELLED' } })
     await questionCard.waitFor({ state: 'hidden', timeout: 15_000 })
 
     expect(statusText).toContain('已连接')
