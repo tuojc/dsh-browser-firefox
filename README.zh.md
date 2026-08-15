@@ -12,6 +12,9 @@
 
 workspace 固定使用经过验证、已公开发布的 `@deepseek-ai/dsh` 版本，保证安装结果可复现。用户无需检出 DeepSeek Harness 源码、无需从父目录读取依赖，也无需配置 npm 凭据。DeepSeek Harness 目前处于开发者预览阶段，升级时可能需要同步调整依赖与 API。
 
+> [!IMPORTANT]
+> npm 上未加 scope 的 [`dsh-browser`](https://www.npmjs.com/package/dsh-browser) 包属于另一个项目，与本仓库无关。本项目目前没有发布 npm 包，请使用下文提供的安装方式。
+
 ## 核心能力
 
 | 能力 | 工具 | 说明 |

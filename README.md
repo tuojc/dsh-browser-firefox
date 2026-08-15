@@ -12,6 +12,9 @@ The integration is text-only: pages become structured text with a numbered inven
 
 The workspace uses a pinned, publicly available `@deepseek-ai/dsh` release for reproducible installation. It requires neither a DeepSeek Harness source checkout, dependencies from a parent directory, nor npm credentials. DeepSeek Harness is currently a developer preview, so upgrades may require coordinated dependency and API updates.
 
+> [!IMPORTANT]
+> The unscoped [`dsh-browser`](https://www.npmjs.com/package/dsh-browser) package on npm belongs to a different project and is not affiliated with this repository. This project is not currently published as an npm package; use the installation method below.
+
 ## Core capabilities
 
 | Capability | Tool | Notes |
