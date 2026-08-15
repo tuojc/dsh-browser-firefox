@@ -19,6 +19,12 @@ import { getUiLocale } from '../i18n.ts'
 import { PANEL_COPY, type PanelCopy } from './strings.ts'
 import { QuestionCard } from './QuestionCard.tsx'
 import type { QuestionAnswer } from './questions.ts'
+import {
+  hasPendingQuestion,
+  questionReceiptDisposition,
+  removePendingQuestion,
+  upsertPendingQuestion,
+} from './pending-questions.ts'
 
 /** One rendered conversation row. */
 import {
@@ -31,6 +37,7 @@ import {
   toolSummary,
   type Row,
   type PendingQuestion,
+  type ResolvedQuestion,
   type SessionEventView,
 } from './events.ts'
 
@@ -197,26 +204,48 @@ export function App(): React.JSX.Element {
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [question, setQuestion] = useState<PendingQuestion | null>(null)
-  const [questionSubmitting, setQuestionSubmitting] = useState(false)
-  const questionRef = useRef<PendingQuestion | null>(null)
-  const questionSubmittingRef = useRef(false)
+  const [questions, setQuestions] = useState<PendingQuestion[]>([])
+  const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
+  const questionsRef = useRef<PendingQuestion[]>([])
+  const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
+  const question = questions[0] ?? null
+  const questionSubmitting = question !== null && hasPendingQuestion(questionSubmissions, question)
 
-  function replaceQuestion(next: PendingQuestion | null): void {
-    questionRef.current = next
-    setQuestion(next)
-    if (next === null) setQuestionBusy(false)
+  function replaceQuestions(next: PendingQuestion[]): void {
+    questionsRef.current = next
+    setQuestions(next)
   }
 
-  function setQuestionBusy(next: boolean): void {
-    questionSubmittingRef.current = next
-    setQuestionSubmitting(next)
+  function enqueueQuestion(next: PendingQuestion): void {
+    replaceQuestions(upsertPendingQuestion(questionsRef.current, next))
+  }
+
+  function removeQuestion(target: ResolvedQuestion): void {
+    replaceQuestions(removePendingQuestion(questionsRef.current, target))
+    setQuestionBusy(target, false)
+  }
+
+  function clearQuestions(): void {
+    replaceQuestions([])
+    questionSubmissionsRef.current = []
+    setQuestionSubmissions([])
+  }
+
+  function setQuestionBusy(target: PendingQuestion | ResolvedQuestion, next: boolean): void {
+    const current = questionSubmissionsRef.current
+    const updated = next
+      ? hasPendingQuestion(current, target)
+        ? current
+        : [...current, { sessionId: target.sessionId, rpcId: target.rpcId }]
+      : removePendingQuestion(current, target)
+    questionSubmissionsRef.current = updated
+    setQuestionSubmissions(updated)
   }
 
   // Settings: seed from storage, then let the panel own the form.
@@ -249,7 +278,7 @@ export function App(): React.JSX.Element {
         setWorking(false)
         setStopping(false)
         stoppingRef.current = false
-        replaceQuestion(null)
+        clearQuestions()
         setSessionEpoch((epoch) => epoch + 1)
       }
     })
@@ -304,20 +333,15 @@ export function App(): React.JSX.Element {
     const pendingQuestion = pendingQuestionFromFrame(frame.frame)
     if (pendingQuestion !== null) {
       if (pendingQuestion.sessionId === sessionRef.current) {
-        replaceQuestion(pendingQuestion)
-        setQuestionBusy(false)
-        setError(null)
+        const wasEmpty = questionsRef.current.length === 0
+        enqueueQuestion(pendingQuestion)
+        if (wasEmpty) setError(null)
       }
       return
     }
     const resolvedQuestion = resolvedQuestionFromFrame(frame.frame)
     if (resolvedQuestion !== null) {
-      const current = questionRef.current
-      if (current !== null
-        && current.sessionId === resolvedQuestion.sessionId
-        && current.rpcId === resolvedQuestion.rpcId) {
-        replaceQuestion(null)
-      }
+      removeQuestion(resolvedQuestion)
       return
     }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
@@ -349,47 +373,62 @@ export function App(): React.JSX.Element {
       stoppingRef.current = false
       setStopping(false)
       setWorking(false)
-      replaceQuestion(null)
+      clearQuestions()
       await refreshHistory()
     }
   }
 
   async function answerQuestion(target: PendingQuestion, answers: QuestionAnswer[]): Promise<void> {
-    if (questionSubmittingRef.current || questionRef.current?.rpcId !== target.rpcId) return
-    setQuestionBusy(true)
+    if (hasPendingQuestion(questionSubmissionsRef.current, target)
+      || !hasPendingQuestion(questionsRef.current, target)) return
+    setQuestionBusy(target, true)
     setError(null)
     try {
       const receipt = await api.respond(target.rpcId, {
         ok: true,
         value: { sessionId: target.sessionId, answer: { answers } },
       })
-      if (isRejectedReceipt(receipt)) setError(copy.question.alreadyAnswered)
-      if (questionRef.current?.rpcId === target.rpcId) replaceQuestion(null)
+      settleQuestionReceipt(target, receipt)
     } catch (cause) {
-      if (questionRef.current?.rpcId === target.rpcId) {
+      if (hasPendingQuestion(questionsRef.current, target)) {
         setError(cause instanceof Error ? cause.message : String(cause))
-        setQuestionBusy(false)
       }
+      setQuestionBusy(target, false)
     }
   }
 
   async function dismissQuestion(target: PendingQuestion): Promise<void> {
-    if (questionSubmittingRef.current || questionRef.current?.rpcId !== target.rpcId) return
-    setQuestionBusy(true)
+    if (hasPendingQuestion(questionSubmissionsRef.current, target)
+      || !hasPendingQuestion(questionsRef.current, target)) return
+    setQuestionBusy(target, true)
     setError(null)
     try {
       const receipt = await api.respond(target.rpcId, {
         ok: false,
         error: { code: 'cancelled', message: 'the user dismissed this question request', details: {} },
       })
-      if (isRejectedReceipt(receipt)) setError(copy.question.alreadyAnswered)
-      if (questionRef.current?.rpcId === target.rpcId) replaceQuestion(null)
+      settleQuestionReceipt(target, receipt)
     } catch (cause) {
-      if (questionRef.current?.rpcId === target.rpcId) {
+      if (hasPendingQuestion(questionsRef.current, target)) {
         setError(cause instanceof Error ? cause.message : String(cause))
-        setQuestionBusy(false)
       }
+      setQuestionBusy(target, false)
     }
+  }
+
+  function settleQuestionReceipt(target: PendingQuestion, receipt: unknown): void {
+    const disposition = questionReceiptDisposition(receipt)
+    if (disposition === 'accepted') {
+      removeQuestion(target)
+      return
+    }
+    if (disposition === 'not-pending') {
+      setError(copy.question.alreadyAnswered)
+      removeQuestion(target)
+      return
+    }
+    setError(copy.question.answerRejected)
+    setQuestionBusy(target, false)
   }
 
   async function refreshHistory(): Promise<void> {
@@ -451,7 +490,7 @@ export function App(): React.JSX.Element {
       await api.rpc('session.cancel', { sessionId: id })
       if (sessionRef.current === id) {
         setWorking(false)
-        replaceQuestion(null)
+        clearQuestions()
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -627,7 +666,7 @@ export function App(): React.JSX.Element {
       </div>
       {question !== null && (
         <QuestionCard
-          key={question.rpcId}
+          key={`${question.sessionId}:${question.rpcId}`}
           question={question}
           copy={copy}
           submitting={questionSubmitting}
@@ -672,8 +711,4 @@ export function App(): React.JSX.Element {
       </footer>
     </div>{approvalDialog}</>
   )
-}
-
-function isRejectedReceipt(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && (value as { accepted?: unknown }).accepted === false
 }

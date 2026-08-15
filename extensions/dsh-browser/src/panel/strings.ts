@@ -36,6 +36,7 @@ export interface PanelCopy {
     answer: string
     answering: string
     alreadyAnswered: string
+    answerRejected: string
   }
   settings: {
     back: string
@@ -141,6 +142,7 @@ const EN: PanelCopy = {
     answer: 'Answer',
     answering: 'Answering…',
     alreadyAnswered: 'This question was already handled in another window.',
+    answerRejected: 'The answer was not accepted. Review it and try again.',
   },
   settings: {
     back: 'Back to chat',
@@ -246,6 +248,7 @@ const ZH: PanelCopy = {
     answer: '回答',
     answering: '回答中…',
     alreadyAnswered: '这个问题已在另一个窗口中处理。',
+    answerRejected: '回答未被接受，请检查后重试。',
   },
   settings: {
     back: '返回对话',
