@@ -1,7 +1,7 @@
 /** Shared panel/background contract for browser action approval. */
 
 export type ApprovalKind = 'read' | 'action'
-export type ApprovalDecision = 'deny' | 'allow-once' | 'trust-session' | 'trust-origin'
+export type ApprovalDecision = 'deny' | 'allow-once' | 'always-allow-reads' | 'trust-session' | 'trust-origin'
 
 /** A policy decision awaiting a user response. */
 export interface ApprovalPrompt {
@@ -19,5 +19,9 @@ export interface ApprovalRequest extends ApprovalPrompt {
 }
 
 export function isApprovalDecision(value: unknown): value is ApprovalDecision {
-  return value === 'deny' || value === 'allow-once' || value === 'trust-session' || value === 'trust-origin'
+  return value === 'deny'
+    || value === 'allow-once'
+    || value === 'always-allow-reads'
+    || value === 'trust-session'
+    || value === 'trust-origin'
 }

@@ -284,13 +284,29 @@ describe('extension ↔ bridge e2e', () => {
     expect(await approval.locator('#approval-title').textContent()).toBe('允许读取页面？')
     expect(await approval.textContent()).toContain(`http://127.0.0.1:${port}`)
     expect(await approval.locator('button.session-trust').count()).toBe(0)
-    await approval.locator('button.allow').click()
+    expect(await approval.locator('button.read-always').count()).toBe(1)
+    await approval.locator('button.read-always').click()
     const snapshotResult = await snapshot
     expect(snapshotResult.isError).toBe(false)
     if (!snapshotResult.isError) {
       expect(snapshotResult.value).toMatchObject({ text: expect.stringContaining('UNTRUSTED_PAGE_CONTENT') })
     }
     await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+    await panel.waitForFunction(() => chrome.storage.local.get('dshSettings').then((stored) => {
+      return (stored.dshSettings as { sharePageContent?: string } | undefined)?.sharePageContent === 'auto'
+    }), undefined, { timeout: 15_000 })
+
+    // "Always allow reads" changes the persisted read policy, so the next
+    // snapshot completes without another approval dialog.
+    await target.bringToFront()
+    const repeatedSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-repeated' as never,
+      name: 'browser_snapshot',
+      arguments: { delta: true },
+      signal: new AbortController().signal,
+    })
+    expect(repeatedSnapshot.isError).toBe(false)
+    expect(await approval.isVisible()).toBe(false)
 
     // The first state-changing operation can trust this origin only for the
     // current side-panel lifetime. A second operation on the same origin then

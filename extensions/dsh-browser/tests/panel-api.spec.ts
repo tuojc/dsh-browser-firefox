@@ -10,6 +10,7 @@ afterEach(() => {
 
 describe('panel approval protocol', () => {
   it('accepts session trust while retaining the previous permanent-trust wire value', () => {
+    expect(isApprovalDecision('always-allow-reads')).toBe(true)
     expect(isApprovalDecision('trust-session')).toBe(true)
     expect(isApprovalDecision('trust-origin')).toBe(true)
     expect(isApprovalDecision('trust-forever')).toBe(false)

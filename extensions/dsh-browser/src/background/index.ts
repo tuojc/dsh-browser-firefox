@@ -190,6 +190,10 @@ async function authorizeToolCall(prompt: ApprovalPrompt): Promise<boolean> {
     return true
   }
   const decision = await requestApproval(prompt)
+  if (decision === 'always-allow-reads' && prompt.kind === 'read') {
+    await persistSettings({ sharePageContent: 'auto' })
+    return true
+  }
   if (decision === 'trust-session' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
     sessionTrustedActionOrigins.add(prompt.origins[0]!)
     return true

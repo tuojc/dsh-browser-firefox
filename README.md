@@ -123,5 +123,5 @@ Notes:
 - Privileged gateway methods such as `settings.*`, `credentials.*`, and `host.open*` reject non-loopback sources.
 - The model-facing pipeline is text-only; passwords and payment-card values never leave the page.
 - Only the active tab is operated; the extension never switches tabs silently.
-- Page-authored text is wrapped as untrusted input. The default `auto` mode reads only the active tab without an extra prompt; privacy-sensitive users can select `ask` for per-read confirmation or `off` to block reads entirely. Read page text is sent to the selected model.
+- Page-authored text is wrapped as untrusted input. The default `auto` mode reads only the active tab without an extra prompt; privacy-sensitive users can select `ask` for per-read confirmation or `off` to block reads entirely. In `ask` mode, the read dialog can allow one read or persistently switch back to `auto`; this can be reversed in Settings. Read page text is sent to the selected model.
 - Click, type, keypress, navigation, history, and reload calls fail closed until the user approves them. An origin may be trusted for the current side-panel session (cleared when the last panel closes or the service worker restarts), while permanent trust is managed explicitly in Settings. Explicit cross-origin `browser_navigate` calls and unknown history destinations always prompt again.

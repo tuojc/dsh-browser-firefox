@@ -133,11 +133,18 @@ function ApprovalDialog({
         <div className="approval-actions">
           <button className="deny" autoFocus onClick={() => onDecision('deny')}>拒绝</button>
           <button className="allow" onClick={() => onDecision('allow-once')}>仅允许这一次</button>
+          {request.kind === 'read' && (
+            <button className="read-always" onClick={() => onDecision('always-allow-reads')}>始终允许读取</button>
+          )}
           {request.kind === 'action' && request.canTrust && request.origins.length === 1 && (
             <button className="session-trust" onClick={() => onDecision('trust-session')}>本次会话信任此域</button>
           )}
         </div>
-        <small className="approval-footnote">Esc 拒绝 · 关闭侧栏后临时信任失效 · 输入内容不会显示</small>
+        <small className="approval-footnote">
+          {request.kind === 'read'
+            ? 'Esc 拒绝 · 可随时在设置中关闭自动读取'
+            : 'Esc 拒绝 · 关闭侧栏后临时信任失效 · 输入内容不会显示'}
+        </small>
       </section>
     </div>
   )
@@ -357,6 +364,9 @@ export function App(): React.JSX.Element {
     const request = approvalQueue[0]
     if (request === undefined) return
     api.respondToApproval(request.id, decision)
+    if (decision === 'always-allow-reads') {
+      setSettings((current) => current === null ? current : { ...current, sharePageContent: 'auto' })
+    }
     setApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
   }
 
