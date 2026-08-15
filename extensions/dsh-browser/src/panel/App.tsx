@@ -30,8 +30,16 @@ import {
 } from './events.ts'
 
 function normalizeWebOrigin(value: string): string | null {
+  const trimmed = value.trim()
+  // Wildcard forms: *.example.com, https://*.example.com, https://%2A.example.com
+  // normalize to *.example.com (matches example.com and all subdomains, both schemes).
+  const wildcard = trimmed.match(/^(?:https?:\/\/)?(?:\*|%2[Aa])\.(.+)$/i)
+  if (wildcard !== null) {
+    const host = wildcard[1]!.toLowerCase()
+    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) ? `*.${host}` : null
+  }
   try {
-    const url = new URL(value.trim())
+    const url = new URL(trimmed)
     return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null
   } catch {
     return null
@@ -52,6 +60,15 @@ function PageIcon(): React.JSX.Element {
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="M5.25 2.75h6.1l3.4 3.4v11.1h-9.5V2.75Z" />
       <path d="M11.25 2.9v3.35h3.35M7.7 10h4.6M7.7 13h4.6" />
+    </svg>
+  )
+}
+
+function HistoryIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 3a7 7 0 1 0 6.32 4M10 3a7 7 0 0 1 7 7" />
+      <path d="M10 6.5V10l2.5 1.5M3 3v4h4" />
     </svg>
   )
 }
@@ -191,6 +208,13 @@ export function App(): React.JSX.Element {
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
+  const [loadingSessions, setLoadingSessions] = useState(false)
+  const [sessionList, setSessionList] = useState<{
+    sessionId: string
+    updatedAt: number
+    cwd?: string
+  }[]>([])
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -327,6 +351,47 @@ export function App(): React.JSX.Element {
     }
   }
 
+  /** 打开历史会话选择器：拉取持久化会话列表（已过滤空白会话），供恢复。 */
+  async function openSessionPicker(): Promise<void> {
+    if (showSessionPicker) {
+      setShowSessionPicker(false)
+      return
+    }
+    setShowSessionPicker(true)
+    setLoadingSessions(true)
+    try {
+      const result = await api.rpc<{
+        items: { sessionId: string; updatedAt: number; cwd?: string; blank: boolean }[]
+      }>('session.list', {})
+      setSessionList((result.items ?? []).filter((entry) => !entry.blank))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoadingSessions(false)
+    }
+  }
+
+  /** 恢复历史会话：切换当前 session 并加载其历史。 */
+  async function resumeSession(id: string): Promise<void> {
+    sessionRef.current = id
+    setRows([])
+    setWorking(false)
+    setShowSessionPicker(false)
+    try {
+      await refreshHistory()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
+  async function startNewSession(): Promise<void> {
+    setRows([])
+    setWorking(false)
+    setShowSessionPicker(false)
+    await ensureSession()
+  }
+
   const sendingRef = useRef(false)
   async function send(textOverride?: string): Promise<void> {
     const text = (textOverride ?? input).trim()
@@ -444,7 +509,7 @@ export function App(): React.JSX.Element {
               value={trustedOriginInput}
               onChange={(event) => setTrustedOriginInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') addTrustedOrigin() }}
-              placeholder="https://example.com"
+              placeholder="https://example.com / *.example.com"
             />
             <button disabled={normalizeWebOrigin(trustedOriginInput) === null} onClick={addTrustedOrigin}>{copy.settings.add}</button>
           </div>
@@ -476,8 +541,36 @@ export function App(): React.JSX.Element {
           <span className="brand-copy"><strong>{copy.app.brand}</strong><small>{copy.app.tagline}</small></span>
         </div>
         <span className="connection" role="status"><span className={`dot ${state}`} />{statusText}</span>
+        <button className="icon-button" onClick={() => { void openSessionPicker() }} aria-label={copy.app.openSessions} title={copy.app.sessions}><HistoryIcon /></button>
         <button className="icon-button" onClick={() => setShowSettings(true)} aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
       </header>
+      {showSessionPicker && (
+        <section className="session-picker" aria-label={copy.app.sessions}>
+          <div className="session-picker-head">
+            <strong>{copy.app.sessions}</strong>
+            <button className="session-new" disabled={state !== 'connected'}
+              onClick={() => { void startNewSession() }}>
+              {copy.app.newSession}
+            </button>
+          </div>
+          {loadingSessions
+            ? <p className="session-empty">{copy.app.sessionPickerLoading}</p>
+            : sessionList.length === 0
+              ? <p className="session-empty">{copy.app.sessionPickerEmpty}</p>
+              : (
+                <ul className="session-list">
+                  {sessionList.map((entry) => (
+                    <li key={entry.sessionId}>
+                      <button onClick={() => { void resumeSession(entry.sessionId) }}>
+                        <span className="session-time">{new Date(entry.updatedAt).toLocaleString()}</span>
+                        <span className="session-cwd">{entry.cwd ?? ''}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+        </section>
+      )}
       <section className="context-card" aria-label={copy.app.currentPage}>
         <span className="context-icon"><PageIcon /></span>
         <span className="context-copy">

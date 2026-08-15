@@ -58,6 +58,11 @@ export interface PanelCopy {
     tagline: string
     openSettings: string
     settings: string
+    openSessions: string
+    sessions: string
+    newSession: string
+    sessionPickerLoading: string
+    sessionPickerEmpty: string
     currentPage: string
     waitingForPage: string
     readPage: string
@@ -135,8 +140,8 @@ const EN: PanelCopy = {
     sharingAsk: 'Ask every time',
     sharingOff: 'Off',
     trustedOrigins: 'Always-allowed domains',
-    trustedOriginsHelp: 'The approval dialog can trust a domain for the current side-panel session only. Domains added here permanently skip action confirmation; explicit cross-origin navigation will still ask.',
-    trustedOriginInput: 'Domain to always trust',
+    trustedOriginsHelp: 'The approval dialog can trust a domain for the current side-panel session only. Domains added here permanently skip action confirmation; explicit cross-origin navigation will still ask. Wildcard `*.example.com` matches example.com and all subdomains.',
+    trustedOriginInput: 'Domain to always trust (e.g. https://example.com or *.example.com)',
     add: 'Add',
     invalidOrigin: 'Enter a complete http:// or https:// address.',
     noTrustedOrigins: 'No domains are currently trusted.',
@@ -151,6 +156,11 @@ const EN: PanelCopy = {
     tagline: 'Page copilot',
     openSettings: 'Open settings',
     settings: 'Settings',
+    openSessions: 'Session history',
+    sessions: 'Sessions',
+    newSession: 'New session',
+    sessionPickerLoading: 'Loading…',
+    sessionPickerEmpty: 'No past sessions yet',
     currentPage: 'Current page',
     waitingForPage: 'Waiting for a browser page',
     readPage: 'Read page',
@@ -228,8 +238,8 @@ const ZH: PanelCopy = {
     sharingAsk: '每次询问',
     sharingOff: '关闭',
     trustedOrigins: '永久免确认域名',
-    trustedOriginsHelp: '审批框可只信任本次侧栏会话。这里添加的域名会长期免除操作确认；显式跨域导航仍会询问。',
-    trustedOriginInput: '要永久信任的域名',
+    trustedOriginsHelp: '审批框可只信任本次侧栏会话。这里添加的域名会长期免除操作确认；显式跨域导航仍会询问。通配符 `*.example.com` 会匹配 example.com 及其所有子域名。',
+    trustedOriginInput: '要永久信任的域名（如 https://example.com 或 *.example.com）',
     add: '添加',
     invalidOrigin: '请输入完整的 http:// 或 https:// 地址。',
     noTrustedOrigins: '尚未信任任何域名。',
@@ -244,6 +254,11 @@ const ZH: PanelCopy = {
     tagline: '页面副驾驶',
     openSettings: '打开设置',
     settings: '设置',
+    openSessions: '历史会话',
+    sessions: '会话',
+    newSession: '新会话',
+    sessionPickerLoading: '加载中…',
+    sessionPickerEmpty: '暂无历史会话',
     currentPage: '当前页面',
     waitingForPage: '等待浏览器页面',
     readPage: '读取页面',
