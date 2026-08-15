@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
-import { resumableSessions, type SessionPickerEntry } from '../src/panel/sessions.ts'
+import {
+  resumableSessions,
+  sessionAcceptsPrompts,
+  type SessionPickerEntry,
+} from '../src/panel/sessions.ts'
 
 const ordinary: SessionPickerEntry = {
   sessionId: 'ordinary',
@@ -23,5 +27,14 @@ describe('resumableSessions', () => {
       { ...ordinary, sessionId: 'subagent', origin: 'subagent' },
       ordinary,
     ])).toEqual([ordinary])
+  })
+})
+
+describe('sessionAcceptsPrompts', () => {
+  it('requires a connected, settled session with a concrete ID', () => {
+    expect(sessionAcceptsPrompts(true, false, 'session')).toBe(true)
+    expect(sessionAcceptsPrompts(false, false, 'session')).toBe(false)
+    expect(sessionAcceptsPrompts(true, true, 'old-session')).toBe(false)
+    expect(sessionAcceptsPrompts(true, false, null)).toBe(false)
   })
 })

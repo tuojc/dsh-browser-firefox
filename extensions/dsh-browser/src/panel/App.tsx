@@ -26,7 +26,11 @@ import {
   upsertPendingQuestion,
 } from './pending-questions.ts'
 import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
-import { resumableSessions, type SessionPickerEntry } from './sessions.ts'
+import {
+  resumableSessions,
+  sessionAcceptsPrompts,
+  type SessionPickerEntry,
+} from './sessions.ts'
 
 /** One rendered conversation row. */
 import {
@@ -230,6 +234,11 @@ export function App(): React.JSX.Element {
   const questionSubmitting = question !== null && hasPendingQuestion(questionSubmissions, question)
   const sessionSwitchBlocked = sessionChanging || busy || working || stopping
     || questions.length > 0 || approvalQueue.length > 0
+  const sessionReady = sessionAcceptsPrompts(
+    state === 'connected',
+    sessionChanging,
+    sessionRef.current,
+  )
 
   function replaceQuestions(next: PendingQuestion[]): void {
     questionsRef.current = next
@@ -513,6 +522,7 @@ export function App(): React.JSX.Element {
   /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
   async function startNewSession(): Promise<void> {
     if (sessionSwitchBlocked || sessionChangingRef.current) return
+    sessionRef.current = null
     prepareSessionSwitch(false)
     await ensureSession()
   }
@@ -544,8 +554,9 @@ export function App(): React.JSX.Element {
   const sendingRef = useRef(false)
   async function send(textOverride?: string): Promise<void> {
     const text = (textOverride ?? input).trim()
+    const id = sessionRef.current
     // busy state 是异步的：连续回车可能都通过 state 检查——用 ref 同步锁。
-    if (text === '' || busy || sendingRef.current || sessionRef.current === null) return
+    if (text === '' || busy || sendingRef.current || sessionChangingRef.current || id === null) return
     sendingRef.current = true
     setInput('')
     setBusy(true)
@@ -554,7 +565,7 @@ export function App(): React.JSX.Element {
     // 不渲染乐观行：live user/message 事件即时回显，避免同一消息出现两行。
     try {
       await api.rpc('session.prompt', {
-        sessionId: sessionRef.current,
+        sessionId: id,
         mode: 'queue',
         content: [{ type: 'text', text }],
       })
@@ -570,7 +581,7 @@ export function App(): React.JSX.Element {
   /** Cancel the active turn while keeping the sidebar session available. */
   async function stopTurn(): Promise<void> {
     const id = sessionRef.current
-    if (id === null || stoppingRef.current) return
+    if (id === null || stoppingRef.current || sessionChangingRef.current) return
     stoppingRef.current = true
     setStopping(true)
     setError(null)
@@ -750,7 +761,7 @@ export function App(): React.JSX.Element {
           <small>{copy.app.currentPage}</small>
           <strong title={pageInfo ?? undefined}>{pageInfo ?? copy.app.waitingForPage}</strong>
         </span>
-        <button className="context-action" disabled={state !== 'connected' || busy}
+        <button className="context-action" disabled={!sessionReady || busy}
           onClick={() => { void send(copy.app.readPagePrompt) }}>
           {copy.app.readPage}
         </button>
@@ -763,7 +774,7 @@ export function App(): React.JSX.Element {
               <h1>{copy.app.emptyTitle}</h1>
               <p>{copy.app.emptyDescription}</p>
             </div>
-            <button disabled={state !== 'connected'}
+            <button disabled={!sessionReady}
               onClick={() => { void send(copy.app.overviewPrompt) }}>
               {copy.app.overviewPage}
             </button>
@@ -807,7 +818,7 @@ export function App(): React.JSX.Element {
               }
             }}
             placeholder={state === 'connected' ? copy.app.connectedPlaceholder : copy.app.disconnectedPlaceholder}
-            disabled={state !== 'connected'}
+            disabled={!sessionReady}
             rows={2}
           />
           <div className="composer-actions">
@@ -816,14 +827,14 @@ export function App(): React.JSX.Element {
               <button
                 className="stop-button"
                 onClick={() => { void stopTurn() }}
-                disabled={state !== 'connected' || stopping}
+                disabled={!sessionReady || stopping}
                 aria-label={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
                 title={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
               >
                 <span className="stop-glyph" aria-hidden="true" />
               </button>
             ) : (
-              <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+              <button onClick={() => void send()} disabled={!sessionReady || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
             )}
           </div>
         </div>

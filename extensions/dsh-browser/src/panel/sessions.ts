@@ -12,3 +12,12 @@ export interface SessionPickerEntry {
 export function resumableSessions(items: readonly SessionPickerEntry[]): SessionPickerEntry[] {
   return items.filter((entry) => !entry.blank && entry.origin !== 'subagent')
 }
+
+/** A prompt target exists only after the current session transition settles. */
+export function sessionAcceptsPrompts(
+  connected: boolean,
+  changing: boolean,
+  sessionId: string | null,
+): boolean {
+  return connected && !changing && sessionId !== null
+}
