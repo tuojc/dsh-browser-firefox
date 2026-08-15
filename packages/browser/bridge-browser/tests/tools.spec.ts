@@ -34,8 +34,8 @@ describe('registerBrowserTools', () => {
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
     const tool = registered.find((r) => r.name === 'browser_click')!
     const exec = { signal: new AbortController().signal }
-    const result = await (tool.definition.execute as (args: unknown, e: { signal: AbortSignal }) => Promise<unknown>)({ index: 3 }, exec)
-    expect(requestTool).toHaveBeenCalledWith('browser_click', { index: 3 }, exec.signal, 1_000)
+    const result = await (tool.definition.execute as (args: unknown, e: { signal: AbortSignal }) => Promise<unknown>)({ index: 3, frame: 7 }, exec)
+    expect(requestTool).toHaveBeenCalledWith('browser_click', { index: 3, frame: 7 }, exec.signal, 1_000)
     expect(result).toEqual({ text: 'ok' })
   })
 
@@ -65,6 +65,8 @@ describe('registerBrowserTools', () => {
     expect(requestTool).toHaveBeenLastCalledWith('browser_type', { index: 2, text: 'hello' }, exec.signal, 1_000)
     await run('browser_type', { index: 2, text: 'hello', replace: true })
     expect(requestTool).toHaveBeenLastCalledWith('browser_type', { index: 2, text: 'hello', replace: true }, exec.signal, 1_000)
+    await run('browser_type', { index: 2, frame: 4, text: 'inside frame' })
+    expect(requestTool).toHaveBeenLastCalledWith('browser_type', { index: 2, frame: 4, text: 'inside frame' }, exec.signal, 1_000)
 
     await run('browser_press', { key: 'Enter' })
     expect(requestTool).toHaveBeenLastCalledWith('browser_press', { key: 'Enter' }, exec.signal, 1_000)
@@ -73,6 +75,8 @@ describe('registerBrowserTools', () => {
     expect(requestTool).toHaveBeenLastCalledWith('browser_scroll', { direction: 'down', amount: 200 }, exec.signal, 1_000)
     await run('browser_scroll', { direction: 'top' })
     expect(requestTool).toHaveBeenLastCalledWith('browser_scroll', { direction: 'top' }, exec.signal, 1_000)
+    await run('browser_scroll', { direction: 'down', frame: 4 })
+    expect(requestTool).toHaveBeenLastCalledWith('browser_scroll', { direction: 'down', frame: 4 }, exec.signal, 1_000)
 
     await run('browser_navigate', { url: 'https://example.com' })
     expect(requestTool).toHaveBeenLastCalledWith('browser_navigate', { url: 'https://example.com' }, exec.signal, 1_000)
@@ -86,11 +90,15 @@ describe('registerBrowserTools', () => {
     expect(requestTool).toHaveBeenLastCalledWith('browser_get_text', { selector: '#main' }, exec.signal, 1_000)
     await run('browser_get_text', {})
     expect(requestTool).toHaveBeenLastCalledWith('browser_get_text', {}, exec.signal, 1_000)
+    await run('browser_get_text', { selector: 'main', frame: 4 })
+    expect(requestTool).toHaveBeenLastCalledWith('browser_get_text', { selector: 'main', frame: 4 }, exec.signal, 1_000)
 
     await run('browser_wait', { ms: 100 })
     expect(requestTool).toHaveBeenLastCalledWith('browser_wait', { ms: 100 }, exec.signal, 1_000)
     await run('browser_wait', {})
     expect(requestTool).toHaveBeenLastCalledWith('browser_wait', {}, exec.signal, 1_000)
+    await run('browser_wait', { frame: 4 })
+    expect(requestTool).toHaveBeenLastCalledWith('browser_wait', { frame: 4 }, exec.signal, 1_000)
   })
 
   it('declares a JSON Schema object root on every tool (empty objects serialize to type:null and get 400)', () => {
@@ -107,6 +115,20 @@ describe('registerBrowserTools', () => {
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 5_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
     for (const { definition } of registered) {
       expect(definition.timeoutMs).toBe(5_000)
+    }
+  })
+
+  it('exposes optional frame routing on frame-local tools only', () => {
+    const { ctx, bridge, registered } = makeHarness()
+    registerBrowserTools(ctx, bridge, { toolTimeoutMs: 5_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
+    const byName = new Map(registered.map((entry) => [entry.name, entry.definition]))
+    for (const name of ['browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_get_text', 'browser_wait']) {
+      const params = byName.get(name)!.parameters as { frame?: { type?: unknown } }
+      expect(params.frame?.type).toBe('number')
+    }
+    for (const name of ['browser_snapshot', 'browser_navigate', 'browser_back', 'browser_forward', 'browser_reload']) {
+      const params = byName.get(name)!.parameters as { frame?: unknown }
+      expect(params.frame).toBeUndefined()
     }
   })
 

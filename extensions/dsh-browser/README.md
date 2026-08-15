@@ -102,7 +102,7 @@ For extension-only development, clone the repository, run `pnpm --filter dsh-bro
 ## Known limitations
 
 - Only one extension connection at a time (a second window replaces the first).
-- Cross-origin iframes are counted but not operated.
+- Accessible cross-origin iframes are snapshotted and operated with stable `(frame, index)` addresses. Restricted or short-lived frames are reported as unavailable without failing the whole page snapshot.
 - Captcha/image-only controls cannot be handled — the tool result reports "elements with no accessible name" and asks the user to complete that step manually.
 - No automatic token rotation.
 - Synthetic `browser_press` events do not trigger browser-native default actions such as Tab focus movement, arrow-key scrolling, or Enter activation; use manual input when a workflow depends on those defaults.

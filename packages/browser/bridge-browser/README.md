@@ -76,7 +76,7 @@ Frames are JSON objects discriminated by `t`, defined in [`protocol.ts`](src/pro
 ## Known Limitations and Deferred Work
 
 - One active extension connection (a second window replaces the first).
-- Cross-origin iframes are counted but not operated.
+- Accessible cross-origin iframes are snapshotted and operated with stable `(frame, index)` addresses. Restricted or short-lived frames are reported as unavailable without failing the whole page snapshot.
 - Token rotation is manual (edit `~/.dsh/ext-bridge-token` or set `token` in config); no expiry.
 - The Playwright-driven extension e2e self-skips without a usable Chromium executable or a built extension bundle.
 - Approval for destructive actions (navigate/form submit) is deferred to the extension UI; the dsh tool pipeline approvals integration is follow-up work.

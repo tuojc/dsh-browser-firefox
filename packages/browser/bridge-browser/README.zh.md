@@ -76,7 +76,7 @@ npx @deepseek-ai/dsh web
 ## 已知限制与后续工作
 
 - 仅一个活动扩展连接（第二个窗口顶替第一个）。
-- 跨源 iframe 只计数不可操作。
+- 可访问的跨源 iframe 会进入快照，并通过稳定的 `(frame, index)` 地址执行操作；受保护或已销毁的 frame 会标记为不可访问，不影响整页快照。
 - token 手动轮换（改 `~/.dsh/ext-bridge-token` 或配置 `token`），无过期。
 - Playwright 驱动的扩展 e2e 会在缺少可用的 Chromium 可执行文件或构建完成的扩展包时自行跳过。
 - 危险动作（导航/提交表单）的审批暂在扩展 UI 侧；接入 dsh 工具管线审批是后续工作。
