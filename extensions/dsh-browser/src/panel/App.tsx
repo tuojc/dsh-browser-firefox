@@ -380,7 +380,7 @@ export function App(): React.JSX.Element {
     try {
       const receipt = await api.respond(target.rpcId, {
         ok: false,
-        error: { code: 'cancelled', message: 'the user dismissed this question request' },
+        error: { code: 'cancelled', message: 'the user dismissed this question request', details: {} },
       })
       if (isRejectedReceipt(receipt)) setError(copy.question.alreadyAnswered)
       if (questionRef.current?.rpcId === target.rpcId) replaceQuestion(null)

@@ -93,7 +93,7 @@ describe('panel approval protocol', () => {
     vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
     vi.spyOn(crypto, 'randomUUID').mockReturnValue('12345678-1234-4234-8234-123456789abd')
     const api = connectPanel()
-    const pending = api.respond('question-rpc', { ok: false, error: { code: 'cancelled', message: 'closed' } })
+    const pending = api.respond('question-rpc', { ok: false, error: { code: 'cancelled', message: 'closed', details: {} } })
     receive?.({
       type: 'respond.result',
       id: '12345678-1234-4234-8234-123456789abd',

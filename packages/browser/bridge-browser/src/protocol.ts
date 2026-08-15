@@ -46,7 +46,7 @@ export interface ToolError {
 /** Result sent for a pending host interaction such as ask_user_question. */
 export type RespondResult =
   | { ok: true; value?: unknown }
-  | { ok: false; error: { code: string; message: string } }
+  | { ok: false; error: { code: string; message: string; details: Record<string, unknown> } }
 
 /** Capabilities negotiated in `hello`/`hello.ok`. The extension performs its own actions; these bounds shape page snapshots. */
 export interface BridgeCaps {
@@ -230,5 +230,12 @@ export function isRespondResult(value: unknown): value is RespondResult {
   if (typeof value !== 'object' || value === null) return false
   const result = value as Record<string, unknown>
   if (result.ok === true) return result.error === undefined
-  return result.ok === false && isWireError(result.error)
+  return result.ok === false && isRespondError(result.error)
+}
+
+function isRespondError(value: unknown): value is Extract<RespondResult, { ok: false }>['error'] {
+  return isWireError(value)
+    && typeof (value as Record<string, unknown>).details === 'object'
+    && (value as Record<string, unknown>).details !== null
+    && !Array.isArray((value as Record<string, unknown>).details)
 }

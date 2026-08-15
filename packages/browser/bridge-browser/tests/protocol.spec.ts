@@ -54,11 +54,15 @@ describe('parseBridgeFrame', () => {
     })
     expect(parseBridgeFrame(JSON.stringify({
       t: 'respond', id: 'response-2', rpcId: 'question-2',
-      result: { ok: false, error: { code: 'cancelled', message: 'closed' } },
+      result: { ok: false, error: { code: 'cancelled', message: 'closed', details: {} } },
     }))).toEqual({
       t: 'respond', id: 'response-2', rpcId: 'question-2',
-      result: { ok: false, error: { code: 'cancelled', message: 'closed' } },
+      result: { ok: false, error: { code: 'cancelled', message: 'closed', details: {} } },
     })
+    expect(parseBridgeFrame(JSON.stringify({
+      t: 'respond', id: 'x', rpcId: 'q',
+      result: { ok: false, error: { code: 'cancelled', message: 'missing details' } },
+    }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'respond', id: 'x', rpcId: 'q', result: { ok: false } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'respond', id: 'x', rpcId: 'q', result: { ok: true, error: {} } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'respond', id: 'x', result: { ok: true } }))).toBeUndefined()

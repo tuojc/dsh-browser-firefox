@@ -237,7 +237,7 @@ describe('BridgeServer', () => {
     await waitFor(() => frames.some((frame) => frame.t === 'hello.ok'))
     send(ws, {
       t: 'respond', id: 'response-2', rpcId: 'question-2',
-      result: { ok: false, error: { code: 'cancelled', message: 'user dismissed the question' } },
+      result: { ok: false, error: { code: 'cancelled', message: 'user dismissed the question', details: {} } },
     })
     await waitFor(() => frames.some((frame) => frame.t === 'respond.result' && frame.id === 'response-2'))
     expect(frames).toContainEqual({
