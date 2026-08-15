@@ -163,10 +163,26 @@ describe('question mux frames', () => {
       rpcId: 'r', method: 'question/requested',
       payload: { sessionId: 's', questions: [{ id: 'q', question: 'Question?', options: [{ label: 4 }] }] },
     })).toBeNull()
+  })
+
+  it('accepts wire-valid empty strings and repeated question ids', () => {
     expect(pendingQuestionFromFrame({
-      rpcId: 'r', method: 'question/requested',
-      payload: { sessionId: 's', questions: [{ id: 'q', question: 'One?' }, { id: 'q', question: 'Two?' }] },
-    })).toBeNull()
+      rpcId: '', method: 'question/requested',
+      payload: {
+        sessionId: 's',
+        questions: [
+          { id: '', question: '', options: [{ label: '' }] },
+          { id: '', question: 'Repeated id' },
+        ],
+      },
+    })).toEqual({
+      rpcId: '',
+      sessionId: 's',
+      questions: [
+        { id: '', question: '', options: [{ label: '' }] },
+        { id: '', question: 'Repeated id' },
+      ],
+    })
   })
 
   it('extracts both identifiers required to match question/resolved', () => {

@@ -23,7 +23,7 @@ export function QuestionCard({
   onAnswer: (answers: QuestionAnswer[]) => void
   onDismiss: () => void
 }): React.JSX.Element {
-  const [drafts, setDrafts] = useState<QuestionDrafts>({})
+  const [drafts, setDrafts] = useState<QuestionDrafts>([])
   const answers = answersForQuestion(question, drafts)
 
   return (
@@ -38,15 +38,15 @@ export function QuestionCard({
       <div className="question-list">
         {question.questions.map((item, index) => (
           <QuestionItemView
-            key={item.id}
+            key={index}
             item={item}
             index={index}
             count={question.questions.length}
             drafts={drafts}
             disabled={submitting}
             copy={copy}
-            onToggle={(label, checked) => { setDrafts((current) => toggleQuestionOption(current, item, label, checked)) }}
-            onCustom={(value) => { setDrafts((current) => setQuestionCustomAnswer(current, item, value)) }}
+            onToggle={(label, checked) => { setDrafts((current) => toggleQuestionOption(current, index, item, label, checked)) }}
+            onCustom={(value) => { setDrafts((current) => setQuestionCustomAnswer(current, index, item, value)) }}
           />
         ))}
       </div>
@@ -79,7 +79,7 @@ function QuestionItemView({
   onToggle: (label: string, checked: boolean) => void
   onCustom: (value: string) => void
 }): React.JSX.Element {
-  const draft = draftFor(drafts, item.id)
+  const draft = draftFor(drafts, index)
   const multi = item.multiSelect === true
   return (
     <fieldset className="question-item" disabled={disabled}>
@@ -93,13 +93,13 @@ function QuestionItemView({
       </legend>
       {item.options !== undefined && item.options.length > 0 && (
         <div className="question-options">
-          {item.options.map((option) => {
+          {item.options.map((option, optionIndex) => {
             const checked = draft.selected.includes(option.label)
             return (
-              <label key={option.label} className={`question-option ${checked ? 'checked' : ''}`}>
+              <label key={optionIndex} className={`question-option ${checked ? 'checked' : ''}`}>
                 <input
                   type={multi ? 'checkbox' : 'radio'}
-                  name={`question-${item.id}`}
+                  name={`question-${index}`}
                   checked={checked}
                   onChange={(event) => { onToggle(option.label, event.target.checked) }}
                 />

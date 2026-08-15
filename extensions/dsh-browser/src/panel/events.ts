@@ -71,11 +71,9 @@ export function pendingQuestionFromFrame(frame: EventFrameView): PendingQuestion
   const rawQuestions = frame.payload.questions
   if (typeof sessionId !== 'string' || !Array.isArray(rawQuestions) || rawQuestions.length === 0) return null
   const questions: QuestionItem[] = []
-  const ids = new Set<string>()
   for (const value of rawQuestions) {
     const question = parseQuestionItem(value)
-    if (question === null || ids.has(question.id)) return null
-    ids.add(question.id)
+    if (question === null) return null
     questions.push(question)
   }
   return { rpcId: frame.rpcId, sessionId, questions }
@@ -90,7 +88,6 @@ export function resolvedQuestionFromFrame(frame: EventFrameView): ResolvedQuesti
 
 function parseQuestionItem(value: unknown): QuestionItem | null {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.question !== 'string') return null
-  if (value.id.trim() === '' || value.question.trim() === '') return null
   if (value.header !== undefined && typeof value.header !== 'string') return null
   if (value.detail !== undefined && typeof value.detail !== 'string') return null
   if (value.multiSelect !== undefined && typeof value.multiSelect !== 'boolean') return null
@@ -100,7 +97,6 @@ function parseQuestionItem(value: unknown): QuestionItem | null {
     options = []
     for (const rawOption of value.options) {
       if (!isRecord(rawOption) || typeof rawOption.label !== 'string') return null
-      if (rawOption.label.trim() === '') return null
       if (rawOption.description !== undefined && typeof rawOption.description !== 'string') return null
       options.push({
         label: rawOption.label,

@@ -19,11 +19,11 @@ const QUESTION: PendingQuestion = {
 
 describe('question answers', () => {
   it('requires an answer for every item and serializes selected options', () => {
-    let drafts: QuestionDrafts = {}
-    drafts = toggleQuestionOption(drafts, QUESTION.questions[0]!, 'A', true)
+    let drafts: QuestionDrafts = []
+    drafts = toggleQuestionOption(drafts, 0, QUESTION.questions[0]!, 'A', true)
     expect(answersForQuestion(QUESTION, drafts)).toBeNull()
-    drafts = toggleQuestionOption(drafts, QUESTION.questions[1]!, 'X', true)
-    drafts = toggleQuestionOption(drafts, QUESTION.questions[1]!, 'Y', true)
+    drafts = toggleQuestionOption(drafts, 1, QUESTION.questions[1]!, 'X', true)
+    drafts = toggleQuestionOption(drafts, 1, QUESTION.questions[1]!, 'Y', true)
     expect(answersForQuestion(QUESTION, drafts)).toEqual([
       { id: 'single', selected: ['A'] },
       { id: 'multi', selected: ['X', 'Y'] },
@@ -31,14 +31,35 @@ describe('question answers', () => {
   })
 
   it('uses custom text for single choice and preserves selections for multi-choice', () => {
-    let drafts: QuestionDrafts = {}
-    drafts = toggleQuestionOption(drafts, QUESTION.questions[0]!, 'A', true)
-    drafts = setQuestionCustomAnswer(drafts, QUESTION.questions[0]!, '  another option  ')
-    drafts = toggleQuestionOption(drafts, QUESTION.questions[1]!, 'X', true)
-    drafts = setQuestionCustomAnswer(drafts, QUESTION.questions[1]!, 'plus this')
+    let drafts: QuestionDrafts = []
+    drafts = toggleQuestionOption(drafts, 0, QUESTION.questions[0]!, 'A', true)
+    drafts = setQuestionCustomAnswer(drafts, 0, QUESTION.questions[0]!, '  another option  ')
+    drafts = setQuestionCustomAnswer(drafts, 1, QUESTION.questions[1]!, 'plus this')
+    drafts = toggleQuestionOption(drafts, 1, QUESTION.questions[1]!, 'X', true)
     expect(answersForQuestion(QUESTION, drafts)).toEqual([
       { id: 'single', selected: [], custom: 'another option' },
       { id: 'multi', selected: ['X'], custom: 'plus this' },
+    ])
+  })
+
+  it('keeps duplicate and prototype-like ids isolated by question position', () => {
+    const question: PendingQuestion = {
+      rpcId: 'special-ids',
+      sessionId: 'session',
+      questions: [
+        { id: 'constructor', question: '', options: [{ label: '' }] },
+        { id: 'constructor', question: 'Repeated id' },
+        { id: '__proto__', question: 'Prototype id' },
+      ],
+    }
+    let drafts: QuestionDrafts = []
+    drafts = toggleQuestionOption(drafts, 0, question.questions[0]!, '', true)
+    drafts = setQuestionCustomAnswer(drafts, 1, question.questions[1]!, 'second')
+    drafts = setQuestionCustomAnswer(drafts, 2, question.questions[2]!, 'third')
+    expect(answersForQuestion(question, drafts)).toEqual([
+      { id: 'constructor', selected: [''] },
+      { id: 'constructor', selected: [], custom: 'second' },
+      { id: '__proto__', selected: [], custom: 'third' },
     ])
   })
 })
