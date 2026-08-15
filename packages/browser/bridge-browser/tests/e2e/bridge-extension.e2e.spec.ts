@@ -283,13 +283,42 @@ describe('extension ↔ bridge e2e', () => {
     await approval.waitFor({ state: 'visible', timeout: 15_000 })
     expect(await approval.locator('#approval-title').textContent()).toBe('允许读取页面？')
     expect(await approval.textContent()).toContain(`http://127.0.0.1:${port}`)
-    expect(await approval.locator('button.trust').count()).toBe(0)
+    expect(await approval.locator('button.session-trust').count()).toBe(0)
     await approval.locator('button.allow').click()
     const snapshotResult = await snapshot
     expect(snapshotResult.isError).toBe(false)
     if (!snapshotResult.isError) {
       expect(snapshotResult.value).toMatchObject({ text: expect.stringContaining('UNTRUSTED_PAGE_CONTENT') })
     }
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+
+    // The first state-changing operation can trust this origin only for the
+    // current side-panel lifetime. A second operation on the same origin then
+    // runs without another prompt; persistent trust is managed in Settings.
+    await target.bringToFront()
+    const firstPress = context.tools.execute({
+      callId: 'e2e-browser-press-first' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      signal: new AbortController().signal,
+    })
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await approval.locator('#approval-title').textContent()).toBe('允许执行页面操作？')
+    expect(await approval.textContent()).not.toContain('网页内容可能包含')
+    expect(await approval.locator('button.session-trust').count()).toBe(1)
+    await approval.locator('button.session-trust').click()
+    expect((await firstPress).isError).toBe(false)
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+
+    await target.bringToFront()
+    const repeatedPress = await context.tools.execute({
+      callId: 'e2e-browser-press-repeated' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      signal: new AbortController().signal,
+    })
+    expect(repeatedPress.isError).toBe(false)
+    expect(await approval.isVisible()).toBe(false)
     await target.close()
 
     // Session deferral: opening the panel alone must NOT create a session.

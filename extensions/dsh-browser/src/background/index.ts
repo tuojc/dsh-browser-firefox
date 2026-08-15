@@ -95,6 +95,8 @@ let caps: BridgeCaps | null = null
 let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
+/** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
+const sessionTrustedActionOrigins = new Set<string>()
 const pendingApprovals = new Map<string, {
   resolve: (decision: ApprovalDecision) => void
   timer: ReturnType<typeof setTimeout>
@@ -183,10 +185,18 @@ function requestApproval(prompt: ApprovalPrompt): Promise<ApprovalDecision> {
 
 async function authorizeToolCall(prompt: ApprovalPrompt): Promise<boolean> {
   if (prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1
-    && settings.trustedActionOrigins.includes(prompt.origins[0]!)) {
+    && (sessionTrustedActionOrigins.has(prompt.origins[0]!)
+      || settings.trustedActionOrigins.includes(prompt.origins[0]!))) {
     return true
   }
   const decision = await requestApproval(prompt)
+  if (decision === 'trust-session' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
+    sessionTrustedActionOrigins.add(prompt.origins[0]!)
+    return true
+  }
+  // Retain wire compatibility with panels from the previous build. The new UI
+  // manages permanent trust explicitly in Settings instead of offering it in
+  // the action dialog.
   if (decision === 'trust-origin' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
     await persistSettings({ trustedActionOrigins: [...settings.trustedActionOrigins, prompt.origins[0]!] })
     return true
@@ -338,6 +348,7 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => {
     panelPorts.delete(port)
     if (panelPorts.size === 0) {
+      sessionTrustedActionOrigins.clear()
       for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
     }
   })

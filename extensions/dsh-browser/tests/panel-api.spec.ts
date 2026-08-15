@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { connectPanel } from '../src/panel/api.ts'
-import type { ApprovalRequest } from '../src/security/approval.ts'
+import { isApprovalDecision, type ApprovalRequest } from '../src/security/approval.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -9,6 +9,12 @@ afterEach(() => {
 })
 
 describe('panel approval protocol', () => {
+  it('accepts session trust while retaining the previous permanent-trust wire value', () => {
+    expect(isApprovalDecision('trust-session')).toBe(true)
+    expect(isApprovalDecision('trust-origin')).toBe(true)
+    expect(isApprovalDecision('trust-forever')).toBe(false)
+  })
+
   it('delivers approval requests, resolution events, and correlated decisions', () => {
     let receive: ((message: unknown) => void) | undefined
     const postMessage = vi.fn()
@@ -34,14 +40,14 @@ describe('panel approval protocol', () => {
 
     receive?.({ type: 'approval.request', request })
     receive?.({ type: 'approval.resolved', id: request.id })
-    api.respondToApproval(request.id, 'allow-once')
+    api.respondToApproval(request.id, 'trust-session')
 
     expect(requestListener).toHaveBeenCalledWith(request)
     expect(resolvedListener).toHaveBeenCalledWith(request.id)
     expect(postMessage).toHaveBeenCalledWith({
       type: 'approval.response',
       id: request.id,
-      decision: 'allow-once',
+      decision: 'trust-session',
     })
   })
 })

@@ -95,7 +95,7 @@ For extension-only development, clone the repository, run `pnpm --filter dsh-bro
 - **Stable numbering**: element numbers persist across snapshots (WeakMap + `data-dsh-el`), so the model can say "click 7"; a large page change explicitly reports "numbers reindexed".
 - **Delta mode**: `browser_snapshot({delta:true})` returns only changed element numbers, saving tokens.
 - **Privacy**: password/credit-card values always render as `••••` and never leave the page; accessible names never use a sensitive field's current value.
-- **Proportional approval**: the default `auto` mode lets the model read the active tab without an extra prompt; `ask` restores per-read confirmation and `off` blocks reads. State-changing tools still fail closed and prompt with their exact origin and a redacted action summary; the user may allow once, deny, or explicitly trust one origin. Explicit cross-origin `browser_navigate` calls and unknown history destinations cannot be persistently trusted, and a closed panel means denial. Trust deliberately removes per-action prompts for operations initiated by that origin.
+- **Proportional approval**: the default `auto` mode lets the model read the active tab without an extra prompt; `ask` restores per-read confirmation and `off` blocks reads. State-changing tools still fail closed and show their exact origin plus a redacted action summary. The user may deny, allow once, or trust one origin for the current side-panel session; temporary trust clears when the last panel closes or the service worker restarts. Permanent trust is managed explicitly in Settings. Explicit cross-origin `browser_navigate` calls and unknown history destinations cannot inherit trust, and a closed panel means denial.
 
 ## Permissions
 

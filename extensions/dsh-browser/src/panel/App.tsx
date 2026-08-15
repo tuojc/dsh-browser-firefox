@@ -34,6 +34,15 @@ const STATE_LABEL: Record<BridgeState, string> = {
   stopped: '未连接',
 }
 
+function normalizeWebOrigin(value: string): string | null {
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null
+  } catch {
+    return null
+  }
+}
+
 function SettingsIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -102,7 +111,7 @@ function ApprovalDialog({
 
   return (
     <div className="approval-backdrop">
-      <section className="approval-dialog" role="alertdialog" aria-modal="true" aria-labelledby="approval-title" aria-describedby="approval-description">
+      <section className="approval-dialog" role="alertdialog" aria-modal="true" aria-labelledby="approval-title">
         <div className="approval-rail" aria-hidden="true" />
         <div className="approval-heading">
           <span className="approval-shield"><ShieldIcon /></span>
@@ -111,9 +120,6 @@ function ApprovalDialog({
             <h2 id="approval-title">{request.kind === 'read' ? '允许读取页面？' : '允许执行页面操作？'}</h2>
           </div>
         </div>
-        <p id="approval-description" className="approval-warning">
-          网页内容可能包含诱导助手操作的恶意文字。请确认这是你当前希望执行的动作。
-        </p>
         <div className="approval-detail">
           <span>请求</span>
           <strong>{request.summary}</strong>
@@ -128,10 +134,10 @@ function ApprovalDialog({
           <button className="deny" autoFocus onClick={() => onDecision('deny')}>拒绝</button>
           <button className="allow" onClick={() => onDecision('allow-once')}>仅允许这一次</button>
           {request.kind === 'action' && request.canTrust && request.origins.length === 1 && (
-            <button className="trust" onClick={() => onDecision('trust-origin')}>信任此域并执行</button>
+            <button className="session-trust" onClick={() => onDecision('trust-session')}>本次会话信任此域</button>
           )}
         </div>
-        <small className="approval-footnote">Esc 拒绝 · 输入内容不会显示或保存在确认框中</small>
+        <small className="approval-footnote">Esc 拒绝 · 关闭侧栏后临时信任失效 · 输入内容不会显示</small>
       </section>
     </div>
   )
@@ -177,6 +183,7 @@ export function App(): React.JSX.Element {
   const [working, setWorking] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
+  const [trustedOriginInput, setTrustedOriginInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
@@ -350,12 +357,16 @@ export function App(): React.JSX.Element {
     const request = approvalQueue[0]
     if (request === undefined) return
     api.respondToApproval(request.id, decision)
-    if (decision === 'trust-origin' && request.origins.length === 1) {
-      setSettings((current) => current === null
-        ? current
-        : { ...current, trustedActionOrigins: [...new Set([...current.trustedActionOrigins, request.origins[0]!])].sort() })
-    }
     setApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
+  }
+
+  function addTrustedOrigin(): void {
+    const origin = normalizeWebOrigin(trustedOriginInput)
+    if (origin === null) return
+    setSettings((current) => current === null
+      ? current
+      : { ...current, trustedActionOrigins: [...new Set([...current.trustedActionOrigins, origin])].sort() })
+    setTrustedOriginInput('')
   }
 
   function removeTrustedOrigin(origin: string): void {
@@ -415,9 +426,22 @@ export function App(): React.JSX.Element {
         </div>
         <section className="trusted-origins" aria-labelledby="trusted-origins-title">
           <div>
-            <span id="trusted-origins-title">免确认操作域名</span>
-            <small>信任后，该域中的点击、输入等操作不再逐次确认；仅信任你愿意让助手直接操作的网站。显式跨域导航仍会询问。</small>
+            <span id="trusted-origins-title">永久免确认域名</span>
+            <small>审批框可只信任本次侧栏会话。这里添加的域名会长期免除操作确认；显式跨域导航仍会询问。</small>
           </div>
+          <div className="trusted-origin-add">
+            <input
+              aria-label="要永久信任的域名"
+              value={trustedOriginInput}
+              onChange={(event) => setTrustedOriginInput(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') addTrustedOrigin() }}
+              placeholder="https://example.com"
+            />
+            <button disabled={normalizeWebOrigin(trustedOriginInput) === null} onClick={addTrustedOrigin}>添加</button>
+          </div>
+          {trustedOriginInput.trim() !== '' && normalizeWebOrigin(trustedOriginInput) === null && (
+            <p className="origin-error">请输入完整的 http:// 或 https:// 地址。</p>
+          )}
           {settings?.trustedActionOrigins.length === 0 && <p>尚未信任任何域名。</p>}
           {settings?.trustedActionOrigins.map((origin) => (
             <div className="trusted-origin" key={origin}>

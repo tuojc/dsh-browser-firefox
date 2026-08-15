@@ -1102,6 +1102,40 @@ textarea:focus-visible {
   background: var(--danger-soft);
 }
 
+.trusted-origin-add {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.trusted-origin-add input {
+  min-width: 0;
+  flex: 1;
+}
+
+.trusted-origin-add button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--blue);
+  border-radius: 9px;
+  background: var(--blue);
+  color: #fff;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.trusted-origin-add button:disabled {
+  border-color: var(--line);
+  background: var(--canvas);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+.trusted-origins .origin-error {
+  color: var(--danger);
+}
+
 .approval-backdrop {
   position: fixed;
   z-index: 1000;
@@ -1175,13 +1209,6 @@ textarea:focus-visible {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.6;
-}
-
-.approval-warning {
-  margin: 14px 0 12px;
-  color: #684100;
-  font-size: 11px;
-  line-height: 1.55;
 }
 
 .approval-detail,
@@ -1260,7 +1287,7 @@ textarea:focus-visible {
   color: #fff;
 }
 
-.approval-actions .trust {
+.approval-actions .session-trust {
   grid-column: 1 / -1;
   border: 1px solid var(--security-border);
   background: var(--security-soft);
@@ -1278,7 +1305,7 @@ textarea:focus-visible {
   background: var(--blue-hover);
 }
 
-.approval-actions .trust:hover {
+.approval-actions .session-trust:hover {
   border-color: #fdb022;
   background: #fff4d6;
 }
