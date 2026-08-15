@@ -200,6 +200,53 @@ describe('BridgeServer', () => {
     ws.close()
   })
 
+  it('relays interaction responses to /api/respond with the original rpcId', async () => {
+    const h = await startBridge()
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((frame) => frame.t === 'hello.ok'))
+    send(ws, {
+      t: 'respond',
+      id: 'response-1',
+      rpcId: 'question-1',
+      result: { ok: true, value: { sessionId: 'session-1', answer: { answers: [{ id: 'db', selected: ['SQLite'] }] } } },
+    })
+    await waitFor(() => frames.some((frame) => frame.t === 'respond.result'))
+
+    expect(frames).toContainEqual(expect.objectContaining({
+      t: 'respond.result', id: 'response-1', ok: true,
+    }))
+    const request = h.fetchMock.mock.calls[0]![0] as Request
+    expect(request.url).toBe('http://dsh.internal/api/respond')
+    expect(request.method).toBe('POST')
+    expect(request.headers.get('content-type')).toBe('application/json')
+    expect(JSON.parse(await request.text())).toEqual({
+      type: 'client-response',
+      rpcId: 'question-1',
+      result: { ok: true, value: { sessionId: 'session-1', answer: { answers: [{ id: 'db', selected: ['SQLite'] }] } } },
+    })
+    ws.close()
+  })
+
+  it('returns gateway response failures to the extension', async () => {
+    const h = await startBridge({ apiHandler: { fetch: async () => new Response('response rejected', { status: 409 }) } })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((frame) => frame.t === 'hello.ok'))
+    send(ws, {
+      t: 'respond', id: 'response-2', rpcId: 'question-2',
+      result: { ok: false, error: { code: 'cancelled', message: 'user dismissed the question' } },
+    })
+    await waitFor(() => frames.some((frame) => frame.t === 'respond.result' && frame.id === 'response-2'))
+    expect(frames).toContainEqual({
+      t: 'respond.result', id: 'response-2', ok: false,
+      error: { code: 'http', message: 'response rejected' },
+    })
+    ws.close()
+  })
+
   it('rejects privileged methods from non-loopback remotes', async () => {
     expect(isLoopbackAddress('127.0.0.1')).toBe(true)
     expect(isLoopbackAddress('::1')).toBe(true)

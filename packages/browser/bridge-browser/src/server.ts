@@ -331,6 +331,9 @@ export class BridgeServer {
       case 'rpc':
         void this.handleRpc(frame)
         break
+      case 'respond':
+        void this.handleRespond(frame)
+        break
       case 'tool.result':
         this.settleTool(frame.id, frame.ok, frame.ok ? frame.result : frame.error)
         break
@@ -338,6 +341,7 @@ export class BridgeServer {
       case 'hello':
       case 'hello.ok':
       case 'rpc.result':
+      case 'respond.result':
       case 'event':
       case 'tool.call':
       case 'tool.cancel':
@@ -381,6 +385,35 @@ export class BridgeServer {
       sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: true, result })
     } catch (error: unknown) {
       sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: false, error: { code: 'internal', message: String(error) } })
+    }
+  }
+
+  /** Relay a pending host-interaction response through the GUI's /api/respond channel. */
+  private async handleRespond(frame: Extract<ClientFrame, { t: 'respond' }>): Promise<void> {
+    const conn = this.current
+    /* v8 ignore next -- replacement race; a closed socket simply drops the receipt */
+    if (conn === null) return
+    const request = new Request(new URL('/api/respond', 'http://dsh.internal'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-response', rpcId: frame.rpcId, result: frame.result }),
+    })
+    try {
+      const response = await this.deps.apiHandler.fetch(request)
+      const text = await response.text()
+      if (!response.ok) {
+        sendFrame(conn.ws, { t: 'respond.result', id: frame.id, ok: false, error: { code: 'http', message: text } })
+        return
+      }
+      let result: unknown
+      try {
+        result = JSON.parse(text)
+      } catch {
+        result = text
+      }
+      sendFrame(conn.ws, { t: 'respond.result', id: frame.id, ok: true, result })
+    } catch (error: unknown) {
+      sendFrame(conn.ws, { t: 'respond.result', id: frame.id, ok: false, error: { code: 'internal', message: String(error) } })
     }
   }
 
