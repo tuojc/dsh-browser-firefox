@@ -65,8 +65,6 @@ export interface PanelCopy {
     snapshotHint: (maxChars: number) => string
   }
   app: {
-    brand: string
-    tagline: string
     openSettings: string
     settings: string
     openSessions: string
@@ -172,13 +170,11 @@ const EN: PanelCopy = {
     snapshotHint: (maxChars) => `Page snapshots are limited to ${maxChars} characters and longer content is truncated. Change snapshotMaxChars in the dsh plugin to adjust this limit.`,
   },
   app: {
-    brand: 'Browser Assistant',
-    tagline: 'Page copilot',
     openSettings: 'Open settings',
     settings: 'Settings',
     openSessions: 'Session history',
     sessions: 'Sessions',
-    newSession: 'New session',
+    newSession: 'New chat',
     sessionPickerLoading: 'Loading…',
     sessionPickerEmpty: 'No past sessions yet',
     emptyTitle: 'Hand me the current page',
@@ -279,13 +275,11 @@ const ZH: PanelCopy = {
     snapshotHint: (maxChars) => `页面快照上限为 ${maxChars} 字符，超出内容会被截断。可在 dsh 插件中调整 snapshotMaxChars。`,
   },
   app: {
-    brand: '浏览助手',
-    tagline: '页面副驾驶',
     openSettings: '打开设置',
     settings: '设置',
     openSessions: '历史会话',
     sessions: '会话',
-    newSession: '新会话',
+    newSession: '新对话',
     sessionPickerLoading: '加载中…',
     sessionPickerEmpty: '暂无历史会话',
     emptyTitle: '把当前页面交给我',

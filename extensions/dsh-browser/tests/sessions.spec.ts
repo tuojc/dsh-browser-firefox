@@ -2,9 +2,12 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  latestSessionTitle,
+  projectedSessionTitle,
   resumableSessions,
   sessionAcceptsPrompts,
   sessionDisplayTitle,
+  sessionTitleFromEvent,
   SessionRuntimeCache,
   type SessionPickerEntry,
 } from '../src/panel/sessions.ts'
@@ -55,6 +58,32 @@ describe('sessionDisplayTitle', () => {
       ...ordinary,
       projections: { asOfSeq: 4, values: { title: { unsafe: true } } },
     })).toBe('workspace')
+  })
+
+  it('exposes only a valid durable projection as the current-session title', () => {
+    expect(projectedSessionTitle({
+      ...ordinary,
+      projections: { asOfSeq: 4, values: { title: '  Browser session  ' } },
+    })).toBe('Browser session')
+    expect(projectedSessionTitle(ordinary)).toBeUndefined()
+  })
+})
+
+describe('session title events', () => {
+  it('tracks live title events and the newest valid history title', () => {
+    const first = { type: 'session/title', data: { title: 'First title' } }
+    const second = { type: 'session/title', data: { title: 'Second title' } }
+    expect(sessionTitleFromEvent(second)).toBe('Second title')
+    expect(sessionTitleFromEvent({ type: 'assistant/message', data: { title: 'Ignored' } })).toBeUndefined()
+    expect(latestSessionTitle([first, second])).toBe('Second title')
+  })
+
+  it('ignores malformed title events during history replay', () => {
+    expect(latestSessionTitle([
+      { type: 'session/title', data: { title: 'Valid title' } },
+      { type: 'session/title', data: { title: '   ' } },
+      { type: 'session/title', data: { title: { unsafe: true } } },
+    ])).toBe('Valid title')
   })
 })
 

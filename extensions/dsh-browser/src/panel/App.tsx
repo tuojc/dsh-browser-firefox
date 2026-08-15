@@ -27,9 +27,12 @@ import {
 } from './pending-questions.ts'
 import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
 import {
+  latestSessionTitle,
+  projectedSessionTitle,
   resumableSessions,
   sessionAcceptsPrompts,
   sessionDisplayTitle,
+  sessionTitleFromEvent,
   SessionRuntimeCache,
   type SessionPickerEntry,
 } from './sessions.ts'
@@ -62,11 +65,10 @@ function SettingsIcon(): React.JSX.Element {
   )
 }
 
-function HistoryIcon(): React.JSX.Element {
+function ChevronDownIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M10 3a7 7 0 1 0 6.32 4M10 3a7 7 0 0 1 7 7" />
-      <path d="M10 6.5V10l2.5 1.5M3 3v4h4" />
+      <path d="m5.5 7.5 4.5 4.5 4.5-4.5" />
     </svg>
   )
 }
@@ -210,6 +212,7 @@ export function App(): React.JSX.Element {
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [sessionChanging, setSessionChanging] = useState(false)
   const [sessionList, setSessionList] = useState<SessionPickerEntry[]>([])
+  const [sessionTitle, setSessionTitle] = useState<string | null>(null)
   const [questions, setQuestions] = useState<PendingQuestion[]>([])
   const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
   const questionsRef = useRef<PendingQuestion[]>([])
@@ -291,6 +294,7 @@ export function App(): React.JSX.Element {
         sessionRef.current = null
         sessionRuntimeRef.current.clear()
         setRows([])
+        setSessionTitle(null)
         setWorking(false)
         setStopping(false)
         setSessionChanging(false)
@@ -342,6 +346,11 @@ export function App(): React.JSX.Element {
     }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
     if (payload?.sessionId === undefined || payload.event === undefined) return
+    const nextTitle = sessionTitleFromEvent(payload.event)
+    if (nextTitle !== undefined && payload.sessionId === sessionRef.current) {
+      setSessionTitle(nextTitle)
+      return
+    }
     if (payload.event.type === 'turn/start') {
       sessionRuntimeRef.current.startTurn(payload.sessionId)
       if (payload.sessionId !== sessionRef.current) return
@@ -438,7 +447,10 @@ export function App(): React.JSX.Element {
     try {
       const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
       if (sessionRef.current !== id) return
-      setRows(mergeHistoryRows(result.events.map((entry) => entry.event), nextSeq, locale))
+      const events = result.events.map((entry) => entry.event)
+      const historyTitle = latestSessionTitle(events)
+      if (historyTitle !== undefined) setSessionTitle(historyTitle)
+      setRows(mergeHistoryRows(events, nextSeq, locale))
     } catch (cause) {
       if (sessionRef.current === id) setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -451,6 +463,7 @@ export function App(): React.JSX.Element {
       const created = await api.rpc<{ sessionId: string }>('session.create', {})
       if (sessionTransitionRef.current !== transition) return
       sessionRef.current = created.sessionId
+      setSessionTitle(null)
       sessionRuntimeRef.current.seedRunning(created.sessionId, false)
       await refreshHistory(created.sessionId)
     } catch (cause) {
@@ -476,7 +489,11 @@ export function App(): React.JSX.Element {
       for (const entry of result.items ?? []) {
         sessionRuntimeRef.current.seedRunning(entry.sessionId, entry.running)
       }
-      setSessionList(resumableSessions(result.items ?? []))
+      const items = resumableSessions(result.items ?? [])
+      const current = items.find((entry) => entry.sessionId === sessionRef.current)
+      const currentTitle = current === undefined ? undefined : projectedSessionTitle(current)
+      if (currentTitle !== undefined) setSessionTitle(currentTitle)
+      setSessionList(items)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -491,6 +508,7 @@ export function App(): React.JSX.Element {
     const runtime = sessionRuntimeRef.current.snapshot(entry.sessionId, entry.running)
     prepareSessionSwitch(runtime.running, runtime.questions)
     sessionRef.current = entry.sessionId
+    setSessionTitle(projectedSessionTitle(entry) ?? sessionDisplayTitle(entry))
     try {
       await refreshHistory(entry.sessionId)
     } finally {
@@ -502,6 +520,7 @@ export function App(): React.JSX.Element {
   async function startNewSession(): Promise<void> {
     if (sessionSwitchBlocked || sessionChangingRef.current) return
     sessionRef.current = null
+    setSessionTitle(null)
     prepareSessionSwitch(false)
     await ensureSession()
   }
@@ -614,6 +633,7 @@ export function App(): React.JSX.Element {
 
   // 状态栏只显示连接状态；快照上限是技术细节，在设置页说明（见 hint）。
   const statusText = copy.status[state]
+  const sessionMenuTitle = sessionTitle ?? copy.app.newSession
   const approvalDialog = approvalQueue[0] === undefined
     ? null
     : <ApprovalDialog request={approvalQueue[0]} onDecision={decideApproval} copy={copy} />
@@ -699,14 +719,18 @@ export function App(): React.JSX.Element {
   return (
     <><div className="app">
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark"><img src={whaleUrl} alt="" /></span>
-          <span className="brand-copy"><strong>{copy.app.brand}</strong><small>{copy.app.tagline}</small></span>
-        </div>
-        <span className="connection" role="status"><span className={`dot ${state}`} />{statusText}</span>
-        <button className="icon-button" disabled={state !== 'connected' || sessionSwitchBlocked}
-          onClick={() => { void openSessionPicker() }} aria-label={copy.app.openSessions} title={copy.app.sessions}><HistoryIcon /></button>
-        <button className="icon-button" onClick={() => setShowSettings(true)} aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
+        <span className="connection" role="status">
+          <span className={`dot ${state}`} />
+          <span className="connection-label">{statusText}</span>
+        </span>
+        <button className="session-menu-trigger" disabled={state !== 'connected' || sessionSwitchBlocked}
+          aria-expanded={showSessionPicker} aria-label={copy.app.openSessions}
+          onClick={() => { void openSessionPicker() }} title={sessionMenuTitle}>
+          <span>{sessionMenuTitle}</span>
+          <ChevronDownIcon />
+        </button>
+        <button className="icon-button settings-trigger" onClick={() => setShowSettings(true)}
+          aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
       </header>
       {showSessionPicker && (
         <section className="session-picker" aria-label={copy.app.sessions}>

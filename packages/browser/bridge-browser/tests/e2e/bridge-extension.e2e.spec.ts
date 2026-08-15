@@ -266,6 +266,17 @@ describe('extension ↔ bridge e2e', () => {
     ).toContain('已连接')
     const statusText = await panel.textContent('.connection')
 
+    // The compact header keeps status and settings at the edges while the
+    // centered current-session title owns the history dropdown.
+    expect(await panel.locator('.brand').count()).toBe(0)
+    const sessionMenu = panel.locator('.session-menu-trigger')
+    await expect.poll(() => sessionMenu.isEnabled(), { timeout: 15_000 }).toBe(true)
+    expect(await sessionMenu.textContent()).toContain('新对话')
+    await sessionMenu.click()
+    await panel.locator('.session-picker').waitFor({ state: 'visible' })
+    await sessionMenu.click()
+    await panel.locator('.session-picker').waitFor({ state: 'hidden' })
+
     // A real tool call must pause in the service worker until the real panel
     // resolves its origin-scoped approval. Keep a normal HTTP tab active while
     // the panel remains open as a separate extension page in this headless test.

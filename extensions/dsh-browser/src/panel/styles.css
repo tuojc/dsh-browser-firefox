@@ -103,75 +103,27 @@ textarea:focus-visible {
 }
 
 .topbar {
-  display: flex;
+  display: grid;
   min-height: 58px;
   flex: 0 0 auto;
+  grid-template-columns: minmax(70px, 1fr) minmax(0, 1.75fr) minmax(70px, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 10px 14px;
   border-bottom: 1px solid rgba(203, 211, 225, 0.72);
   background: rgba(255, 255, 255, 0.92);
 }
 
-.brand {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: 9px;
-}
-
-.brand-mark {
-  display: grid;
-  width: 31px;
-  height: 31px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid #dbe2ff;
-  border-radius: 10px;
-  background: var(--blue-soft);
-}
-
-.brand-mark img {
-  width: 22px;
-  height: 22px;
-  object-fit: contain;
-}
-
-.brand-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.brand-copy strong,
 .settings h1 {
   font-family: "Avenir Next", "Segoe UI Variable Display", "PingFang SC", sans-serif;
 }
 
-.brand-copy strong {
-  color: var(--ink-strong);
-  font-size: 13.5px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-
-.brand-copy small {
-  color: var(--faint);
-  font-size: 9.5px;
-  font-weight: 650;
-  letter-spacing: 0.12em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
 .connection {
   display: inline-flex;
+  min-width: 0;
   min-height: 26px;
-  flex: 0 0 auto;
   align-items: center;
+  justify-self: start;
   gap: 6px;
   padding: 4px 8px;
   border: 1px solid var(--line);
@@ -182,6 +134,67 @@ textarea:focus-visible {
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+}
+
+.connection-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-menu-trigger {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  gap: 5px;
+  padding: 5px 9px 5px 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  outline: none;
+  background: transparent;
+  color: var(--ink-strong);
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.session-menu-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-menu-trigger svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  transition: transform 150ms ease;
+}
+
+.session-menu-trigger:hover:not(:disabled),
+.session-menu-trigger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--canvas);
+}
+
+.session-menu-trigger[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.session-menu-trigger:disabled {
+  color: var(--faint);
+  cursor: default;
 }
 
 .dot {
@@ -238,6 +251,10 @@ textarea:focus-visible {
 
 .icon-button:active {
   transform: translateY(1px);
+}
+
+.settings-trigger {
+  justify-self: end;
 }
 
 .messages {
@@ -1534,12 +1551,18 @@ textarea:focus-visible {
 
 @media (max-width: 340px) {
   .topbar {
+    gap: 6px;
     padding-inline: 10px;
   }
 
-  .brand-copy small,
   .connection {
-    display: none;
+    gap: 5px;
+    padding-inline: 6px;
+  }
+
+  .session-menu-trigger {
+    padding-inline: 7px;
+    font-size: 12.5px;
   }
 
   .messages {
@@ -1575,7 +1598,7 @@ textarea:focus-visible {
   flex: 0 0 auto;
   max-height: 260px;
   overflow-y: auto;
-  margin: 0 12px 10px;
+  margin: 8px 12px 10px;
   padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--line);

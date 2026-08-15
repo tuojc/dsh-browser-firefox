@@ -1,4 +1,4 @@
-import type { PendingQuestion, ResolvedQuestion } from './events.ts'
+import type { PendingQuestion, ResolvedQuestion, SessionEventView } from './events.ts'
 import { removePendingQuestion, upsertPendingQuestion } from './pending-questions.ts'
 
 /** Minimal session.list row needed by the side-panel picker. */
@@ -22,12 +22,37 @@ export function resumableSessions(items: readonly SessionPickerEntry[]): Session
 
 /** Match dsh's display-title fallback without loading a session's history. */
 export function sessionDisplayTitle(entry: SessionPickerEntry): string {
-  const projectedTitle = entry.projections?.values.title
-  if (typeof projectedTitle === 'string' && projectedTitle.trim() !== '') return projectedTitle.trim()
+  const projectedTitle = projectedSessionTitle(entry)
+  if (projectedTitle !== undefined) return projectedTitle
 
   const normalizedCwd = entry.cwd?.replace(/[\\/]+$/u, '')
   const directoryName = normalizedCwd?.split(/[\\/]/u).at(-1)
   return directoryName === undefined || directoryName === '' ? entry.sessionId : directoryName
+}
+
+/** Read the durable title column carried by dsh's session.list projection. */
+export function projectedSessionTitle(entry: SessionPickerEntry): string | undefined {
+  return normalizeSessionTitle(entry.projections?.values.title)
+}
+
+/** Read one durable title update from the ordinary session event stream. */
+export function sessionTitleFromEvent(event: SessionEventView): string | undefined {
+  return event.type === 'session/title' ? normalizeSessionTitle(event.data?.title) : undefined
+}
+
+/** Recover the newest valid title while replaying session.history. */
+export function latestSessionTitle(events: readonly SessionEventView[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const title = sessionTitleFromEvent(events[index])
+    if (title !== undefined) return title
+  }
+  return undefined
+}
+
+function normalizeSessionTitle(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const title = value.trim()
+  return title === '' ? undefined : title
 }
 
 /** A prompt target exists only after the current session transition settles. */

@@ -26,6 +26,7 @@ export interface SessionEventView {
     message?: { content?: unknown }
     name?: string
     arguments?: string
+    title?: unknown
   }
 }
 
