@@ -51,4 +51,55 @@ describe('panel approval protocol', () => {
       decision: 'trust-session',
     })
   })
+
+  it('correlates host-interaction answers with globally unique response ids', async () => {
+    let receive: ((message: unknown) => void) | undefined
+    const postMessage = vi.fn()
+    const port = {
+      postMessage,
+      onMessage: { addListener: vi.fn((listener: (message: unknown) => void) => { receive = listener }) },
+      onDisconnect: { addListener: vi.fn() },
+    }
+    vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('12345678-1234-4234-8234-123456789abc')
+    const api = connectPanel()
+
+    const pending = api.respond('question-rpc', {
+      ok: true,
+      value: { sessionId: 'session-1', answer: { answers: [] } },
+    })
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'respond',
+      id: '12345678-1234-4234-8234-123456789abc',
+      rpcId: 'question-rpc',
+      result: { ok: true, value: { sessionId: 'session-1', answer: { answers: [] } } },
+    })
+    receive?.({
+      type: 'respond.result',
+      id: '12345678-1234-4234-8234-123456789abc',
+      ok: true,
+      result: { accepted: true },
+    })
+    await expect(pending).resolves.toEqual({ accepted: true })
+  })
+
+  it('rejects a pending host-interaction answer when its receipt reports failure', async () => {
+    let receive: ((message: unknown) => void) | undefined
+    const port = {
+      postMessage: vi.fn(),
+      onMessage: { addListener: vi.fn((listener: (message: unknown) => void) => { receive = listener }) },
+      onDisconnect: { addListener: vi.fn() },
+    }
+    vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('12345678-1234-4234-8234-123456789abd')
+    const api = connectPanel()
+    const pending = api.respond('question-rpc', { ok: false, error: { code: 'cancelled', message: 'closed' } })
+    receive?.({
+      type: 'respond.result',
+      id: '12345678-1234-4234-8234-123456789abd',
+      ok: false,
+      error: { code: 'bridge-disconnected', message: 'connection lost' },
+    })
+    await expect(pending).rejects.toThrow('connection lost')
+  })
 })

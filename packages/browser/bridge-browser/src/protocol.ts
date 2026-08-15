@@ -226,7 +226,7 @@ function isWireError(value: unknown): value is { code: string; message: string }
     && typeof (value as Record<string, unknown>).message === 'string'
 }
 
-function isRespondResult(value: unknown): value is RespondResult {
+export function isRespondResult(value: unknown): value is RespondResult {
   if (typeof value !== 'object' || value === null) return false
   const result = value as Record<string, unknown>
   if (result.ok === true) return result.error === undefined
