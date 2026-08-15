@@ -182,6 +182,7 @@ export class BridgeServer {
       throw new BridgeToolError('bridge-closed', 'tool call cancelled before dispatch')
     }
     const id = randomUUID()
+    const expiresAt = Date.now() + timeoutMs
     return new Promise<unknown>((resolve, reject) => {
       let timer: NodeJS.Timeout
       const settle = (error: BridgeToolError): void => {
@@ -190,15 +191,22 @@ export class BridgeServer {
         signal.removeEventListener('abort', onAbort)
         reject(error)
       }
+      const cancel = (error: BridgeToolError): void => {
+        // The extension may be paused on a user approval after the caller has
+        // stopped waiting. Withdraw that approval before settling locally so
+        // a late click cannot execute an expired action.
+        sendFrame(conn.ws, { t: 'tool.cancel', id })
+        settle(error)
+      }
       const onAbort = (): void => {
-        settle(new BridgeToolError('bridge-closed', 'tool call cancelled before the extension answered'))
+        cancel(new BridgeToolError('bridge-closed', 'tool call cancelled before the extension answered'))
       }
       timer = setTimeout(() => {
-        settle(new BridgeToolError('timeout', `browser action "${name}" timed out after ${timeoutMs}ms`))
+        cancel(new BridgeToolError('timeout', `browser action "${name}" timed out after ${timeoutMs}ms`))
       }, timeoutMs)
       signal.addEventListener('abort', onAbort, { once: true })
       this.pendingTools.set(id, { resolve, reject, timer })
-      conn.ws.send(JSON.stringify({ t: 'tool.call', id, name, args } satisfies BridgeFrame), (error) => {
+      conn.ws.send(JSON.stringify({ t: 'tool.call', id, name, args, expiresAt } satisfies BridgeFrame), (error) => {
         /* v8 ignore next -- teardown race: when the write fails, the socket's
         close handler settles the same call with the same code; the callback
         path is a defensive second settle, covered via the close path */
@@ -332,6 +340,7 @@ export class BridgeServer {
       case 'rpc.result':
       case 'event':
       case 'tool.call':
+      case 'tool.cancel':
       case 'ping':
       case 'error':
         // Protocol violations and unsolicited server-side shapes are ignored;

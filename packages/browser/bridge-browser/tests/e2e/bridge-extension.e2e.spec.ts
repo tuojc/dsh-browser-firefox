@@ -308,6 +308,24 @@ describe('extension ↔ bridge e2e', () => {
     expect(repeatedSnapshot.isError).toBe(false)
     expect(await approval.isVisible()).toBe(false)
 
+    // Caller cancellation must withdraw a pending approval in the extension.
+    // A late user response must never navigate after the tool has expired.
+    const urlBeforeCancellation = target.url()
+    const cancelled = new AbortController()
+    const cancelledNavigation = context.tools.execute({
+      callId: 'e2e-browser-navigate-cancelled' as never,
+      name: 'browser_navigate',
+      arguments: { url: `http://127.0.0.1:${port}/must-not-open` },
+      signal: cancelled.signal,
+    })
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await approval.locator('#approval-title').textContent()).toBe('允许执行页面操作？')
+    cancelled.abort()
+    expect((await cancelledNavigation).isError).toBe(true)
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+    await target.waitForTimeout(200)
+    expect(target.url()).toBe(urlBeforeCancellation)
+
     // The first state-changing operation can trust this origin only for the
     // current side-panel lifetime. A second operation on the same origin then
     // runs without another prompt; persistent trust is managed in Settings.

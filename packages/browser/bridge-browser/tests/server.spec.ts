@@ -255,6 +255,9 @@ describe('BridgeServer', () => {
     await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
     await expect(h.bridge.requestTool('browser_wait', {}, new AbortController().signal, 30))
       .rejects.toMatchObject({ code: 'timeout' })
+    await waitFor(() => frames.some((frame) => frame.t === 'tool.cancel'))
+    const call = frames.find((frame) => frame.t === 'tool.call') as Extract<BridgeFrame, { t: 'tool.call' }>
+    expect(frames).toContainEqual({ t: 'tool.cancel', id: call.id })
     ws.close()
   })
 
@@ -302,8 +305,11 @@ describe('BridgeServer', () => {
     const abort = new AbortController()
     const pending = h.bridge.requestTool('browser_click', {}, abort.signal)
     await waitFor(() => frames.some((f) => f.t === 'tool.call'))
+    const call = frames.find((frame) => frame.t === 'tool.call') as Extract<BridgeFrame, { t: 'tool.call' }>
     abort.abort()
     await expect(pending).rejects.toMatchObject({ code: 'bridge-closed' })
+    await waitFor(() => frames.some((frame) => frame.t === 'tool.cancel'))
+    expect(frames).toContainEqual({ t: 'tool.cancel', id: call.id })
     ws.close()
   })
 

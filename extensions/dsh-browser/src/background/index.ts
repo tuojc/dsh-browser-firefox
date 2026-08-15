@@ -97,6 +97,8 @@ let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
+/** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
+const activeToolCalls = new Map<string, AbortController>()
 const pendingApprovals = new Map<string, {
   resolve: (decision: ApprovalDecision) => void
   timer: ReturnType<typeof setTimeout>
@@ -166,12 +168,23 @@ function settleApproval(id: string, decision: ApprovalDecision): void {
   broadcastApprovalResolved(id)
 }
 
-function requestApproval(prompt: ApprovalPrompt): Promise<ApprovalDecision> {
-  if (panelPorts.size === 0) return Promise.resolve('deny')
+function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalDecision> {
+  if (panelPorts.size === 0 || signal.aborted) return Promise.resolve('deny')
   const request: ApprovalRequest = { ...prompt, id: crypto.randomUUID() }
   return new Promise((resolve) => {
+    const onAbort = (): void => { settleApproval(request.id, 'deny') }
+    const resolveWithCleanup = (decision: ApprovalDecision): void => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(decision)
+    }
     const timer = setTimeout(() => { settleApproval(request.id, 'deny') }, APPROVAL_TIMEOUT_MS)
-    pendingApprovals.set(request.id, { resolve, timer })
+    pendingApprovals.set(request.id, { resolve: resolveWithCleanup, timer })
+    signal.addEventListener('abort', onAbort, { once: true })
+    // Close the small race between the initial check and listener setup.
+    if (signal.aborted) {
+      settleApproval(request.id, 'deny')
+      return
+    }
     let delivered = false
     for (const port of panelPorts) {
       try {
@@ -183,13 +196,15 @@ function requestApproval(prompt: ApprovalPrompt): Promise<ApprovalDecision> {
   })
 }
 
-async function authorizeToolCall(prompt: ApprovalPrompt): Promise<boolean> {
+async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false
   if (prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1
     && (sessionTrustedActionOrigins.has(prompt.origins[0]!)
       || settings.trustedActionOrigins.includes(prompt.origins[0]!))) {
     return true
   }
-  const decision = await requestApproval(prompt)
+  const decision = await requestApproval(prompt, signal)
+  if (signal.aborted) return false
   if (decision === 'always-allow-reads' && prompt.kind === 'read') {
     await persistSettings({ sharePageContent: 'auto' })
     return true
@@ -225,11 +240,24 @@ async function pushBudgetToActiveTab(negotiated: BridgeCaps): Promise<void> {
 /** Route one tool.call frame to the active tab and answer over the bridge. */
 function routeToolCall(call: ToolCall): void {
   if (bridge === null) return
+  activeToolCalls.get(call.id)?.abort()
+  const controller = new AbortController()
+  activeToolCalls.set(call.id, controller)
+  const expiryTimer = call.expiresAt === undefined
+    ? undefined
+    : setTimeout(() => { controller.abort() }, Math.max(0, call.expiresAt - Date.now()))
   const budget = caps === null
     ? undefined
     : { maxItems: caps.maxInteractiveItems, maxChars: caps.snapshotMaxChars }
-  void dispatchToolCall(call, settings.sharePageContent, budget, authorizeToolCall).then(
+  void dispatchToolCall(
+    call,
+    settings.sharePageContent,
+    budget,
+    (prompt) => authorizeToolCall(prompt, controller.signal),
+    controller.signal,
+  ).then(
     (answer) => {
+      if (controller.signal.aborted) return
       const socket = bridge
       if (socket === null) return
       if (answer.ok) {
@@ -239,6 +267,7 @@ function routeToolCall(call: ToolCall): void {
       }
     },
     (error: unknown) => {
+      if (controller.signal.aborted) return
       bridge?.send({
         t: 'tool.result',
         id: call.id,
@@ -246,7 +275,19 @@ function routeToolCall(call: ToolCall): void {
         error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
       })
     },
-  )
+  ).finally(() => {
+    if (expiryTimer !== undefined) clearTimeout(expiryTimer)
+    if (activeToolCalls.get(call.id) === controller) activeToolCalls.delete(call.id)
+  })
+}
+
+function cancelToolCall(id: string): void {
+  activeToolCalls.get(id)?.abort()
+}
+
+function cancelAllToolCalls(): void {
+  for (const controller of activeToolCalls.values()) controller.abort()
+  activeToolCalls.clear()
 }
 
 /** (Re)start the bridge with the current settings. 零配置：地址留空时自动探测；回环连接无需 token。 */
@@ -273,10 +314,14 @@ async function startBridge(): Promise<void> {
   }
   if (bridge === null) {
     const client = new BridgeClient({
-      onStateChange: () => { broadcastStatus() },
+      onStateChange: (state) => {
+        if (state !== 'connected') cancelAllToolCalls()
+        broadcastStatus()
+      },
       onFrame: (frame) => {
         if (frame.t === 'event') broadcastEvent(frame)
         else if (frame.t === 'tool.call') routeToolCall(frame)
+        else if (frame.t === 'tool.cancel') cancelToolCall(frame.id)
         // rpc.result is settled by the rpc facade (wrapped below).
       },
       onHelloOk: (negotiated) => {

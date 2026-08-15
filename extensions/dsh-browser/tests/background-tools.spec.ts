@@ -211,6 +211,21 @@ describe('dispatchToolCall', () => {
     expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 
+  it('does not dispatch an action after its bridge call is cancelled during approval', async () => {
+    const call: ToolCall = { id: 'tool-cancelled', name: 'browser_press', args: { key: 'Enter' } }
+    const controller = new AbortController()
+    const chromeMock = mockChrome({ tab: { id: 27, url: 'https://app.example/' } })
+    const authorize = vi.fn(async () => {
+      controller.abort()
+      return true
+    })
+
+    const answer = await dispatchToolCall(call, 'auto', undefined, authorize, controller.signal)
+
+    expect(answer).toMatchObject({ ok: false, error: { code: 'bridge-closed' } })
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('rejects an element reference after its frame document reloads', async () => {
     const frames = [
       { frameId: 0, parentFrameId: -1, documentId: 'top-doc', url: 'https://app.example/' },
