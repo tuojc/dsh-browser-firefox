@@ -368,10 +368,55 @@ describe('extension ↔ bridge e2e', () => {
     await expect.poll(() => sessions.list().length, { timeout: 30_000 }).toBeGreaterThan(initialSessions.length)
 
     const createdSession = sessions.list().find(session => !initialIds.has(session.id))
+    if (createdSession === undefined) throw new Error('the panel did not materialize its deferred session')
     const workspace = (context.get('workspaceRegistry') as WorkspaceRegistry).list()[0]
     expect(workspace?.path).toBe(await realpath(join(root as string, 'browser-sessions')))
-    expect(workspace?.sessionIds).toContain(createdSession?.id)
-    expect(createdSession?.header.cwd).toBe(workspace?.path)
+    expect(workspace?.sessionIds).toContain(createdSession.id)
+    expect(createdSession.header.cwd).toBe(workspace?.path)
+
+    // A host-side ask_user_question request for this exact live agent must be
+    // rendered and answered by the sidebar. Keep both the short header and the
+    // complete question in the assertion: losing the latter was the original
+    // review regression when a request supplied both fields.
+    const agent = context.agents.get(createdSession.id)
+    if (agent === undefined) throw new Error('the panel session has no live agent')
+    const answer = context.userQuestions.ask({
+      agent,
+      questions: [
+        {
+          id: 'transport',
+          header: 'Transport',
+          question: 'Which transport should the sidebar use?',
+          detail: 'Choose the primary connection for this session.',
+          options: [
+            { label: 'WebSocket', description: 'Keep the live bridge connection.' },
+            { label: 'Polling', description: 'Periodically fetch new events.' },
+          ],
+        },
+        {
+          id: 'extras',
+          question: 'Which optional capabilities should be enabled?',
+          options: [{ label: 'Delta snapshots' }, { label: 'Stable element IDs' }],
+          multiSelect: true,
+        },
+      ],
+    })
+    const questionCard = panel.locator('.question-card')
+    await questionCard.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await questionCard.locator('.question-header').textContent()).toBe('Transport')
+    expect(await questionCard.textContent()).toContain('Which transport should the sidebar use?')
+    expect(await questionCard.textContent()).toContain('Choose the primary connection for this session.')
+    await questionCard.locator('.question-item').nth(0).locator('.question-option', { hasText: 'WebSocket' }).click()
+    await questionCard.locator('.question-item').nth(1).locator('.question-option', { hasText: 'Delta snapshots' }).click()
+    await questionCard.locator('.question-item').nth(1).locator('.question-custom').fill('Session-scoped confirmations')
+    await questionCard.locator('.question-actions .primary').click()
+    await expect(answer).resolves.toEqual({
+      answers: [
+        { id: 'transport', selected: ['WebSocket'] },
+        { id: 'extras', selected: ['Delta snapshots'], custom: 'Session-scoped confirmations' },
+      ],
+    })
+    await questionCard.waitFor({ state: 'hidden', timeout: 15_000 })
 
     expect(statusText).toContain('已连接')
 
