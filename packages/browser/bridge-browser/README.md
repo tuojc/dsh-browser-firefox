@@ -50,8 +50,10 @@ The installer copies the unpacked extension to `~/.dsh/browser-extension` and op
 
 Frames are JSON objects discriminated by `t`, defined in [`protocol.ts`](src/protocol.ts) — the single source of truth shared with the extension through the workspace package's `./src/*` export. The built package also publishes `@deepseek-ai/dsh-bridge-browser/protocol` for external consumers.
 
-- Client → server: `hello` (auth + caps), `rpc` (gateway method passthrough), `tool.result`, `pong`.
-- Server → client: `hello.ok` (echoes negotiated caps), `rpc.result`, `event` (gateway event envelope, same shape as `/api/events.mux`), `tool.call`, `ping`, `error`.
+- Client → server: `hello` (auth + caps), `rpc` (gateway method passthrough), `respond` (resolve a host interaction by its RPC id), `tool.result`, `pong`.
+- Server → client: `hello.ok` (echoes negotiated caps), `rpc.result`, `respond.result` (correlated acceptance or error), `event` (gateway event envelope, same shape as `/api/events.mux`), `tool.call`, `ping`, `error`.
+
+Each `respond` carries a globally unique transport id as well as the host interaction's `rpcId`. The extension routes its receipt only to the panel that initiated it and rejects pending responses on timeout, panel closure, or bridge disconnection.
 
 ## Tools
 

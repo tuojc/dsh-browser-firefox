@@ -31,7 +31,7 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
 
 - **background** (`src/background/`): bridge connection (token auth + exponential-backoff reconnect + keepalive), gateway RPC client, **tool dispatch to the active tab**.
 - **content script** (`src/content/`): text-only snapshot (readability main text + numbered interactive inventory + form fields), **stable element numbers** (`data-dsh-el`), delta changes, click/type/press/scroll/navigate actions, sensitive-field masking.
-- **panel** (`src/panel/`): React conversation UI (isolated session/history/live events/settings); messages render as Markdown (headings/lists/code blocks/tables, sanitized).
+- **panel** (`src/panel/`): React conversation UI (isolated session/history/live events/settings); messages render as sanitized Markdown, `ask_user_question` requests render as answerable cards, and an active turn exposes a standard stop control.
 - **Protocol**: `protocol.ts` in the `@deepseek-ai/dsh-bridge-browser` workspace package is the single source of truth, shared by both ends through the package's source export.
 
 ## Build

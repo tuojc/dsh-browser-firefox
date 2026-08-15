@@ -27,6 +27,17 @@ export interface PanelCopy {
     labels: Record<string, string>
     overflow: (shown: string[], total: number) => string
   }
+  question: {
+    eyebrow: string
+    title: string
+    customAlternative: string
+    customAnswer: string
+    dismiss: string
+    answer: string
+    answering: string
+    alreadyAnswered: string
+    answerRejected: string
+  }
   settings: {
     back: string
     eyebrow: string
@@ -79,6 +90,8 @@ export interface PanelCopy {
     disconnectedPlaceholder: string
     composerHelp: string
     sendMessage: string
+    stopTurn: string
+    stoppingTurn: string
   }
 }
 
@@ -124,6 +137,17 @@ const EN: PanelCopy = {
       browser_wait: 'Wait for page',
     },
     overflow: (shown, total) => `${shown.join(' → ')} → ${total - shown.length} more`,
+  },
+  question: {
+    eyebrow: 'Waiting for your answer',
+    title: 'The assistant needs your input',
+    customAlternative: 'Or type a different answer',
+    customAnswer: 'Type your answer',
+    dismiss: 'Dismiss',
+    answer: 'Answer',
+    answering: 'Answering…',
+    alreadyAnswered: 'This question was already handled in another window.',
+    answerRejected: 'The answer was not accepted. Review it and try again.',
   },
   settings: {
     back: 'Back to chat',
@@ -177,6 +201,8 @@ const EN: PanelCopy = {
     disconnectedPlaceholder: 'Connect to dsh to get started',
     composerHelp: 'Enter to send · Shift + Enter for a new line',
     sendMessage: 'Send message',
+    stopTurn: 'Stop generating',
+    stoppingTurn: 'Stopping…',
   },
 }
 
@@ -222,6 +248,17 @@ const ZH: PanelCopy = {
       browser_wait: '等待页面',
     },
     overflow: (shown, total) => `${shown.join(' → ')} 等${total}个工具`,
+  },
+  question: {
+    eyebrow: '等待你的回答',
+    title: '助手需要你确认',
+    customAlternative: '或输入其他答案',
+    customAnswer: '输入你的答案',
+    dismiss: '放弃',
+    answer: '回答',
+    answering: '回答中…',
+    alreadyAnswered: '这个问题已在另一个窗口中处理。',
+    answerRejected: '回答未被接受，请检查后重试。',
   },
   settings: {
     back: '返回对话',
@@ -275,6 +312,8 @@ const ZH: PanelCopy = {
     disconnectedPlaceholder: '连接 dsh 后即可开始',
     composerHelp: 'Enter 发送 · Shift + Enter 换行',
     sendMessage: '发送消息',
+    stopTurn: '停止生成',
+    stoppingTurn: '正在停止…',
   },
 }
 

@@ -4,6 +4,8 @@ import {
   appendLiveRow,
   completeLastTool,
   mergeHistoryRows,
+  pendingQuestionFromFrame,
+  resolvedQuestionFromFrame,
   rowFromEvent,
   textFromBlocks,
   toolSummary,
@@ -120,5 +122,77 @@ describe('mergeHistoryRows', () => {
 
   it('handles empty history', () => {
     expect(mergeHistoryRows([], () => 0)).toEqual([])
+  })
+})
+
+describe('question mux frames', () => {
+  it('parses the full question, compact header, options, and session identity', () => {
+    expect(pendingQuestionFromFrame({
+      rpcId: 'question-rpc',
+      method: 'question/requested',
+      payload: {
+        sessionId: 'session-1',
+        questions: [{
+          id: 'database',
+          header: 'Database',
+          question: 'Which database should we use?',
+          detail: 'Choose the default for local development.',
+          options: [{ label: 'SQLite', description: 'No setup required' }, { label: 'Postgres' }],
+          multiSelect: false,
+        }],
+      },
+    })).toEqual({
+      rpcId: 'question-rpc',
+      sessionId: 'session-1',
+      questions: [{
+        id: 'database',
+        header: 'Database',
+        question: 'Which database should we use?',
+        detail: 'Choose the default for local development.',
+        options: [{ label: 'SQLite', description: 'No setup required' }, { label: 'Postgres' }],
+        multiSelect: false,
+      }],
+    })
+  })
+
+  it('rejects malformed question payloads instead of trusting mux data', () => {
+    expect(pendingQuestionFromFrame({ rpcId: 'r', method: 'session/event', payload: {} })).toBeNull()
+    expect(pendingQuestionFromFrame({ rpcId: 'r', method: 'question/requested', payload: null })).toBeNull()
+    expect(pendingQuestionFromFrame({ rpcId: 'r', method: 'question/requested', payload: { sessionId: 5, questions: [] } })).toBeNull()
+    expect(pendingQuestionFromFrame({
+      rpcId: 'r', method: 'question/requested',
+      payload: { sessionId: 's', questions: [{ id: 'q', question: 'Question?', options: [{ label: 4 }] }] },
+    })).toBeNull()
+  })
+
+  it('accepts wire-valid empty strings and repeated question ids', () => {
+    expect(pendingQuestionFromFrame({
+      rpcId: '', method: 'question/requested',
+      payload: {
+        sessionId: 's',
+        questions: [
+          { id: '', question: '', options: [{ label: '' }] },
+          { id: '', question: 'Repeated id' },
+        ],
+      },
+    })).toEqual({
+      rpcId: '',
+      sessionId: 's',
+      questions: [
+        { id: '', question: '', options: [{ label: '' }] },
+        { id: '', question: 'Repeated id' },
+      ],
+    })
+  })
+
+  it('extracts both identifiers required to match question/resolved', () => {
+    expect(resolvedQuestionFromFrame({
+      rpcId: 'event-rpc',
+      method: 'question/resolved',
+      payload: { sessionId: 'session-1', questionRpcId: 'question-rpc' },
+    })).toEqual({ sessionId: 'session-1', rpcId: 'question-rpc' })
+    expect(resolvedQuestionFromFrame({
+      rpcId: 'event-rpc', method: 'question/resolved', payload: { sessionId: 'session-1' },
+    })).toBeNull()
   })
 })

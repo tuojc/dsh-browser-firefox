@@ -17,15 +17,27 @@ import whaleUrl from '../../assets/icons/deepseek-256.png'
 import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
 import { PANEL_COPY, type PanelCopy } from './strings.ts'
+import { QuestionCard } from './QuestionCard.tsx'
+import type { QuestionAnswer } from './questions.ts'
+import {
+  hasPendingQuestion,
+  questionReceiptDisposition,
+  removePendingQuestion,
+  upsertPendingQuestion,
+} from './pending-questions.ts'
 
 /** One rendered conversation row. */
 import {
   appendLiveRow,
   completeLastTool,
   mergeHistoryRows,
+  pendingQuestionFromFrame,
+  resolvedQuestionFromFrame,
   rowFromEvent,
   toolSummary,
   type Row,
+  type PendingQuestion,
+  type ResolvedQuestion,
   type SessionEventView,
 } from './events.ts'
 
@@ -204,6 +216,7 @@ export function App(): React.JSX.Element {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [working, setWorking] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
@@ -215,11 +228,49 @@ export function App(): React.JSX.Element {
     updatedAt: number
     cwd?: string
   }[]>([])
+  const [questions, setQuestions] = useState<PendingQuestion[]>([])
+  const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
+  const questionsRef = useRef<PendingQuestion[]>([])
+  const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
+  const stoppingRef = useRef(false)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
+  const question = questions[0] ?? null
+  const questionSubmitting = question !== null && hasPendingQuestion(questionSubmissions, question)
+
+  function replaceQuestions(next: PendingQuestion[]): void {
+    questionsRef.current = next
+    setQuestions(next)
+  }
+
+  function enqueueQuestion(next: PendingQuestion): void {
+    replaceQuestions(upsertPendingQuestion(questionsRef.current, next))
+  }
+
+  function removeQuestion(target: ResolvedQuestion): void {
+    replaceQuestions(removePendingQuestion(questionsRef.current, target))
+    setQuestionBusy(target, false)
+  }
+
+  function clearQuestions(): void {
+    replaceQuestions([])
+    questionSubmissionsRef.current = []
+    setQuestionSubmissions([])
+  }
+
+  function setQuestionBusy(target: PendingQuestion | ResolvedQuestion, next: boolean): void {
+    const current = questionSubmissionsRef.current
+    const updated = next
+      ? hasPendingQuestion(current, target)
+        ? current
+        : [...current, { sessionId: target.sessionId, rpcId: target.rpcId }]
+      : removePendingQuestion(current, target)
+    questionSubmissionsRef.current = updated
+    setQuestionSubmissions(updated)
+  }
 
   // Settings: seed from storage, then let the panel own the form.
   useEffect(() => {
@@ -249,6 +300,9 @@ export function App(): React.JSX.Element {
         sessionRef.current = null
         setRows([])
         setWorking(false)
+        setStopping(false)
+        stoppingRef.current = false
+        clearQuestions()
         setSessionEpoch((epoch) => epoch + 1)
       }
     })
@@ -300,9 +354,25 @@ export function App(): React.JSX.Element {
   /** Live frame handling: session events append rows; turn/end reconciles with history. */
   async function onFrame(frame: ServerFrame): Promise<void> {
     if (frame.t !== 'event') return
+    const pendingQuestion = pendingQuestionFromFrame(frame.frame)
+    if (pendingQuestion !== null) {
+      if (pendingQuestion.sessionId === sessionRef.current) {
+        const wasEmpty = questionsRef.current.length === 0
+        enqueueQuestion(pendingQuestion)
+        if (wasEmpty) setError(null)
+      }
+      return
+    }
+    const resolvedQuestion = resolvedQuestionFromFrame(frame.frame)
+    if (resolvedQuestion !== null) {
+      removeQuestion(resolvedQuestion)
+      return
+    }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
     if (payload?.sessionId !== sessionRef.current || payload.event === undefined) return
     if (payload.event.type === 'turn/start') {
+      stoppingRef.current = false
+      setStopping(false)
       setWorking(true)
       return
     }
@@ -324,9 +394,65 @@ export function App(): React.JSX.Element {
       return
     }
     if (payload.event.type === 'turn/end') {
+      stoppingRef.current = false
+      setStopping(false)
       setWorking(false)
+      clearQuestions()
       await refreshHistory()
     }
+  }
+
+  async function answerQuestion(target: PendingQuestion, answers: QuestionAnswer[]): Promise<void> {
+    if (hasPendingQuestion(questionSubmissionsRef.current, target)
+      || !hasPendingQuestion(questionsRef.current, target)) return
+    setQuestionBusy(target, true)
+    setError(null)
+    try {
+      const receipt = await api.respond(target.rpcId, {
+        ok: true,
+        value: { sessionId: target.sessionId, answer: { answers } },
+      })
+      settleQuestionReceipt(target, receipt)
+    } catch (cause) {
+      if (hasPendingQuestion(questionsRef.current, target)) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+      setQuestionBusy(target, false)
+    }
+  }
+
+  async function dismissQuestion(target: PendingQuestion): Promise<void> {
+    if (hasPendingQuestion(questionSubmissionsRef.current, target)
+      || !hasPendingQuestion(questionsRef.current, target)) return
+    setQuestionBusy(target, true)
+    setError(null)
+    try {
+      const receipt = await api.respond(target.rpcId, {
+        ok: false,
+        error: { code: 'cancelled', message: 'the user dismissed this question request', details: {} },
+      })
+      settleQuestionReceipt(target, receipt)
+    } catch (cause) {
+      if (hasPendingQuestion(questionsRef.current, target)) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+      setQuestionBusy(target, false)
+    }
+  }
+
+  function settleQuestionReceipt(target: PendingQuestion, receipt: unknown): void {
+    const disposition = questionReceiptDisposition(receipt)
+    if (disposition === 'accepted') {
+      removeQuestion(target)
+      return
+    }
+    if (disposition === 'not-pending') {
+      setError(copy.question.alreadyAnswered)
+      removeQuestion(target)
+      return
+    }
+    setError(copy.question.answerRejected)
+    setQuestionBusy(target, false)
   }
 
   async function refreshHistory(): Promise<void> {
@@ -415,6 +541,27 @@ export function App(): React.JSX.Element {
     } finally {
       setBusy(false)
       sendingRef.current = false
+    }
+  }
+
+  /** Cancel the active turn while keeping the sidebar session available. */
+  async function stopTurn(): Promise<void> {
+    const id = sessionRef.current
+    if (id === null || stoppingRef.current) return
+    stoppingRef.current = true
+    setStopping(true)
+    setError(null)
+    try {
+      await api.rpc('session.cancel', { sessionId: id })
+      if (sessionRef.current === id) {
+        setWorking(false)
+        clearQuestions()
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      stoppingRef.current = false
+      setStopping(false)
     }
   }
 
@@ -602,7 +749,7 @@ export function App(): React.JSX.Element {
             {row.kind === 'tool' ? <ToolActivity row={row} copy={copy} /> : <MessageBody row={row} />}
           </div>
         ))}
-        {working && rows[rows.length - 1]?.status !== 'running' && (
+        {working && question === null && rows[rows.length - 1]?.status !== 'running' && (
           <div className="ai-progress" role="status" aria-label={copy.app.assistantWorking}>
             <span className="assistant-avatar"><img src={whaleUrl} alt="" /></span>
             <span className="progress-dots" aria-hidden="true"><i /><i /><i /></span>
@@ -610,6 +757,16 @@ export function App(): React.JSX.Element {
           </div>
         )}
       </div>
+      {question !== null && (
+        <QuestionCard
+          key={`${question.sessionId}:${question.rpcId}`}
+          question={question}
+          copy={copy}
+          submitting={questionSubmitting}
+          onAnswer={(answers) => { void answerQuestion(question, answers) }}
+          onDismiss={() => { void dismissQuestion(question) }}
+        />
+      )}
       {error !== null && <div className="error">{error}</div>}
       <footer className="composer">
         <div className="composer-box">
@@ -629,7 +786,19 @@ export function App(): React.JSX.Element {
           />
           <div className="composer-actions">
             <span>{copy.app.composerHelp}</span>
-            <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+            {working ? (
+              <button
+                className="stop-button"
+                onClick={() => { void stopTurn() }}
+                disabled={state !== 'connected' || stopping}
+                aria-label={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
+                title={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
+              >
+                <span className="stop-glyph" aria-hidden="true" />
+              </button>
+            ) : (
+              <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+            )}
           </div>
         </div>
       </footer>
