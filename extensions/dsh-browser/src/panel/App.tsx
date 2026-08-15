@@ -25,6 +25,7 @@ import {
   removePendingQuestion,
   upsertPendingQuestion,
 } from './pending-questions.ts'
+import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
 
 /** One rendered conversation row. */
 import {
@@ -42,20 +43,7 @@ import {
 } from './events.ts'
 
 function normalizeWebOrigin(value: string): string | null {
-  const trimmed = value.trim()
-  // Wildcard forms: *.example.com, https://*.example.com, https://%2A.example.com
-  // normalize to *.example.com (matches example.com and all subdomains, both schemes).
-  const wildcard = trimmed.match(/^(?:https?:\/\/)?(?:\*|%2[Aa])\.(.+)$/i)
-  if (wildcard !== null) {
-    const host = wildcard[1]!.toLowerCase()
-    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) ? `*.${host}` : null
-  }
-  try {
-    const url = new URL(trimmed)
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null
-  } catch {
-    return null
-  }
+  return normalizeTrustedOrigin(value) ?? null
 }
 
 function SettingsIcon(): React.JSX.Element {

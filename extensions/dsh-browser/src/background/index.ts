@@ -35,6 +35,10 @@ import {
 } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
 import { InteractionResponseRouter } from './responses.ts'
+import {
+  actionCoveredByTrustedOrigins,
+  normalizeTrustedOrigin,
+} from '../security/trusted-origins.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -125,59 +129,14 @@ async function persistSettings(next: Partial<Settings>): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEY]: settings })
 }
 
-/** Normalize a trusted-origin entry; wildcard forms (`*.x`, `https://*.x`, `https://%2A.x`) become `*.x`. */
-function normalizeTrustedEntry(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const wildcard = value.match(/^(?:https?:\/\/)?(?:\*|%2[Aa])\.(.+)$/i)
-  if (wildcard !== null) {
-    const host = wildcard[1]!.toLowerCase()
-    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) ? `*.${host}` : undefined
-  }
-  if (isCanonicalWebOrigin(value)) return value
-  return undefined
-}
-
 function normalizeSettings(candidate: Settings): Settings {
   const trusted = Array.isArray(candidate.trustedActionOrigins)
-    ? [...new Set(candidate.trustedActionOrigins.map(normalizeTrustedEntry).filter((entry): entry is string => entry !== undefined))].sort()
+    ? [...new Set(candidate.trustedActionOrigins.map(normalizeTrustedOrigin).filter((entry): entry is string => entry !== undefined))].sort()
     : []
   const sharePageContent = candidate.sharePageContent === 'auto' || candidate.sharePageContent === 'off'
     ? candidate.sharePageContent
     : candidate.sharePageContent === 'ask' ? 'ask' : 'auto'
   return { ...candidate, sharePageContent, trustedActionOrigins: trusted }
-}
-
-function isCanonicalWebOrigin(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  // Wildcard form: *.example.com matches example.com and all subdomains.
-  if (value.startsWith('*.')) {
-    const host = value.slice(2)
-    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(host)
-  }
-  try {
-    const url = new URL(value)
-    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value
-  } catch {
-    return false
-  }
-}
-
-/** True when `origin` matches a trusted entry, exact or wildcard (`*.example.com`). */
-function originMatchesTrusted(origin: string, trusted: Set<string> | readonly string[]): boolean {
-  if (trusted instanceof Set ? trusted.has(origin) : trusted.includes(origin)) return true
-  for (const entry of trusted) {
-    if (!entry.startsWith('*.')) continue
-    const suffix = entry.slice(1).toLowerCase() // ".example.com"
-    try {
-      const url = new URL(origin)
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') continue
-      const host = url.hostname.toLowerCase()
-      if (host === suffix.slice(1) || host.endsWith(suffix)) return true
-    } catch {
-      // not a parseable origin; skip
-    }
-  }
-  return false
 }
 
 function broadcastStatus(): void {
@@ -254,14 +213,11 @@ function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<A
 
 async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false
-  // Trusted origins (exact or wildcard) cover the call without a prompt when
-  // every involved origin is trusted — this includes same-origin actions,
-  // cross-origin navigations, and iframe targets whose origins are all trusted.
-  // Unknown origins always fall through to a fresh decision.
-  if (prompt.kind === 'action' && prompt.origins.length > 0
-    && prompt.origins.every((origin) =>
-      originMatchesTrusted(origin, sessionTrustedActionOrigins)
-      || originMatchesTrusted(origin, settings.trustedActionOrigins))) {
+  if (actionCoveredByTrustedOrigins(
+    prompt,
+    sessionTrustedActionOrigins,
+    settings.trustedActionOrigins,
+  )) {
     return true
   }
   const decision = await requestApproval(prompt, signal)
