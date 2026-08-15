@@ -246,6 +246,7 @@ describe('extension ↔ bridge e2e', () => {
     await panel.click('button[aria-label="打开设置"]')
     await panel.fill('input[placeholder*="自动检测"]', `ws://127.0.0.1:${port}`)
     await panel.fill('input[type="password"]', TOKEN)
+    await panel.selectOption('select', 'ask')
     await panel.click('text=保存并连接')
 
     // The settings must land in background storage before the reconnect.

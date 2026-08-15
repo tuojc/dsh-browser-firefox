@@ -191,7 +191,7 @@ export function App(): React.JSX.Element {
       setSettings({
         bridgeUrl: raw?.bridgeUrl ?? '',
         token: raw?.token ?? '',
-        sharePageContent: raw?.sharePageContent ?? 'ask',
+        sharePageContent: raw?.sharePageContent ?? 'auto',
         trustedActionOrigins: raw?.trustedActionOrigins ?? [],
       })
     })
@@ -404,11 +404,11 @@ export function App(): React.JSX.Element {
             <span>页面内容共享</span>
             <small>控制助手何时可以读取页面文字</small>
             <select
-              value={settings?.sharePageContent ?? 'ask'}
+              value={settings?.sharePageContent ?? 'auto'}
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, sharePageContent: e.target.value as PanelSettings['sharePageContent'] })}
             >
+              <option value="auto">自动共享（默认）</option>
               <option value="ask">每次询问</option>
-              <option value="auto">自动共享</option>
               <option value="off">关闭</option>
             </select>
           </label>

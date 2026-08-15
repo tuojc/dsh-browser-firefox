@@ -45,7 +45,7 @@ const SETTINGS_DEFAULTS: Settings = {
   // 空地址 = 自动探测本机 dsh（零配置）；手动填地址时优先手动。
   bridgeUrl: '',
   token: '',
-  sharePageContent: 'ask',
+  sharePageContent: 'auto',
   trustedActionOrigins: [],
 }
 
@@ -122,7 +122,7 @@ function normalizeSettings(candidate: Settings): Settings {
     : []
   const sharePageContent = candidate.sharePageContent === 'auto' || candidate.sharePageContent === 'off'
     ? candidate.sharePageContent
-    : 'ask'
+    : candidate.sharePageContent === 'ask' ? 'ask' : 'auto'
   return { ...candidate, sharePageContent, trustedActionOrigins: trusted }
 }
 
