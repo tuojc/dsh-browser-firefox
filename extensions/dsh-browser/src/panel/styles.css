@@ -1664,3 +1664,121 @@ textarea:focus-visible {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Session history picker */
+.session-picker {
+  flex: 0 0 auto;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.session-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.session-picker-head strong {
+  color: var(--ink-strong);
+  font-size: 12.5px;
+}
+
+.session-new {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: var(--blue-ink);
+  background: var(--blue-soft);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.session-new:hover {
+  border-color: var(--blue);
+}
+
+.session-new:disabled {
+  color: var(--faint);
+  background: var(--canvas-deep);
+  cursor: default;
+}
+
+.session-empty {
+  margin: 6px 0 2px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.session-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-list li + li {
+  border-top: 1px solid var(--line);
+}
+
+.session-list button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 3px;
+  padding: 8px 6px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.session-list button:hover {
+  background: var(--blue-wash);
+}
+
+.session-list button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.session-list button[aria-current="true"] {
+  background: var(--blue-wash);
+}
+
+.session-title {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.session-time {
+  flex: 0 0 auto;
+}
+
+.session-cwd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

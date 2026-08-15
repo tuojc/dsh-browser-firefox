@@ -35,6 +35,11 @@ import {
 } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
 import { InteractionResponseRouter } from './responses.ts'
+import {
+  actionCoveredByTrustedOrigins,
+  normalizeTrustedOrigin,
+} from '../security/trusted-origins.ts'
+import { TransientEventCache } from './transient-events.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -100,6 +105,7 @@ let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
 const interactionResponses = new InteractionResponseRouter()
+const transientEvents = new TransientEventCache()
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
@@ -127,22 +133,12 @@ async function persistSettings(next: Partial<Settings>): Promise<void> {
 
 function normalizeSettings(candidate: Settings): Settings {
   const trusted = Array.isArray(candidate.trustedActionOrigins)
-    ? [...new Set(candidate.trustedActionOrigins.filter(isCanonicalWebOrigin))].sort()
+    ? [...new Set(candidate.trustedActionOrigins.map(normalizeTrustedOrigin).filter((entry): entry is string => entry !== undefined))].sort()
     : []
   const sharePageContent = candidate.sharePageContent === 'auto' || candidate.sharePageContent === 'off'
     ? candidate.sharePageContent
     : candidate.sharePageContent === 'ask' ? 'ask' : 'auto'
   return { ...candidate, sharePageContent, trustedActionOrigins: trusted }
-}
-
-function isCanonicalWebOrigin(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  try {
-    const url = new URL(value)
-    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value
-  } catch {
-    return false
-  }
 }
 
 function broadcastStatus(): void {
@@ -219,9 +215,11 @@ function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<A
 
 async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false
-  if (prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1
-    && (sessionTrustedActionOrigins.has(prompt.origins[0]!)
-      || settings.trustedActionOrigins.includes(prompt.origins[0]!))) {
+  if (actionCoveredByTrustedOrigins(
+    prompt,
+    sessionTrustedActionOrigins,
+    settings.trustedActionOrigins,
+  )) {
     return true
   }
   const decision = await requestApproval(prompt, signal)
@@ -339,11 +337,15 @@ async function startBridge(): Promise<void> {
         if (state !== 'connected') {
           cancelAllToolCalls()
           interactionResponses.failAll(responseMessages().disconnected)
+          transientEvents.clear()
         }
         broadcastStatus()
       },
       onFrame: (frame) => {
-        if (frame.t === 'event') broadcastEvent(frame)
+        if (frame.t === 'event') {
+          transientEvents.ingest(frame)
+          broadcastEvent(frame)
+        }
         else if (frame.t === 'tool.call') routeToolCall(frame)
         else if (frame.t === 'tool.cancel') cancelToolCall(frame.id)
         else if (frame.t === 'respond.result') interactionResponses.route(frame)
@@ -434,7 +436,10 @@ chrome.runtime.onConnect.addListener((port) => {
         break
       }
       case 'request-status':
-        broadcastStatus()
+        try {
+          port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps })
+          for (const frame of transientEvents.replay()) port.postMessage({ type: 'event', frame })
+        } catch { /* port closed */ }
         break
     }
   })

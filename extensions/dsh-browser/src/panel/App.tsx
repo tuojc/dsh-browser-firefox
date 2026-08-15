@@ -25,6 +25,14 @@ import {
   removePendingQuestion,
   upsertPendingQuestion,
 } from './pending-questions.ts'
+import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
+import {
+  resumableSessions,
+  sessionAcceptsPrompts,
+  sessionDisplayTitle,
+  SessionRuntimeCache,
+  type SessionPickerEntry,
+} from './sessions.ts'
 
 /** One rendered conversation row. */
 import {
@@ -42,12 +50,7 @@ import {
 } from './events.ts'
 
 function normalizeWebOrigin(value: string): string | null {
-  try {
-    const url = new URL(value.trim())
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null
-  } catch {
-    return null
-  }
+  return normalizeTrustedOrigin(value) ?? null
 }
 
 function SettingsIcon(): React.JSX.Element {
@@ -64,6 +67,15 @@ function PageIcon(): React.JSX.Element {
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="M5.25 2.75h6.1l3.4 3.4v11.1h-9.5V2.75Z" />
       <path d="M11.25 2.9v3.35h3.35M7.7 10h4.6M7.7 13h4.6" />
+    </svg>
+  )
+}
+
+function HistoryIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 3a7 7 0 1 0 6.32 4M10 3a7 7 0 0 1 7 7" />
+      <path d="M10 6.5V10l2.5 1.5M3 3v4h4" />
     </svg>
   )
 }
@@ -204,11 +216,18 @@ export function App(): React.JSX.Element {
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
+  const [loadingSessions, setLoadingSessions] = useState(false)
+  const [sessionChanging, setSessionChanging] = useState(false)
+  const [sessionList, setSessionList] = useState<SessionPickerEntry[]>([])
   const [questions, setQuestions] = useState<PendingQuestion[]>([])
   const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
   const questionsRef = useRef<PendingQuestion[]>([])
   const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
+  const sessionChangingRef = useRef(false)
+  const sessionTransitionRef = useRef(0)
+  const sessionRuntimeRef = useRef(new SessionRuntimeCache())
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -216,17 +235,21 @@ export function App(): React.JSX.Element {
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
   const question = questions[0] ?? null
   const questionSubmitting = question !== null && hasPendingQuestion(questionSubmissions, question)
+  const sessionSwitchBlocked = sessionChanging || busy || working || stopping
+    || questions.length > 0 || approvalQueue.length > 0
+  const sessionReady = sessionAcceptsPrompts(
+    state === 'connected',
+    sessionChanging,
+    sessionRef.current,
+  )
 
   function replaceQuestions(next: PendingQuestion[]): void {
     questionsRef.current = next
     setQuestions(next)
   }
 
-  function enqueueQuestion(next: PendingQuestion): void {
-    replaceQuestions(upsertPendingQuestion(questionsRef.current, next))
-  }
-
   function removeQuestion(target: ResolvedQuestion): void {
+    sessionRuntimeRef.current.resolveQuestion(target)
     replaceQuestions(removePendingQuestion(questionsRef.current, target))
     setQuestionBusy(target, false)
   }
@@ -273,10 +296,15 @@ export function App(): React.JSX.Element {
       const previous = lastStateRef.current
       lastStateRef.current = next
       if (previous !== null && next !== previous && next === 'stopped') {
+        sessionTransitionRef.current += 1
+        sessionChangingRef.current = false
         sessionRef.current = null
+        sessionRuntimeRef.current.clear()
         setRows([])
         setWorking(false)
         setStopping(false)
+        setSessionChanging(false)
+        setShowSessionPicker(false)
         stoppingRef.current = false
         clearQuestions()
         setSessionEpoch((epoch) => epoch + 1)
@@ -332,9 +360,10 @@ export function App(): React.JSX.Element {
     if (frame.t !== 'event') return
     const pendingQuestion = pendingQuestionFromFrame(frame.frame)
     if (pendingQuestion !== null) {
+      sessionRuntimeRef.current.rememberQuestion(pendingQuestion)
       if (pendingQuestion.sessionId === sessionRef.current) {
         const wasEmpty = questionsRef.current.length === 0
-        enqueueQuestion(pendingQuestion)
+        replaceQuestions(upsertPendingQuestion(questionsRef.current, pendingQuestion))
         if (wasEmpty) setError(null)
       }
       return
@@ -345,17 +374,29 @@ export function App(): React.JSX.Element {
       return
     }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
-    if (payload?.sessionId !== sessionRef.current || payload.event === undefined) return
+    if (payload?.sessionId === undefined || payload.event === undefined) return
     if (payload.event.type === 'turn/start') {
+      sessionRuntimeRef.current.startTurn(payload.sessionId)
+      if (payload.sessionId !== sessionRef.current) return
       stoppingRef.current = false
       setStopping(false)
       setWorking(true)
       return
     }
+    if (payload.event.type === 'turn/end') {
+      sessionRuntimeRef.current.finishTurn(payload.sessionId)
+      if (payload.sessionId !== sessionRef.current) return
+      stoppingRef.current = false
+      setStopping(false)
+      setWorking(false)
+      clearQuestions()
+      await refreshHistory(payload.sessionId)
+      return
+    }
+    if (payload.sessionId !== sessionRef.current) return
     const row = rowFromEvent(payload.event)
     if (row !== null) {
       setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq()))
-      if (row.kind === 'assistant') setWorking(false)
       return
     }
     if (payload.event.type === 'tool/call') {
@@ -368,13 +409,6 @@ export function App(): React.JSX.Element {
       // 并入最后一行工具行：调用已完成（不新增行）。
       setRows((prev) => completeLastTool(prev, nextSeq()))
       return
-    }
-    if (payload.event.type === 'turn/end') {
-      stoppingRef.current = false
-      setStopping(false)
-      setWorking(false)
-      clearQuestions()
-      await refreshHistory()
     }
   }
 
@@ -431,33 +465,112 @@ export function App(): React.JSX.Element {
     setQuestionBusy(target, false)
   }
 
-  async function refreshHistory(): Promise<void> {
-    const id = sessionRef.current
+  async function refreshHistory(requestedId: string | null = sessionRef.current): Promise<void> {
+    const id = requestedId
     if (id === null) return
     try {
       const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
+      if (sessionRef.current !== id) return
       setRows(mergeHistoryRows(result.events.map((entry) => entry.event), nextSeq, locale))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (sessionRef.current === id) setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
   /** 每次打开侧边栏都新建一个会话（与 GUI/其他界面的历史完全隔离）。 */
   async function ensureSession(): Promise<void> {
+    const transition = beginSessionTransition()
     try {
       const created = await api.rpc<{ sessionId: string }>('session.create', {})
+      if (sessionTransitionRef.current !== transition) return
       sessionRef.current = created.sessionId
-      await refreshHistory()
+      sessionRuntimeRef.current.seedRunning(created.sessionId, false)
+      await refreshHistory(created.sessionId)
+    } catch (cause) {
+      if (sessionTransitionRef.current === transition) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    } finally {
+      finishSessionTransition(transition)
+    }
+  }
+
+  /** 打开历史会话选择器：拉取持久化会话列表（已过滤空白会话），供恢复。 */
+  async function openSessionPicker(): Promise<void> {
+    if (showSessionPicker) {
+      setShowSessionPicker(false)
+      return
+    }
+    if (state !== 'connected' || sessionSwitchBlocked || sessionChangingRef.current) return
+    setShowSessionPicker(true)
+    setLoadingSessions(true)
+    try {
+      const result = await api.rpc<{ items: SessionPickerEntry[] }>('session.list', {})
+      for (const entry of result.items ?? []) {
+        sessionRuntimeRef.current.seedRunning(entry.sessionId, entry.running)
+      }
+      setSessionList(resumableSessions(result.items ?? []))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoadingSessions(false)
     }
+  }
+
+  /** 恢复历史会话：切换当前 session 并加载其历史。 */
+  async function resumeSession(entry: SessionPickerEntry): Promise<void> {
+    if (sessionSwitchBlocked || sessionChangingRef.current) return
+    const transition = beginSessionTransition()
+    const runtime = sessionRuntimeRef.current.snapshot(entry.sessionId, entry.running)
+    prepareSessionSwitch(runtime.running, runtime.questions)
+    sessionRef.current = entry.sessionId
+    try {
+      await refreshHistory(entry.sessionId)
+    } finally {
+      finishSessionTransition(transition)
+    }
+  }
+
+  /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
+  async function startNewSession(): Promise<void> {
+    if (sessionSwitchBlocked || sessionChangingRef.current) return
+    sessionRef.current = null
+    prepareSessionSwitch(false)
+    await ensureSession()
+  }
+
+  function beginSessionTransition(): number {
+    sessionChangingRef.current = true
+    setSessionChanging(true)
+    sessionTransitionRef.current += 1
+    return sessionTransitionRef.current
+  }
+
+  function finishSessionTransition(transition: number): void {
+    if (sessionTransitionRef.current !== transition) return
+    sessionChangingRef.current = false
+    setSessionChanging(false)
+  }
+
+  function prepareSessionSwitch(nextWorking: boolean, nextQuestions: PendingQuestion[] = []): void {
+    setRows([])
+    setInput('')
+    setWorking(nextWorking)
+    setStopping(false)
+    stoppingRef.current = false
+    replaceQuestions(nextQuestions)
+    questionSubmissionsRef.current = []
+    setQuestionSubmissions([])
+    setError(null)
+    setShowSessionPicker(false)
   }
 
   const sendingRef = useRef(false)
   async function send(textOverride?: string): Promise<void> {
     const text = (textOverride ?? input).trim()
+    const id = sessionRef.current
     // busy state 是异步的：连续回车可能都通过 state 检查——用 ref 同步锁。
-    if (text === '' || busy || sendingRef.current || sessionRef.current === null) return
+    if (text === '' || busy || sendingRef.current || sessionChangingRef.current || id === null) return
     sendingRef.current = true
     setInput('')
     setBusy(true)
@@ -466,7 +579,7 @@ export function App(): React.JSX.Element {
     // 不渲染乐观行：live user/message 事件即时回显，避免同一消息出现两行。
     try {
       await api.rpc('session.prompt', {
-        sessionId: sessionRef.current,
+        sessionId: id,
         mode: 'queue',
         content: [{ type: 'text', text }],
       })
@@ -482,13 +595,14 @@ export function App(): React.JSX.Element {
   /** Cancel the active turn while keeping the sidebar session available. */
   async function stopTurn(): Promise<void> {
     const id = sessionRef.current
-    if (id === null || stoppingRef.current) return
+    if (id === null || stoppingRef.current || sessionChangingRef.current) return
     stoppingRef.current = true
     setStopping(true)
     setError(null)
     try {
       await api.rpc('session.cancel', { sessionId: id })
       if (sessionRef.current === id) {
+        sessionRuntimeRef.current.finishTurn(id)
         setWorking(false)
         clearQuestions()
       }
@@ -591,7 +705,7 @@ export function App(): React.JSX.Element {
               value={trustedOriginInput}
               onChange={(event) => setTrustedOriginInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') addTrustedOrigin() }}
-              placeholder="https://example.com"
+              placeholder="https://example.com / https://*.example.com"
             />
             <button disabled={normalizeWebOrigin(trustedOriginInput) === null} onClick={addTrustedOrigin}>{copy.settings.add}</button>
           </div>
@@ -623,15 +737,52 @@ export function App(): React.JSX.Element {
           <span className="brand-copy"><strong>{copy.app.brand}</strong><small>{copy.app.tagline}</small></span>
         </div>
         <span className="connection" role="status"><span className={`dot ${state}`} />{statusText}</span>
+        <button className="icon-button" disabled={state !== 'connected' || sessionSwitchBlocked}
+          onClick={() => { void openSessionPicker() }} aria-label={copy.app.openSessions} title={copy.app.sessions}><HistoryIcon /></button>
         <button className="icon-button" onClick={() => setShowSettings(true)} aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
       </header>
+      {showSessionPicker && (
+        <section className="session-picker" aria-label={copy.app.sessions}>
+          <div className="session-picker-head">
+            <strong>{copy.app.sessions}</strong>
+            <button className="session-new" disabled={state !== 'connected' || sessionSwitchBlocked}
+              onClick={() => { void startNewSession() }}>
+              {copy.app.newSession}
+            </button>
+          </div>
+          {loadingSessions
+            ? <p className="session-empty">{copy.app.sessionPickerLoading}</p>
+            : sessionList.length === 0
+              ? <p className="session-empty">{copy.app.sessionPickerEmpty}</p>
+              : (
+                <ul className="session-list">
+                  {sessionList.map((entry) => {
+                    const title = sessionDisplayTitle(entry)
+                    return (
+                      <li key={entry.sessionId}>
+                        <button disabled={sessionSwitchBlocked}
+                          aria-current={entry.sessionId === sessionRef.current ? 'true' : undefined}
+                          onClick={() => { void resumeSession(entry) }}>
+                          <span className="session-title" title={title}>{title}</span>
+                          <span className="session-meta">
+                            <span className="session-time">{new Date(entry.updatedAt).toLocaleString()}</span>
+                            {entry.cwd !== undefined && <span className="session-cwd" title={entry.cwd}>{entry.cwd}</span>}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+        </section>
+      )}
       <section className="context-card" aria-label={copy.app.currentPage}>
         <span className="context-icon"><PageIcon /></span>
         <span className="context-copy">
           <small>{copy.app.currentPage}</small>
           <strong title={pageInfo ?? undefined}>{pageInfo ?? copy.app.waitingForPage}</strong>
         </span>
-        <button className="context-action" disabled={state !== 'connected' || busy}
+        <button className="context-action" disabled={!sessionReady || busy}
           onClick={() => { void send(copy.app.readPagePrompt) }}>
           {copy.app.readPage}
         </button>
@@ -644,7 +795,7 @@ export function App(): React.JSX.Element {
               <h1>{copy.app.emptyTitle}</h1>
               <p>{copy.app.emptyDescription}</p>
             </div>
-            <button disabled={state !== 'connected'}
+            <button disabled={!sessionReady}
               onClick={() => { void send(copy.app.overviewPrompt) }}>
               {copy.app.overviewPage}
             </button>
@@ -688,7 +839,7 @@ export function App(): React.JSX.Element {
               }
             }}
             placeholder={state === 'connected' ? copy.app.connectedPlaceholder : copy.app.disconnectedPlaceholder}
-            disabled={state !== 'connected'}
+            disabled={!sessionReady}
             rows={2}
           />
           <div className="composer-actions">
@@ -697,14 +848,14 @@ export function App(): React.JSX.Element {
               <button
                 className="stop-button"
                 onClick={() => { void stopTurn() }}
-                disabled={state !== 'connected' || stopping}
+                disabled={!sessionReady || stopping}
                 aria-label={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
                 title={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
               >
                 <span className="stop-glyph" aria-hidden="true" />
               </button>
             ) : (
-              <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+              <button onClick={() => void send()} disabled={!sessionReady || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
             )}
           </div>
         </div>
