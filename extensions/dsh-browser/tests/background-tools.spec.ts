@@ -13,8 +13,21 @@ function mockChrome(options: {
   respond?: (message: unknown, frameId: number) => unknown
 }) {
   const responses = [...(options.responses ?? [OK])]
-  const sendMessage = vi.fn(async (_tabId: number, message: unknown, target?: { frameId?: number }) => {
-    const response = options.respond?.(message, target?.frameId ?? 0) ?? responses.shift()
+  const currentFrames = () => options.frames ?? (options.tab?.id === undefined ? [] : [{
+    frameId: 0,
+    parentFrameId: -1,
+    documentId: `document-${options.tab.id}`,
+    url: options.tab.url ?? '',
+  }])
+  const sendMessage = vi.fn(async (
+    _tabId: number,
+    message: unknown,
+    target?: { frameId?: number; documentId?: string },
+  ) => {
+    const targetFrameId = target?.frameId
+      ?? currentFrames().find((frame) => frame.documentId === target?.documentId)?.frameId
+      ?? 0
+    const response = options.respond?.(message, targetFrameId) ?? responses.shift()
     if (response instanceof Error) throw response
     return response
   })
@@ -22,12 +35,7 @@ function mockChrome(options: {
     ? vi.fn(async () => [{ frameId: 0, result: undefined }])
     : vi.fn(async () => { throw options.injectionError })
   const query = vi.fn(async () => options.tab === undefined ? [] : [options.tab])
-  const getAllFrames = vi.fn(async () => options.frames ?? (options.tab?.id === undefined ? [] : [{
-    frameId: 0,
-    parentFrameId: -1,
-    documentId: `document-${options.tab.id}`,
-    url: options.tab.url ?? '',
-  }]))
+  const getAllFrames = vi.fn(async () => currentFrames())
   vi.stubGlobal('chrome', {
     tabs: { query, sendMessage },
     scripting: { executeScript },
@@ -45,7 +53,7 @@ describe('dispatchToolCall', () => {
   it('uses an already-loaded content script without injecting', async () => {
     const chromeMock = mockChrome({ tab: { id: 7, url: 'https://example.com' } })
 
-    const answer = await dispatchToolCall(CALL, 'ask')
+    const answer = await dispatchToolCall(CALL, 'auto')
     expect(answer.ok).toBe(true)
     expect((answer.result as { text: string }).text).toContain('page')
     expect((answer.result as { text: string }).text).toContain('UNTRUSTED_PAGE_CONTENT')
@@ -60,7 +68,7 @@ describe('dispatchToolCall', () => {
       responses: [new Error('Could not establish connection. Receiving end does not exist.'), OK],
     })
 
-    const answer = await dispatchToolCall(CALL, 'ask', budget)
+    const answer = await dispatchToolCall(CALL, 'auto', budget)
     expect(answer.ok).toBe(true)
     expect((answer.result as { text: string }).text).toContain('page')
     expect(chromeMock.executeScript).toHaveBeenCalledWith({
@@ -73,7 +81,7 @@ describe('dispatchToolCall', () => {
       action: 'browser_snapshot',
       args: { delta: false },
       budget,
-    }, { frameId: 0 })
+    }, { documentId: 'document-7' })
   })
 
   it('does not attempt injection on Chrome internal pages', async () => {
@@ -82,7 +90,7 @@ describe('dispatchToolCall', () => {
       responses: [new Error('no receiver')],
     })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toMatchObject({
+    await expect(dispatchToolCall(CALL, 'auto')).resolves.toMatchObject({
       ok: false,
       error: { code: 'content-unavailable', message: expect.stringContaining('http/https') },
     })
@@ -96,7 +104,7 @@ describe('dispatchToolCall', () => {
       injectionError: new Error('Cannot access contents of the page'),
     })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toMatchObject({
+    await expect(dispatchToolCall(CALL, 'auto')).resolves.toMatchObject({
       ok: false,
       error: { code: 'content-unavailable', message: expect.stringContaining('受保护页面') },
     })
@@ -129,7 +137,10 @@ describe('dispatchToolCall', () => {
     expect(text).toContain('TOP SNAPSHOT')
     expect(text).toContain('iframe frame=4 parent=0 origin=https://login.example.net')
     expect(text).toContain('IFRAME SNAPSHOT')
-    expect(chromeMock.sendMessage.mock.calls.map((call) => call[2])).toEqual([{ frameId: 0 }, { frameId: 4 }])
+    expect(chromeMock.sendMessage.mock.calls.map((call) => call[2])).toEqual([
+      { documentId: 'top-doc' },
+      { documentId: 'child-doc' },
+    ])
   })
 
   it('routes an element action to the requested frame and removes routing metadata', async () => {
@@ -140,16 +151,22 @@ describe('dispatchToolCall', () => {
         { frameId: 0, parentFrameId: -1, documentId: 'top-doc', url: 'https://app.example/' },
         { frameId: 8, parentFrameId: 0, documentId: 'child-doc', url: 'https://widget.example/' },
       ],
-      responses: [OK],
+      respond: (message, frameId) => {
+        const action = (message as { action?: string }).action
+        if (action === 'browser_snapshot') return { ok: true, result: { text: `frame ${frameId}` } }
+        return OK
+      },
     })
 
-    await expect(dispatchToolCall(call, 'auto')).resolves.toEqual(OK)
+    await dispatchToolCall(CALL, 'auto')
+    chromeMock.sendMessage.mockClear()
+    await expect(dispatchToolCall(call, 'auto', undefined, async () => true)).resolves.toEqual(OK)
     expect(chromeMock.sendMessage).toHaveBeenCalledWith(22, {
       type: 'DSH_ACTION',
       action: 'browser_click',
       args: { index: 3 },
       budget: { maxItems: 60, maxChars: 12_000 },
-    }, { frameId: 8 })
+    }, { documentId: 'child-doc' })
   })
 
   it('wraps browser_get_text output in the same untrusted-content boundary', async () => {
@@ -162,6 +179,103 @@ describe('dispatchToolCall', () => {
     expect(text).toContain('page text')
     expect(text).toContain('UNTRUSTED_PAGE_CONTENT')
     expect(text.length).toBeLessThanOrEqual(1_000)
+  })
+
+  it('fails closed before reading when per-read approval is denied', async () => {
+    const authorize = vi.fn(async () => false)
+    const chromeMock = mockChrome({
+      tab: { id: 25, url: 'https://app.example/' },
+      frames: [
+        { frameId: 0, parentFrameId: -1, documentId: 'top', url: 'https://app.example/' },
+        { frameId: 2, parentFrameId: 0, documentId: 'child', url: 'https://embed.example.net/' },
+      ],
+    })
+
+    const answer = await dispatchToolCall(CALL, 'ask', undefined, authorize)
+
+    expect(answer).toMatchObject({ ok: false, error: { code: 'action-failed' } })
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'read',
+      origins: ['https://app.example', 'https://embed.example.net'],
+    }))
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('fails closed before a state-changing action when no approver is present', async () => {
+    const call: ToolCall = { id: 'tool-denied', name: 'browser_press', args: { key: 'Enter' } }
+    const chromeMock = mockChrome({ tab: { id: 26, url: 'https://app.example/' } })
+
+    const answer = await dispatchToolCall(call, 'auto')
+
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('未批准') } })
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects an element reference after its frame document reloads', async () => {
+    const frames = [
+      { frameId: 0, parentFrameId: -1, documentId: 'top-doc', url: 'https://app.example/' },
+      { frameId: 3, parentFrameId: 0, documentId: 'child-v1', url: 'https://widget.example/form' },
+    ]
+    const chromeMock = mockChrome({
+      tab: { id: 30, url: 'https://app.example/' },
+      frames,
+      respond: (_message, frameId) => ({ ok: true, result: { text: `frame ${frameId}` } }),
+    })
+    await dispatchToolCall(CALL, 'auto')
+    chromeMock.sendMessage.mockClear()
+    frames[1] = { ...frames[1]!, documentId: 'child-v2' }
+
+    const answer = await dispatchToolCall(
+      { id: 'stale-click', name: 'browser_click', args: { frame: 3, index: 4 } },
+      'auto',
+      undefined,
+      async () => true,
+    )
+
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('重新 browser_snapshot') } })
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects an action when its target origin changes during approval', async () => {
+    const frames = [
+      { frameId: 0, parentFrameId: -1, documentId: 'top-v1', url: 'https://app.example/' },
+    ]
+    const chromeMock = mockChrome({ tab: { id: 31, url: 'https://app.example/' }, frames })
+    const authorize = vi.fn(async () => {
+      frames[0] = { ...frames[0]!, documentId: 'top-v2', url: 'https://evil.example/' }
+      return true
+    })
+
+    const answer = await dispatchToolCall(
+      { id: 'changed-origin', name: 'browser_press', args: { key: 'Enter' } },
+      'auto',
+      undefined,
+      authorize,
+    )
+
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('确认期间发生变化') } })
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects an action when the same-origin document changes during approval', async () => {
+    const frames = [
+      { frameId: 0, parentFrameId: -1, documentId: 'top-v1', url: 'https://app.example/one' },
+    ]
+    const chromeMock = mockChrome({ tab: { id: 32, url: 'https://app.example/one' }, frames })
+    const authorize = vi.fn(async () => {
+      frames[0] = { ...frames[0]!, documentId: 'top-v2', url: 'https://app.example/two' }
+      return true
+    })
+
+    const answer = await dispatchToolCall(
+      { id: 'changed-document', name: 'browser_press', args: { key: 'Enter' } },
+      'auto',
+      undefined,
+      authorize,
+    )
+
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('确认期间发生变化') } })
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 
   it('forces a full snapshot for a newly navigated frame before resuming deltas', async () => {

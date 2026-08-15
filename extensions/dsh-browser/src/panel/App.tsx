@@ -14,6 +14,7 @@ import type { BridgeState } from '../background/bridge.ts'
 import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import whaleUrl from '../../assets/icons/deepseek-256.png'
+import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
 
 /** One rendered conversation row. */
 import {
@@ -75,6 +76,67 @@ function BackIcon(): React.JSX.Element {
   )
 }
 
+function ShieldIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 2.5 16 5v4.2c0 3.8-2.45 6.45-6 8.3-3.55-1.85-6-4.5-6-8.3V5l6-2.5Z" />
+      <path d="M10 6.5v4M10 13.5h.01" />
+    </svg>
+  )
+}
+
+function ApprovalDialog({
+  request,
+  onDecision,
+}: {
+  request: ApprovalRequest
+  onDecision: (decision: ApprovalDecision) => void
+}): React.JSX.Element {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onDecision('deny')
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => { window.removeEventListener('keydown', onKeyDown) }
+  }, [request.id, onDecision])
+
+  return (
+    <div className="approval-backdrop">
+      <section className="approval-dialog" role="alertdialog" aria-modal="true" aria-labelledby="approval-title" aria-describedby="approval-description">
+        <div className="approval-rail" aria-hidden="true" />
+        <div className="approval-heading">
+          <span className="approval-shield"><ShieldIcon /></span>
+          <div>
+            <span className="eyebrow">安全检查</span>
+            <h2 id="approval-title">{request.kind === 'read' ? '允许读取页面？' : '允许执行页面操作？'}</h2>
+          </div>
+        </div>
+        <p id="approval-description" className="approval-warning">
+          网页内容可能包含诱导助手操作的恶意文字。请确认这是你当前希望执行的动作。
+        </p>
+        <div className="approval-detail">
+          <span>请求</span>
+          <strong>{request.summary}</strong>
+        </div>
+        <div className="approval-origins">
+          <span>涉及来源</span>
+          {request.origins.length === 0
+            ? <code className="unknown">未知来源</code>
+            : request.origins.map((origin) => <code key={origin}>{origin}</code>)}
+        </div>
+        <div className="approval-actions">
+          <button className="deny" autoFocus onClick={() => onDecision('deny')}>拒绝</button>
+          <button className="allow" onClick={() => onDecision('allow-once')}>仅允许这一次</button>
+          {request.kind === 'action' && request.canTrust && request.origins.length === 1 && (
+            <button className="trust" onClick={() => onDecision('trust-origin')}>信任此域并执行</button>
+          )}
+        </div>
+        <small className="approval-footnote">Esc 拒绝 · 输入内容不会显示或保存在确认框中</small>
+      </section>
+    </div>
+  )
+}
+
 /**
  * One conversation row body. Memoized: rows are immutable (append/merge copy
  * the array but reuse row objects), so markdown is re-parsed only when a
@@ -114,6 +176,7 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const [working, setWorking] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [error, setError] = useState<string | null>(null)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
@@ -129,6 +192,7 @@ export function App(): React.JSX.Element {
         bridgeUrl: raw?.bridgeUrl ?? '',
         token: raw?.token ?? '',
         sharePageContent: raw?.sharePageContent ?? 'ask',
+        trustedActionOrigins: raw?.trustedActionOrigins ?? [],
       })
     })
   }, [])
@@ -152,8 +216,14 @@ export function App(): React.JSX.Element {
       }
     })
     const offEvent = api.onEvent((frame) => { void onFrame(frame) })
+    const offApproval = api.onApprovalRequest((request) => {
+      setApprovalQueue((current) => current.some((entry) => entry.id === request.id) ? current : [...current, request])
+    })
+    const offApprovalResolved = api.onApprovalResolved((id) => {
+      setApprovalQueue((current) => current.filter((request) => request.id !== id))
+    })
     api.requestStatus()
-    return () => { offStatus(); offEvent() }
+    return () => { offStatus(); offEvent(); offApproval(); offApprovalResolved() }
   }, [api])
 
   useEffect(() => {
@@ -276,12 +346,33 @@ export function App(): React.JSX.Element {
     setShowSettings(false)
   }
 
+  function decideApproval(decision: ApprovalDecision): void {
+    const request = approvalQueue[0]
+    if (request === undefined) return
+    api.respondToApproval(request.id, decision)
+    if (decision === 'trust-origin' && request.origins.length === 1) {
+      setSettings((current) => current === null
+        ? current
+        : { ...current, trustedActionOrigins: [...new Set([...current.trustedActionOrigins, request.origins[0]!])].sort() })
+    }
+    setApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
+  }
+
+  function removeTrustedOrigin(origin: string): void {
+    setSettings((current) => current === null
+      ? current
+      : { ...current, trustedActionOrigins: current.trustedActionOrigins.filter((candidate) => candidate !== origin) })
+  }
+
   // 状态栏只显示连接状态；快照上限是技术细节，在设置页说明（见 hint）。
   const statusText = useMemo(() => STATE_LABEL[state], [state])
+  const approvalDialog = approvalQueue[0] === undefined
+    ? null
+    : <ApprovalDialog request={approvalQueue[0]} onDecision={decideApproval} />
 
   if (showSettings) {
     return (
-      <div className="settings">
+      <><div className="settings">
         <div className="settings-heading">
           <button className="icon-button" onClick={() => setShowSettings(false)} aria-label="返回对话"><BackIcon /></button>
           <div>
@@ -322,17 +413,30 @@ export function App(): React.JSX.Element {
             </select>
           </label>
         </div>
+        <section className="trusted-origins" aria-labelledby="trusted-origins-title">
+          <div>
+            <span id="trusted-origins-title">免确认操作域名</span>
+            <small>信任后，该域中的点击、输入等操作不再逐次确认；仅信任你愿意让助手直接操作的网站。显式跨域导航仍会询问。</small>
+          </div>
+          {settings?.trustedActionOrigins.length === 0 && <p>尚未信任任何域名。</p>}
+          {settings?.trustedActionOrigins.map((origin) => (
+            <div className="trusted-origin" key={origin}>
+              <code>{origin}</code>
+              <button onClick={() => removeTrustedOrigin(origin)} aria-label={`移除 ${origin}`}>移除</button>
+            </div>
+          ))}
+        </section>
         <div className="settings-actions">
           <button className="primary" onClick={saveSettings}>保存并连接</button>
           <button className="secondary" onClick={() => setShowSettings(false)}>取消</button>
         </div>
         <p className="hint">页面快照上限为 {caps?.snapshotMaxChars ?? 12000} 字符，超出内容会被截断。可在 dsh 插件中调整 snapshotMaxChars。</p>
-      </div>
+      </div>{approvalDialog}</>
     )
   }
 
   return (
-    <div className="app">
+    <><div className="app">
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark"><img src={whaleUrl} alt="" /></span>
@@ -403,6 +507,6 @@ export function App(): React.JSX.Element {
           </div>
         </div>
       </footer>
-    </div>
+    </div>{approvalDialog}</>
   )
 }

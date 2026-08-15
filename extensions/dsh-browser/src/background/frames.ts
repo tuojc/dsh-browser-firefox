@@ -1,10 +1,11 @@
 /**
  * Frame discovery and budget allocation for one browser tab.
  *
- * Frame ids are stable for the lifetime of a document and are the routing half
- * of the model-facing `(frame, index)` element address. Element ids remain
- * local to each content script so a re-render in one iframe cannot invalidate
- * otherwise-stable ids in the rest of the page.
+ * Frame ids identify a frame slot and are the routing half of the model-facing
+ * `(frame, index)` element address. They can survive navigation, so security
+ * checks additionally bind element ids and message delivery to `documentId`.
+ * Element ids remain local to each content script, so a re-render in one
+ * iframe cannot invalidate otherwise-stable ids in the rest of the page.
  *
  * @module
  */

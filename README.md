@@ -123,3 +123,5 @@ Notes:
 - Privileged gateway methods such as `settings.*`, `credentials.*`, and `host.open*` reject non-loopback sources.
 - The model-facing pipeline is text-only; passwords and payment-card values never leave the page.
 - Only the active tab is operated; the extension never switches tabs silently.
+- Page-authored text is wrapped as untrusted input. With the default `ask` sharing mode, reads require an explicit side-panel decision; `off` blocks them entirely.
+- Click, type, keypress, navigation, history, and reload calls fail closed until the user approves them. A single origin can be trusted explicitly; explicit cross-origin `browser_navigate` calls and unknown history destinations always prompt again. Trusting an origin deliberately removes per-action prompts for operations initiated there.

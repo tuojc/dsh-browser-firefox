@@ -131,6 +131,14 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
   } as unknown as NonNullable<typeof context.loader.internal>
   await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await context.loader.await()
+  context.effect(() => context.webServer.register({
+    kind: 'exact',
+    path: '/e2e-approval-page',
+    handler: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end('<main><h1>Approval target</h1><button>Continue</button></main>')
+    },
+  }), 'e2e approval page')
   const port = (context.get('webServer') as { port: number }).port
   return { ctx: context, port, root }
 }
@@ -256,6 +264,32 @@ describe('extension ↔ bridge e2e', () => {
       { timeout: 30_000 },
     ).toContain('已连接')
     const statusText = await panel.textContent('.connection')
+
+    // A real tool call must pause in the service worker until the real panel
+    // resolves its origin-scoped approval. Keep a normal HTTP tab active while
+    // the panel remains open as a separate extension page in this headless test.
+    const target = await ctx.newPage()
+    await target.goto(`http://127.0.0.1:${port}/e2e-approval-page`)
+    await target.setContent('<main><h1>Approval target</h1><button>Continue</button></main>')
+    await target.bringToFront()
+    const snapshot = context.tools.execute({
+      callId: 'e2e-browser-snapshot' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    const approval = panel.locator('.approval-dialog')
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await approval.locator('#approval-title').textContent()).toBe('允许读取页面？')
+    expect(await approval.textContent()).toContain(`http://127.0.0.1:${port}`)
+    expect(await approval.locator('button.trust').count()).toBe(0)
+    await approval.locator('button.allow').click()
+    const snapshotResult = await snapshot
+    expect(snapshotResult.isError).toBe(false)
+    if (!snapshotResult.isError) {
+      expect(snapshotResult.value).toMatchObject({ text: expect.stringContaining('UNTRUSTED_PAGE_CONTENT') })
+    }
+    await target.close()
 
     // Session deferral: opening the panel alone must NOT create a session.
     // Give the panel's ensureSession + history round trip a moment, then the

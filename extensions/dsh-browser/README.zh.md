@@ -95,10 +95,11 @@ pnpm --filter dsh-browser-extension run test
 - **稳定编号**：元素编号跨快照保持（WeakMap + `data-dsh-el`），模型可以说"点 7 号"；页面大改时显式提示"编号已重排"。
 - **delta 模式**：`browser_snapshot({delta:true})` 只返回变化元素的编号，省 token。
 - **隐私**：密码/卡号字段的值永远以 `••••` 呈现，绝不回传；可访问名称从不使用敏感字段的当前值。
+- **失败关闭审批**：默认「每次询问」会在读取页面前弹出确认；状态变更工具会显示实际 origin 和脱敏动作摘要，用户可仅允许一次、拒绝或显式信任单个 origin。显式跨域 `browser_navigate` / 未知目标的历史跳转不能永久放行，侧边栏关闭时一律拒绝。信任会主动取消该 origin 发起操作的逐次确认，应谨慎使用。
 
 ## 权限说明
 
-`sidePanel`（侧边栏）、`storage`（设置）、`tabs` + `activeTab` + `scripting`（向活动标签页注入/发消息，并为安装前已打开的页面按需补注入）、`alarms`（SW 保活）、`http/https`（内容脚本注入普通网页）。只操作**活动标签页**，绝不静默切页。
+`sidePanel`（侧边栏）、`storage`（设置）、`tabs` + `activeTab` + `scripting`（向活动标签页注入/发消息，并为安装前已打开的页面按需补注入）、`webNavigation`（枚举活动标签页中的 frame，并把消息绑定到具体文档）、`alarms`（SW 保活）、`http/https`（内容脚本注入普通网页）。只操作**活动标签页**，绝不静默切页。
 
 ## 已知限制
 
