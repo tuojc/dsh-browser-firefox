@@ -15,6 +15,8 @@ import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import whaleUrl from '../../assets/icons/deepseek-256.png'
 import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
+import { getUiLocale } from '../i18n.ts'
+import { PANEL_COPY, type PanelCopy } from './strings.ts'
 
 /** One rendered conversation row. */
 import {
@@ -26,13 +28,6 @@ import {
   type Row,
   type SessionEventView,
 } from './events.ts'
-
-const STATE_LABEL: Record<BridgeState, string> = {
-  connected: '已连接',
-  connecting: '连接中…',
-  reconnecting: '重连中…',
-  stopped: '未连接',
-}
 
 function normalizeWebOrigin(value: string): string | null {
   try {
@@ -97,9 +92,11 @@ function ShieldIcon(): React.JSX.Element {
 function ApprovalDialog({
   request,
   onDecision,
+  copy,
 }: {
   request: ApprovalRequest
   onDecision: (decision: ApprovalDecision) => void
+  copy: PanelCopy
 }): React.JSX.Element {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -116,34 +113,34 @@ function ApprovalDialog({
         <div className="approval-heading">
           <span className="approval-shield"><ShieldIcon /></span>
           <div>
-            <span className="eyebrow">安全检查</span>
-            <h2 id="approval-title">{request.kind === 'read' ? '允许读取页面？' : '允许执行页面操作？'}</h2>
+            <span className="eyebrow">{copy.approval.eyebrow}</span>
+            <h2 id="approval-title">{request.kind === 'read' ? copy.approval.readTitle : copy.approval.actionTitle}</h2>
           </div>
         </div>
         <div className="approval-detail">
-          <span>请求</span>
+          <span>{copy.approval.request}</span>
           <strong>{request.summary}</strong>
         </div>
         <div className="approval-origins">
-          <span>涉及来源</span>
+          <span>{copy.approval.origins}</span>
           {request.origins.length === 0
-            ? <code className="unknown">未知来源</code>
+            ? <code className="unknown">{copy.approval.unknownOrigin}</code>
             : request.origins.map((origin) => <code key={origin}>{origin}</code>)}
         </div>
         <div className="approval-actions">
-          <button className="deny" autoFocus onClick={() => onDecision('deny')}>拒绝</button>
-          <button className="allow" onClick={() => onDecision('allow-once')}>仅允许这一次</button>
+          <button className="deny" autoFocus onClick={() => onDecision('deny')}>{copy.approval.deny}</button>
+          <button className="allow" onClick={() => onDecision('allow-once')}>{copy.approval.allowOnce}</button>
           {request.kind === 'read' && (
-            <button className="read-always" onClick={() => onDecision('always-allow-reads')}>始终允许读取</button>
+            <button className="read-always" onClick={() => onDecision('always-allow-reads')}>{copy.approval.alwaysAllowReads}</button>
           )}
           {request.kind === 'action' && request.canTrust && request.origins.length === 1 && (
-            <button className="session-trust" onClick={() => onDecision('trust-session')}>本次会话信任此域</button>
+            <button className="session-trust" onClick={() => onDecision('trust-session')}>{copy.approval.trustSession}</button>
           )}
         </div>
         <small className="approval-footnote">
           {request.kind === 'read'
-            ? 'Esc 拒绝 · 可随时在设置中关闭自动读取'
-            : 'Esc 拒绝 · 关闭侧栏后临时信任失效 · 输入内容不会显示'}
+            ? copy.approval.readFootnote
+            : copy.approval.actionFootnote}
         </small>
       </section>
     </div>
@@ -162,23 +159,25 @@ const MessageBody = memo(function MessageBody({ row }: { row: Row }): React.JSX.
   return <pre>{row.text}</pre>
 })
 
-const ToolActivity = memo(function ToolActivity({ row }: { row: Row }): React.JSX.Element {
+const ToolActivity = memo(function ToolActivity({ row, copy }: { row: Row; copy: PanelCopy }): React.JSX.Element {
   const running = row.status === 'running'
   return (
     <div className={`tool-activity ${running ? 'running' : 'complete'}`} role="status">
       <span className="tool-icon"><ToolIcon /></span>
       <span className="tool-copy">
-        <span className="tool-label">{running ? '正在操作页面' : '页面操作'}</span>
+        <span className="tool-label">{running ? copy.tool.running : copy.tool.complete}</span>
         <span className="tool-summary">{row.text}</span>
       </span>
-      <span className="tool-state" aria-label={running ? '进行中' : '已完成'}>
-        {running ? <span className="spinner" /> : '完成'}
+      <span className="tool-state" aria-label={running ? copy.tool.inProgress : copy.tool.completed}>
+        {running ? <span className="spinner" /> : copy.tool.done}
       </span>
     </div>
   )
 })
 
 export function App(): React.JSX.Element {
+  const locale = useMemo(() => getUiLocale(), [])
+  const copy = PANEL_COPY[locale]
   const [api] = useState<PanelApi>(() => connectPanel())
   const [state, setState] = useState<BridgeState>('stopped')
   const [caps, setCaps] = useState<BridgeCaps | null>(null)
@@ -291,7 +290,7 @@ export function App(): React.JSX.Element {
     }
     if (payload.event.type === 'tool/call') {
       setWorking(true)
-      const summary = toolSummary(payload.event.data?.name ?? 'tool', payload.event.data?.arguments)
+      const summary = toolSummary(payload.event.data?.name ?? 'tool', payload.event.data?.arguments, locale)
       setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
       return
     }
@@ -311,7 +310,7 @@ export function App(): React.JSX.Element {
     if (id === null) return
     try {
       const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
-      setRows(mergeHistoryRows(result.events.map((entry) => entry.event), nextSeq))
+      setRows(mergeHistoryRows(result.events.map((entry) => entry.event), nextSeq, locale))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -386,85 +385,85 @@ export function App(): React.JSX.Element {
   }
 
   // 状态栏只显示连接状态；快照上限是技术细节，在设置页说明（见 hint）。
-  const statusText = useMemo(() => STATE_LABEL[state], [state])
+  const statusText = copy.status[state]
   const approvalDialog = approvalQueue[0] === undefined
     ? null
-    : <ApprovalDialog request={approvalQueue[0]} onDecision={decideApproval} />
+    : <ApprovalDialog request={approvalQueue[0]} onDecision={decideApproval} copy={copy} />
 
   if (showSettings) {
     return (
       <><div className="settings">
         <div className="settings-heading">
-          <button className="icon-button" onClick={() => setShowSettings(false)} aria-label="返回对话"><BackIcon /></button>
+          <button className="icon-button" onClick={() => setShowSettings(false)} aria-label={copy.settings.back}><BackIcon /></button>
           <div>
-            <span className="eyebrow">偏好设置</span>
-            <h1>连接与隐私</h1>
+            <span className="eyebrow">{copy.settings.eyebrow}</span>
+            <h1>{copy.settings.title}</h1>
           </div>
         </div>
         <div className="settings-panel">
           <label>
-            <span>桥地址</span>
-            <small>留空时自动检测本机服务</small>
+            <span>{copy.settings.bridgeAddress}</span>
+            <small>{copy.settings.bridgeHelp}</small>
             <input
               value={settings?.bridgeUrl ?? ''}
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, bridgeUrl: e.target.value })}
-              placeholder="自动检测 3080 / 3081 / 3090"
+              placeholder={copy.settings.bridgePlaceholder}
             />
           </label>
           <label>
             <span>Token</span>
-            <small>本地连接无需填写</small>
+            <small>{copy.settings.tokenHelp}</small>
             <input
               type="password"
               value={settings?.token ?? ''}
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, token: e.target.value })}
-              placeholder="远程部署时填写"
+              placeholder={copy.settings.tokenPlaceholder}
             />
           </label>
           <label>
-            <span>页面内容共享</span>
-            <small>控制助手何时可以读取页面文字</small>
+            <span>{copy.settings.pageSharing}</span>
+            <small>{copy.settings.pageSharingHelp}</small>
             <select
               value={settings?.sharePageContent ?? 'auto'}
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, sharePageContent: e.target.value as PanelSettings['sharePageContent'] })}
             >
-              <option value="auto">自动共享（默认）</option>
-              <option value="ask">每次询问</option>
-              <option value="off">关闭</option>
+              <option value="auto">{copy.settings.sharingAuto}</option>
+              <option value="ask">{copy.settings.sharingAsk}</option>
+              <option value="off">{copy.settings.sharingOff}</option>
             </select>
           </label>
         </div>
         <section className="trusted-origins" aria-labelledby="trusted-origins-title">
           <div>
-            <span id="trusted-origins-title">永久免确认域名</span>
-            <small>审批框可只信任本次侧栏会话。这里添加的域名会长期免除操作确认；显式跨域导航仍会询问。</small>
+            <span id="trusted-origins-title">{copy.settings.trustedOrigins}</span>
+            <small>{copy.settings.trustedOriginsHelp}</small>
           </div>
           <div className="trusted-origin-add">
             <input
-              aria-label="要永久信任的域名"
+              aria-label={copy.settings.trustedOriginInput}
               value={trustedOriginInput}
               onChange={(event) => setTrustedOriginInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') addTrustedOrigin() }}
               placeholder="https://example.com"
             />
-            <button disabled={normalizeWebOrigin(trustedOriginInput) === null} onClick={addTrustedOrigin}>添加</button>
+            <button disabled={normalizeWebOrigin(trustedOriginInput) === null} onClick={addTrustedOrigin}>{copy.settings.add}</button>
           </div>
           {trustedOriginInput.trim() !== '' && normalizeWebOrigin(trustedOriginInput) === null && (
-            <p className="origin-error">请输入完整的 http:// 或 https:// 地址。</p>
+            <p className="origin-error">{copy.settings.invalidOrigin}</p>
           )}
-          {settings?.trustedActionOrigins.length === 0 && <p>尚未信任任何域名。</p>}
+          {settings?.trustedActionOrigins.length === 0 && <p>{copy.settings.noTrustedOrigins}</p>}
           {settings?.trustedActionOrigins.map((origin) => (
             <div className="trusted-origin" key={origin}>
               <code>{origin}</code>
-              <button onClick={() => removeTrustedOrigin(origin)} aria-label={`移除 ${origin}`}>移除</button>
+              <button onClick={() => removeTrustedOrigin(origin)} aria-label={copy.settings.removeOrigin(origin)}>{copy.settings.remove}</button>
             </div>
           ))}
         </section>
         <div className="settings-actions">
-          <button className="primary" onClick={saveSettings}>保存并连接</button>
-          <button className="secondary" onClick={() => setShowSettings(false)}>取消</button>
+          <button className="primary" onClick={saveSettings}>{copy.settings.save}</button>
+          <button className="secondary" onClick={() => setShowSettings(false)}>{copy.settings.cancel}</button>
         </div>
-        <p className="hint">页面快照上限为 {caps?.snapshotMaxChars ?? 12000} 字符，超出内容会被截断。可在 dsh 插件中调整 snapshotMaxChars。</p>
+        <p className="hint">{copy.settings.snapshotHint(caps?.snapshotMaxChars ?? 12000)}</p>
       </div>{approvalDialog}</>
     )
   }
@@ -474,20 +473,20 @@ export function App(): React.JSX.Element {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark"><img src={whaleUrl} alt="" /></span>
-          <span className="brand-copy"><strong>浏览助手</strong><small>页面副驾驶</small></span>
+          <span className="brand-copy"><strong>{copy.app.brand}</strong><small>{copy.app.tagline}</small></span>
         </div>
         <span className="connection" role="status"><span className={`dot ${state}`} />{statusText}</span>
-        <button className="icon-button" onClick={() => setShowSettings(true)} aria-label="打开设置" title="设置"><SettingsIcon /></button>
+        <button className="icon-button" onClick={() => setShowSettings(true)} aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
       </header>
-      <section className="context-card" aria-label="当前页面">
+      <section className="context-card" aria-label={copy.app.currentPage}>
         <span className="context-icon"><PageIcon /></span>
         <span className="context-copy">
-          <small>当前页面</small>
-          <strong title={pageInfo ?? undefined}>{pageInfo ?? '等待浏览器页面'}</strong>
+          <small>{copy.app.currentPage}</small>
+          <strong title={pageInfo ?? undefined}>{pageInfo ?? copy.app.waitingForPage}</strong>
         </span>
         <button className="context-action" disabled={state !== 'connected' || busy}
-          onClick={() => { void send('请用 browser_snapshot 读取当前页面，然后告诉我页面上有什么，并等待我的指令。') }}>
-          读取页面
+          onClick={() => { void send(copy.app.readPagePrompt) }}>
+          {copy.app.readPage}
         </button>
       </section>
       <div className="messages" ref={scrollRef}>
@@ -495,26 +494,26 @@ export function App(): React.JSX.Element {
           <div className="empty">
             <span className="empty-logo"><img src={whaleUrl} alt="" /></span>
             <div>
-              <h1>把当前页面交给我</h1>
-              <p>我可以阅读页面、查找信息，也可以替你点击、填写和导航。</p>
+              <h1>{copy.app.emptyTitle}</h1>
+              <p>{copy.app.emptyDescription}</p>
             </div>
             <button disabled={state !== 'connected'}
-              onClick={() => { void send('请先概览当前页面，告诉我最重要的信息，并等待我的下一步指令。') }}>
-              先概览这个页面
+              onClick={() => { void send(copy.app.overviewPrompt) }}>
+              {copy.app.overviewPage}
             </button>
           </div>
         )}
         {rows.map((row) => (
           <div key={row.seq} className={`row ${row.kind}`}>
-            {row.kind === 'assistant' && <span className="assistant-avatar"><img src={whaleUrl} alt="助手" /></span>}
-            {row.kind === 'tool' ? <ToolActivity row={row} /> : <MessageBody row={row} />}
+            {row.kind === 'assistant' && <span className="assistant-avatar"><img src={whaleUrl} alt={copy.app.assistant} /></span>}
+            {row.kind === 'tool' ? <ToolActivity row={row} copy={copy} /> : <MessageBody row={row} />}
           </div>
         ))}
         {working && rows[rows.length - 1]?.status !== 'running' && (
-          <div className="ai-progress" role="status" aria-label="助手正在处理">
+          <div className="ai-progress" role="status" aria-label={copy.app.assistantWorking}>
             <span className="assistant-avatar"><img src={whaleUrl} alt="" /></span>
             <span className="progress-dots" aria-hidden="true"><i /><i /><i /></span>
-            <span>{rows[rows.length - 1]?.kind === 'tool' ? '正在整理结果' : '正在思考'}</span>
+            <span>{rows[rows.length - 1]?.kind === 'tool' ? copy.app.organizingResults : copy.app.thinking}</span>
           </div>
         )}
       </div>
@@ -531,13 +530,13 @@ export function App(): React.JSX.Element {
                 void send()
               }
             }}
-            placeholder={state === 'connected' ? '告诉我想在这个页面做什么…' : '连接 dsh 后即可开始'}
+            placeholder={state === 'connected' ? copy.app.connectedPlaceholder : copy.app.disconnectedPlaceholder}
             disabled={state !== 'connected'}
             rows={2}
           />
           <div className="composer-actions">
-            <span>Enter 发送 · Shift + Enter 换行</span>
-            <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label="发送消息"><SendIcon /></button>
+            <span>{copy.app.composerHelp}</span>
+            <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
           </div>
         </div>
       </footer>

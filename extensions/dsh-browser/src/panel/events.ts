@@ -7,6 +7,9 @@
  * @module
  */
 
+import { getUiLocale, type UiLocale } from '../i18n.ts'
+import { PANEL_COPY } from './strings.ts'
+
 /** One rendered conversation row. */
 export interface Row {
   seq: number
@@ -61,23 +64,9 @@ export function rowFromEvent(event: SessionEventView): Row | null {
   }
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  browser_snapshot: '读取页面',
-  browser_click: '点击元素',
-  browser_type: '填写内容',
-  browser_press: '按下按键',
-  browser_scroll: '滚动页面',
-  browser_navigate: '打开页面',
-  browser_back: '返回上一页',
-  browser_forward: '前进下一页',
-  browser_reload: '刷新页面',
-  browser_get_text: '提取文字',
-  browser_wait: '等待页面',
-}
-
 /** 工具调用的友好展示名：带 index 参数时附上（如「点击元素 #7」）。 */
-export function toolSummary(name: string, argsJson: unknown): string {
-  let summary = TOOL_LABELS[name] ?? name
+export function toolSummary(name: string, argsJson: unknown, locale: UiLocale = getUiLocale()): string {
+  let summary = PANEL_COPY[locale].tool.labels[name] ?? name
   try {
     const args = JSON.parse(String(argsJson ?? '{}')) as unknown
     if (typeof args === 'object' && args !== null && 'index' in args) {
@@ -111,21 +100,25 @@ export function completeLastTool(rows: Row[], seq: number): Row[] {
 }
 
 /** 历史渲染：连续工具调用归并成一行（tool/call..result 不逐条刷屏；超 3 个折叠计数）。 */
-export function mergeHistoryRows(events: SessionEventView[], nextSeq: () => number): Row[] {
+export function mergeHistoryRows(
+  events: SessionEventView[],
+  nextSeq: () => number,
+  locale: UiLocale = getUiLocale(),
+): Row[] {
   const rows: Row[] = []
   let pendingTool: { items: string[]; total: number } | null = null
   const flushTool = (): void => {
     if (pendingTool === null) return
     const shown = pendingTool.items.slice(0, 3)
     const label = pendingTool.total > shown.length
-      ? `${shown.join(' → ')} 等${pendingTool.total}个工具`
+      ? PANEL_COPY[locale].tool.overflow(shown, pendingTool.total)
       : shown.join(' → ')
     rows.push({ seq: nextSeq(), kind: 'tool', text: label, status: 'complete' })
     pendingTool = null
   }
   for (const ev of events) {
     if (ev.type === 'tool/call') {
-      const summary = toolSummary(ev.data?.name ?? 'tool', ev.data?.arguments)
+      const summary = toolSummary(ev.data?.name ?? 'tool', ev.data?.arguments, locale)
       if (pendingTool === null) pendingTool = { items: [summary], total: 1 }
       else {
         pendingTool.items.push(summary)

@@ -31,6 +31,7 @@ import {
   type ApprovalPrompt,
   type ApprovalRequest,
 } from '../security/approval.ts'
+import { getUiLocale } from '../i18n.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -339,7 +340,9 @@ async function startBridge(): Promise<void> {
 /** Gateway RPC with a helpful error when the bridge is down. */
 async function gatewayRpc(method: string, payload: unknown): Promise<unknown> {
   if (rpc === null || bridge === null || !bridge.connected) {
-    throw new Error('未连接 dsh（请检查设置中的地址与 token）')
+    throw new Error(getUiLocale() === 'zh'
+      ? '未连接 dsh（请检查设置中的地址与 token）'
+      : 'dsh is not connected (check the bridge address and token in Settings)')
   }
   return rpc.request(method, payload)
 }
