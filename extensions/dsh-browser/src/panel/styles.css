@@ -240,97 +240,6 @@ textarea:focus-visible {
   transform: translateY(1px);
 }
 
-.context-card {
-  display: flex;
-  min-width: 0;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 10px;
-  margin: 12px 14px 0;
-  padding: 10px 10px 10px 12px;
-  border: 1px solid #222d43;
-  border-radius: 16px;
-  background: var(--navy);
-  box-shadow: 0 8px 20px rgba(23, 32, 51, 0.14);
-  color: #ffffff;
-}
-
-.context-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #bac7ff;
-}
-
-.context-icon svg {
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.45;
-}
-
-.context-copy {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.context-copy small {
-  color: #8f9bb0;
-  font-size: 9.5px;
-  font-weight: 650;
-  letter-spacing: 0.11em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.context-copy strong {
-  overflow: hidden;
-  color: #f8faff;
-  font-size: 11.5px;
-  font-weight: 600;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.context-action {
-  min-height: 30px;
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 9px;
-  background: #ffffff;
-  color: var(--navy);
-  cursor: pointer;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1;
-  transition: background-color 150ms ease, color 150ms ease, transform 150ms ease;
-}
-
-.context-action:hover:not(:disabled) {
-  background: #dce4ff;
-  color: var(--blue-ink);
-  transform: translateY(-1px);
-}
-
-.context-action:disabled {
-  background: rgba(255, 255, 255, 0.1);
-  color: #738097;
-  cursor: default;
-}
-
 .messages {
   display: flex;
   min-height: 0;
@@ -1631,10 +1540,6 @@ textarea:focus-visible {
   .brand-copy small,
   .connection {
     display: none;
-  }
-
-  .context-card {
-    margin-inline: 9px;
   }
 
   .messages {

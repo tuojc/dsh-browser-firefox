@@ -31,10 +31,10 @@ describe('browser locale selection', () => {
   })
 
   it('provides localized panel and prompt copy in both languages', () => {
-    expect(PANEL_COPY.en.app.readPage).toBe('Read page')
+    expect(PANEL_COPY.en.app.overviewPage).toBe('Give me an overview')
     expect(PANEL_COPY.en.approval.allowOnce).toBe('Allow once')
-    expect(PANEL_COPY.en.app.readPagePrompt).toMatch(/^Use browser_snapshot/)
-    expect(PANEL_COPY.zh.app.readPage).toBe('读取页面')
+    expect(PANEL_COPY.en.app.overviewPrompt).toMatch(/^First give me an overview/)
+    expect(PANEL_COPY.zh.app.overviewPage).toBe('先概览这个页面')
     expect(PANEL_COPY.zh.approval.allowOnce).toBe('仅允许这一次')
   })
 })

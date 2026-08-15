@@ -74,10 +74,6 @@ export interface PanelCopy {
     newSession: string
     sessionPickerLoading: string
     sessionPickerEmpty: string
-    currentPage: string
-    waitingForPage: string
-    readPage: string
-    readPagePrompt: string
     emptyTitle: string
     emptyDescription: string
     overviewPage: string
@@ -185,10 +181,6 @@ const EN: PanelCopy = {
     newSession: 'New session',
     sessionPickerLoading: 'Loading…',
     sessionPickerEmpty: 'No past sessions yet',
-    currentPage: 'Current page',
-    waitingForPage: 'Waiting for a browser page',
-    readPage: 'Read page',
-    readPagePrompt: 'Use browser_snapshot to read the current page, tell me what is on it, and then wait for my instructions.',
     emptyTitle: 'Hand me the current page',
     emptyDescription: 'I can read the page, find information, and click, fill, or navigate for you.',
     overviewPage: 'Give me an overview',
@@ -296,10 +288,6 @@ const ZH: PanelCopy = {
     newSession: '新会话',
     sessionPickerLoading: '加载中…',
     sessionPickerEmpty: '暂无历史会话',
-    currentPage: '当前页面',
-    waitingForPage: '等待浏览器页面',
-    readPage: '读取页面',
-    readPagePrompt: '请用 browser_snapshot 读取当前页面，然后告诉我页面上有什么，并等待我的指令。',
     emptyTitle: '把当前页面交给我',
     emptyDescription: '我可以阅读页面、查找信息，也可以替你点击、填写和导航。',
     overviewPage: '先概览这个页面',

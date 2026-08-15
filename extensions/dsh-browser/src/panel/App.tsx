@@ -62,15 +62,6 @@ function SettingsIcon(): React.JSX.Element {
   )
 }
 
-function PageIcon(): React.JSX.Element {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M5.25 2.75h6.1l3.4 3.4v11.1h-9.5V2.75Z" />
-      <path d="M11.25 2.9v3.35h3.35M7.7 10h4.6M7.7 13h4.6" />
-    </svg>
-  )
-}
-
 function HistoryIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -206,7 +197,6 @@ export function App(): React.JSX.Element {
   const [state, setState] = useState<BridgeState>('stopped')
   const [caps, setCaps] = useState<BridgeCaps | null>(null)
   const [settings, setSettings] = useState<PanelSettings | null>(null)
-  const [pageInfo, setPageInfo] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -326,29 +316,6 @@ export function App(): React.JSX.Element {
       void ensureSession()
     }
   }, [state, sessionEpoch])
-
-  // 页面芯片显示浏览器当前活动标签页（标题，缺省退回 URL）；切换/更新时刷新。
-  useEffect(() => {
-    const refresh = (): void => {
-      void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then((tabs) => {
-        const tab = tabs[0]
-        setPageInfo(
-          tab !== undefined && tab.title !== undefined && tab.title !== ''
-            ? tab.title
-            : tab !== undefined && tab.url !== undefined && tab.url !== ''
-              ? tab.url
-              : null,
-        )
-      }).catch(() => setPageInfo(null))
-    }
-    refresh()
-    chrome.tabs.onActivated.addListener(refresh)
-    chrome.tabs.onUpdated.addListener(refresh)
-    return () => {
-      chrome.tabs.onActivated.removeListener(refresh)
-      chrome.tabs.onUpdated.removeListener(refresh)
-    }
-  }, [])
 
   // Auto-scroll to the newest row.
   useEffect(() => {
@@ -776,17 +743,6 @@ export function App(): React.JSX.Element {
               )}
         </section>
       )}
-      <section className="context-card" aria-label={copy.app.currentPage}>
-        <span className="context-icon"><PageIcon /></span>
-        <span className="context-copy">
-          <small>{copy.app.currentPage}</small>
-          <strong title={pageInfo ?? undefined}>{pageInfo ?? copy.app.waitingForPage}</strong>
-        </span>
-        <button className="context-action" disabled={!sessionReady || busy}
-          onClick={() => { void send(copy.app.readPagePrompt) }}>
-          {copy.app.readPage}
-        </button>
-      </section>
       <div className="messages" ref={scrollRef}>
         {rows.length === 0 && !working && (
           <div className="empty">

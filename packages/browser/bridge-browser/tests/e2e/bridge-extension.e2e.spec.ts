@@ -358,7 +358,7 @@ describe('extension ↔ bridge e2e', () => {
     // Session deferral: opening the panel alone must NOT create a session.
     // Give the panel's ensureSession + history round trip a moment, then the
     // store must still equal the pre-save baseline (zero trace).
-    await panel.waitForSelector('.context-card', { timeout: 30_000 })
+    await panel.waitForSelector('.messages', { timeout: 30_000 })
     await panel.waitForTimeout(1_200)
     expect(sessions.list().length).toBe(initialSessions.length)
 
