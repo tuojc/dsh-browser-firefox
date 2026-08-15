@@ -20,8 +20,10 @@ export interface TabFrame {
   url: string
 }
 
-/** Per-frame limits whose sum stays close to the negotiated tab budget. */
+/** Per-frame limits whose sum never exceeds the negotiated tab budget. */
 export interface FrameBudget extends ContentBudget {}
+
+const MAIN_FRAME_SHARE = 0.8
 
 /**
  * Discover all frames, falling back to the main frame when webNavigation is
@@ -60,22 +62,37 @@ function frameDepth(frame: { frameId: number; parentFrameId: number }, frames: A
   return depth
 }
 
-/** Give the main document most of the budget and divide the rest across frames. */
+/** Give the main document 80% of the budget and divide the exact remainder. */
 export function allocateFrameBudgets(frames: TabFrame[], budget: ContentBudget): Map<number, FrameBudget> {
   if (frames.length <= 1) return new Map([[frames[0]?.frameId ?? 0, { ...budget }]])
 
-  const childCount = Math.max(1, frames.length - 1)
-  const mainChars = Math.max(1, Math.floor(budget.maxChars * 0.6))
-  const mainItems = Math.max(1, Math.floor(budget.maxItems * 0.6))
-  const childChars = Math.max(1, Math.floor((budget.maxChars - mainChars) / childCount))
-  const childItems = Math.max(1, Math.floor((budget.maxItems - mainItems) / childCount))
+  const mainFrame = frames.find((frame) => frame.frameId === 0) ?? frames[0]!
+  const childFrames = frames.filter((frame) => frame !== mainFrame)
+  const childIndex = new Map(childFrames.map((frame, index) => [frame.frameId, index]))
+  const chars = allocateDimension(budget.maxChars, childFrames.length)
+  const items = allocateDimension(budget.maxItems, childFrames.length)
 
   return new Map(frames.map((frame) => [
     frame.frameId,
-    frame.frameId === 0
-      ? { maxChars: mainChars, maxItems: mainItems }
-      : { maxChars: childChars, maxItems: childItems },
+    frame === mainFrame
+      ? { maxChars: chars.main, maxItems: items.main }
+      : {
+          maxChars: chars.children[childIndex.get(frame.frameId)!]!,
+          maxItems: items.children[childIndex.get(frame.frameId)!]!,
+        },
   ]))
+}
+
+function allocateDimension(total: number, childCount: number): { main: number; children: number[] } {
+  const boundedTotal = Math.max(0, Math.floor(total))
+  const main = Math.min(boundedTotal, Math.max(1, Math.floor(boundedTotal * MAIN_FRAME_SHARE)))
+  const remaining = boundedTotal - main
+  const perChild = Math.floor(remaining / childCount)
+  const remainder = remaining % childCount
+  return {
+    main,
+    children: Array.from({ length: childCount }, (_, index) => perChild + (index < remainder ? 1 : 0)),
+  }
 }
 
 /** A stable key for detecting frame navigation between delta snapshots. */
