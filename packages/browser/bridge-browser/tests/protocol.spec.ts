@@ -44,6 +44,39 @@ describe('parseBridgeFrame', () => {
     expect(parseBridgeFrame(JSON.stringify({ t: 'rpc.result', id: '1', ok: false }))).toBeUndefined()
   })
 
+  it('parses interaction responses and rejects malformed result unions', () => {
+    expect(parseBridgeFrame(JSON.stringify({
+      t: 'respond', id: 'response-1', rpcId: 'question-1',
+      result: { ok: true, value: { answer: { answers: [] } } },
+    }))).toEqual({
+      t: 'respond', id: 'response-1', rpcId: 'question-1',
+      result: { ok: true, value: { answer: { answers: [] } } },
+    })
+    expect(parseBridgeFrame(JSON.stringify({
+      t: 'respond', id: 'response-2', rpcId: 'question-2',
+      result: { ok: false, error: { code: 'cancelled', message: 'closed', details: {} } },
+    }))).toEqual({
+      t: 'respond', id: 'response-2', rpcId: 'question-2',
+      result: { ok: false, error: { code: 'cancelled', message: 'closed', details: {} } },
+    })
+    expect(parseBridgeFrame(JSON.stringify({
+      t: 'respond', id: 'x', rpcId: 'q',
+      result: { ok: false, error: { code: 'cancelled', message: 'missing details' } },
+    }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond', id: 'x', rpcId: 'q', result: { ok: false } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond', id: 'x', rpcId: 'q', result: { ok: true, error: {} } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond', id: 'x', result: { ok: true } }))).toBeUndefined()
+  })
+
+  it('parses interaction response receipts', () => {
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond.result', id: 'response-1', ok: true, result: { accepted: true } })))
+      .toEqual({ t: 'respond.result', id: 'response-1', ok: true, result: { accepted: true } })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond.result', id: 'response-2', ok: false, error: { code: 'http', message: 'failed' } })))
+      .toEqual({ t: 'respond.result', id: 'response-2', ok: false, error: { code: 'http', message: 'failed' } })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond.result', id: 'x', ok: true }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'respond.result', id: 'x', ok: false, error: {} }))).toBeUndefined()
+  })
+
   it('parses ping and error frames', () => {
     expect(parseBridgeFrame(JSON.stringify({ t: 'ping' }))).toEqual({ t: 'ping' })
     expect(parseBridgeFrame(JSON.stringify({ t: 'error', code: 'stream-failed', message: 'x' })))
@@ -64,11 +97,11 @@ describe('parseBridgeFrame', () => {
     expect(isClientFrame(server)).toBe(false)
     expect(isServerFrame(client)).toBe(false)
     expect(isClientFrame(client)).toBe(true)
-    for (const t of ['hello.ok', 'rpc.result', 'event', 'tool.call', 'tool.cancel', 'ping', 'error'] as const) {
+    for (const t of ['hello.ok', 'rpc.result', 'respond.result', 'event', 'tool.call', 'tool.cancel', 'ping', 'error'] as const) {
       const frame = parseBridgeFrame(JSON.stringify(serverShape(t)))!
       expect(isServerFrame(frame)).toBe(true)
     }
-    for (const t of ['hello', 'rpc', 'tool.result', 'pong'] as const) {
+    for (const t of ['hello', 'rpc', 'respond', 'tool.result', 'pong'] as const) {
       const frame = parseBridgeFrame(JSON.stringify(clientShape(t)))!
       expect(isClientFrame(frame)).toBe(true)
     }
@@ -93,10 +126,11 @@ describe('parseBridgeFrame', () => {
 })
 
 /** Minimal valid shape per server-side frame type (for classification tests). */
-function serverShape(t: 'hello.ok' | 'rpc.result' | 'event' | 'tool.call' | 'tool.cancel' | 'ping' | 'error'): Record<string, unknown> {
+function serverShape(t: 'hello.ok' | 'rpc.result' | 'respond.result' | 'event' | 'tool.call' | 'tool.cancel' | 'ping' | 'error'): Record<string, unknown> {
   switch (t) {
     case 'hello.ok': return { t, caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }
     case 'rpc.result': return { t, id: '1', ok: true, result: {} }
+    case 'respond.result': return { t, id: '1', ok: true, result: { accepted: true } }
     case 'event': return { t, frame: { rpcId: 'r', method: 'x', payload: {} } }
     case 'tool.call': return { t, id: '1', name: 'x', args: {}, expiresAt: 123 }
     case 'tool.cancel': return { t, id: '1' }
@@ -106,10 +140,11 @@ function serverShape(t: 'hello.ok' | 'rpc.result' | 'event' | 'tool.call' | 'too
 }
 
 /** Minimal valid shape per client-side frame type (for classification tests). */
-function clientShape(t: 'hello' | 'rpc' | 'tool.result' | 'pong'): Record<string, unknown> {
+function clientShape(t: 'hello' | 'rpc' | 'respond' | 'tool.result' | 'pong'): Record<string, unknown> {
   switch (t) {
     case 'hello': return { t, token: 'x', caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }
     case 'rpc': return { t, id: '1', method: 'x', payload: {} }
+    case 'respond': return { t, id: '1', rpcId: 'q', result: { ok: true, value: {} } }
     case 'tool.result': return { t, id: '1', ok: true, result: {} }
     case 'pong': return { t }
   }

@@ -54,6 +54,9 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.unset',
 ])
 
+/** Session mutations whose WebSocket arrival order is behaviorally significant. */
+const ORDERED_SESSION_METHODS = new Set(['session.prompt', 'session.cancel'])
+
 /** Loopback IPv4/IPv6 literals (IPv4-mapped included). Exported for tests and reuse. */
 export function isLoopbackAddress(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
@@ -139,6 +142,7 @@ export class BridgeServer {
   private readonly wss = new WebSocketServer({ noServer: true })
   private current: ReadyConnection | null = null
   private readonly pendingTools = new Map<string, PendingTool>()
+  private readonly orderedSessionRpcs = new Map<string, Promise<void>>()
   private closed = false
 
   constructor(private readonly deps: BridgeServerDeps) {}
@@ -329,7 +333,10 @@ export class BridgeServer {
   private handleReadyFrame(frame: BridgeFrame): void {
     switch (frame.t) {
       case 'rpc':
-        void this.handleRpc(frame)
+        this.routeRpc(frame)
+        break
+      case 'respond':
+        void this.handleRespond(frame)
         break
       case 'tool.result':
         this.settleTool(frame.id, frame.ok, frame.ok ? frame.result : frame.error)
@@ -338,6 +345,7 @@ export class BridgeServer {
       case 'hello':
       case 'hello.ok':
       case 'rpc.result':
+      case 'respond.result':
       case 'event':
       case 'tool.call':
       case 'tool.cancel':
@@ -347,6 +355,29 @@ export class BridgeServer {
         // the extension is the only sender on this channel.
         break
     }
+  }
+
+  /**
+   * Preserve prompt/cancel arrival order per session. In particular, the
+   * first prompt may still be materializing a provisional session; its cancel
+   * must not reach the gateway until that admission has completed.
+   */
+  private routeRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): void {
+    const sessionId = orderedSessionId(frame)
+    if (sessionId === undefined) {
+      void this.handleRpc(frame)
+      return
+    }
+    const previous = this.orderedSessionRpcs.get(sessionId) ?? Promise.resolve()
+    const task = previous.then(
+      () => this.handleRpc(frame),
+      () => this.handleRpc(frame),
+    )
+    this.orderedSessionRpcs.set(sessionId, task)
+    const clear = (): void => {
+      if (this.orderedSessionRpcs.get(sessionId) === task) this.orderedSessionRpcs.delete(sessionId)
+    }
+    void task.then(clear, clear)
   }
 
   private async handleRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): Promise<void> {
@@ -384,6 +415,35 @@ export class BridgeServer {
     }
   }
 
+  /** Relay a pending host-interaction response through the GUI's /api/respond channel. */
+  private async handleRespond(frame: Extract<ClientFrame, { t: 'respond' }>): Promise<void> {
+    const conn = this.current
+    /* v8 ignore next -- replacement race; a closed socket simply drops the receipt */
+    if (conn === null) return
+    const request = new Request(new URL('/api/respond', 'http://dsh.internal'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-response', rpcId: frame.rpcId, result: frame.result }),
+    })
+    try {
+      const response = await this.deps.apiHandler.fetch(request)
+      const text = await response.text()
+      if (!response.ok) {
+        sendFrame(conn.ws, { t: 'respond.result', id: frame.id, ok: false, error: { code: 'http', message: text } })
+        return
+      }
+      let result: unknown
+      try {
+        result = JSON.parse(text)
+      } catch {
+        result = text
+      }
+      sendFrame(conn.ws, { t: 'respond.result', id: frame.id, ok: true, result })
+    } catch (error: unknown) {
+      sendFrame(conn.ws, { t: 'respond.result', id: frame.id, ok: false, error: { code: 'internal', message: String(error) } })
+    }
+  }
+
   private settleTool(id: string, ok: boolean, payload: unknown): void {
     const pending = this.pendingTools.get(id)
     if (pending === undefined) return
@@ -409,6 +469,13 @@ export class BridgeServer {
       pending.reject(new BridgeToolError('bridge-closed', 'the extension connection was replaced'))
     }
   }
+}
+
+function orderedSessionId(frame: Extract<ClientFrame, { t: 'rpc' }>): string | undefined {
+  if (!ORDERED_SESSION_METHODS.has(frame.method)) return undefined
+  if (typeof frame.payload !== 'object' || frame.payload === null || Array.isArray(frame.payload)) return undefined
+  const sessionId = (frame.payload as Record<string, unknown>).sessionId
+  return typeof sessionId === 'string' ? sessionId : undefined
 }
 
 /**

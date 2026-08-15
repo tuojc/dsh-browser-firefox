@@ -7,10 +7,12 @@
  *
  * Panel port protocol (chrome.runtime.connect, name "dsh-panel"):
  *   panel → bg: { type: 'rpc', id, method, payload }
+ *   panel → bg: { type: 'respond', id, rpcId, result }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
  *   panel → bg: { type: 'approval.response', id, decision }
  *   panel → bg: { type: 'request-status' }
  *   bg → panel: { type: 'rpc.result', id, ok, result? | error? }
+ *   bg → panel: { type: 'respond.result', id, ok, result? | error? }
  *   bg → panel: { type: 'status', state: BridgeState, caps? }
  *   bg → panel: { type: 'event', frame: ServerFrame }
  *   bg → panel: { type: 'approval.request', request }
@@ -19,7 +21,7 @@
  * @module
  */
 
-import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import { isRespondResult, type BridgeCaps, type RespondResult } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
@@ -32,6 +34,7 @@ import {
   type ApprovalRequest,
 } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
+import { InteractionResponseRouter } from './responses.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -96,6 +99,7 @@ let caps: BridgeCaps | null = null
 let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
+const interactionResponses = new InteractionResponseRouter()
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
@@ -158,6 +162,22 @@ function broadcastApprovalResolved(id: string): void {
   for (const port of panelPorts) {
     try { port.postMessage({ type: 'approval.resolved', id }) } catch { /* port already closed */ }
   }
+}
+
+function responseMessages(): { unavailable: string; timeout: string; duplicate: string; disconnected: string } {
+  return getUiLocale() === 'zh'
+    ? {
+        unavailable: '未连接 dsh，无法提交回答',
+        timeout: '提交回答超时，请重试',
+        duplicate: '回答请求编号重复，请重试',
+        disconnected: 'dsh 连接已断开，请重新连接后再试',
+      }
+    : {
+        unavailable: 'dsh is not connected, so the answer could not be sent',
+        timeout: 'Sending the answer timed out. Try again.',
+        duplicate: 'The answer request ID was duplicated. Try again.',
+        disconnected: 'The dsh connection was lost. Reconnect and try again.',
+      }
 }
 
 function settleApproval(id: string, decision: ApprovalDecision): void {
@@ -316,13 +336,17 @@ async function startBridge(): Promise<void> {
   if (bridge === null) {
     const client = new BridgeClient({
       onStateChange: (state) => {
-        if (state !== 'connected') cancelAllToolCalls()
+        if (state !== 'connected') {
+          cancelAllToolCalls()
+          interactionResponses.failAll(responseMessages().disconnected)
+        }
         broadcastStatus()
       },
       onFrame: (frame) => {
         if (frame.t === 'event') broadcastEvent(frame)
         else if (frame.t === 'tool.call') routeToolCall(frame)
         else if (frame.t === 'tool.cancel') cancelToolCall(frame.id)
+        else if (frame.t === 'respond.result') interactionResponses.route(frame)
         // rpc.result is settled by the rpc facade (wrapped below).
       },
       onHelloOk: (negotiated) => {
@@ -377,6 +401,23 @@ chrome.runtime.onConnect.addListener((port) => {
         )
         break
       }
+      case 'respond': {
+        const response = message as { id?: unknown; rpcId?: unknown; result?: unknown }
+        if (typeof response.id !== 'string' || typeof response.rpcId !== 'string' || !isRespondResult(response.result)) break
+        const messages = responseMessages()
+        interactionResponses.begin(
+          port,
+          response.id,
+          () => bridge?.send({
+            t: 'respond',
+            id: response.id as string,
+            rpcId: response.rpcId as string,
+            result: response.result as RespondResult,
+          }) === true,
+          messages,
+        )
+        break
+      }
       case 'settings': {
         const settingsMsg = message as { settings: Partial<Settings> }
         void persistSettings(settingsMsg.settings).then(async () => {
@@ -399,6 +440,7 @@ chrome.runtime.onConnect.addListener((port) => {
   })
   port.onDisconnect.addListener(() => {
     panelPorts.delete(port)
+    interactionResponses.removePort(port)
     if (panelPorts.size === 0) {
       sessionTrustedActionOrigins.clear()
       for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
