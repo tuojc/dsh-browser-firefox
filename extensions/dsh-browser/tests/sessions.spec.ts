@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   resumableSessions,
   sessionAcceptsPrompts,
+  SessionRuntimeCache,
   type SessionPickerEntry,
 } from '../src/panel/sessions.ts'
 
@@ -27,6 +28,34 @@ describe('resumableSessions', () => {
       { ...ordinary, sessionId: 'subagent', origin: 'subagent' },
       ordinary,
     ])).toEqual([ordinary])
+  })
+})
+
+describe('SessionRuntimeCache', () => {
+  it('restores off-session running and concurrent question state', () => {
+    const cache = new SessionRuntimeCache()
+    cache.startTurn('session')
+    cache.rememberQuestion({ rpcId: 'q1', sessionId: 'session', questions: [{ id: '1', question: 'First?' }] })
+    cache.rememberQuestion({ rpcId: 'q2', sessionId: 'session', questions: [{ id: '2', question: 'Second?' }] })
+    expect(cache.snapshot('session')).toMatchObject({ running: true })
+    expect(cache.snapshot('session').questions.map((question) => question.rpcId)).toEqual(['q1', 'q2'])
+  })
+
+  it('lets live status beat an older list baseline', () => {
+    const cache = new SessionRuntimeCache()
+    cache.finishTurn('session')
+    cache.seedRunning('session', true)
+    expect(cache.snapshot('session').running).toBe(false)
+  })
+
+  it('resolves one question and clears transient state at turn end', () => {
+    const cache = new SessionRuntimeCache()
+    cache.rememberQuestion({ rpcId: 'q1', sessionId: 'session', questions: [{ id: '1', question: 'First?' }] })
+    cache.rememberQuestion({ rpcId: 'q2', sessionId: 'session', questions: [{ id: '2', question: 'Second?' }] })
+    cache.resolveQuestion({ rpcId: 'q2', sessionId: 'session' })
+    expect(cache.snapshot('session').questions.map((question) => question.rpcId)).toEqual(['q1'])
+    cache.finishTurn('session')
+    expect(cache.snapshot('session')).toEqual({ running: false, questions: [] })
   })
 })
 

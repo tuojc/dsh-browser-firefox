@@ -29,6 +29,7 @@ import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
 import {
   resumableSessions,
   sessionAcceptsPrompts,
+  SessionRuntimeCache,
   type SessionPickerEntry,
 } from './sessions.ts'
 
@@ -225,6 +226,7 @@ export function App(): React.JSX.Element {
   const stoppingRef = useRef(false)
   const sessionChangingRef = useRef(false)
   const sessionTransitionRef = useRef(0)
+  const sessionRuntimeRef = useRef(new SessionRuntimeCache())
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -245,11 +247,8 @@ export function App(): React.JSX.Element {
     setQuestions(next)
   }
 
-  function enqueueQuestion(next: PendingQuestion): void {
-    replaceQuestions(upsertPendingQuestion(questionsRef.current, next))
-  }
-
   function removeQuestion(target: ResolvedQuestion): void {
+    sessionRuntimeRef.current.resolveQuestion(target)
     replaceQuestions(removePendingQuestion(questionsRef.current, target))
     setQuestionBusy(target, false)
   }
@@ -299,6 +298,7 @@ export function App(): React.JSX.Element {
         sessionTransitionRef.current += 1
         sessionChangingRef.current = false
         sessionRef.current = null
+        sessionRuntimeRef.current.clear()
         setRows([])
         setWorking(false)
         setStopping(false)
@@ -359,9 +359,10 @@ export function App(): React.JSX.Element {
     if (frame.t !== 'event') return
     const pendingQuestion = pendingQuestionFromFrame(frame.frame)
     if (pendingQuestion !== null) {
+      sessionRuntimeRef.current.rememberQuestion(pendingQuestion)
       if (pendingQuestion.sessionId === sessionRef.current) {
         const wasEmpty = questionsRef.current.length === 0
-        enqueueQuestion(pendingQuestion)
+        replaceQuestions(upsertPendingQuestion(questionsRef.current, pendingQuestion))
         if (wasEmpty) setError(null)
       }
       return
@@ -372,17 +373,29 @@ export function App(): React.JSX.Element {
       return
     }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
-    if (payload?.sessionId !== sessionRef.current || payload.event === undefined) return
+    if (payload?.sessionId === undefined || payload.event === undefined) return
     if (payload.event.type === 'turn/start') {
+      sessionRuntimeRef.current.startTurn(payload.sessionId)
+      if (payload.sessionId !== sessionRef.current) return
       stoppingRef.current = false
       setStopping(false)
       setWorking(true)
       return
     }
+    if (payload.event.type === 'turn/end') {
+      sessionRuntimeRef.current.finishTurn(payload.sessionId)
+      if (payload.sessionId !== sessionRef.current) return
+      stoppingRef.current = false
+      setStopping(false)
+      setWorking(false)
+      clearQuestions()
+      await refreshHistory(payload.sessionId)
+      return
+    }
+    if (payload.sessionId !== sessionRef.current) return
     const row = rowFromEvent(payload.event)
     if (row !== null) {
       setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq()))
-      if (row.kind === 'assistant') setWorking(false)
       return
     }
     if (payload.event.type === 'tool/call') {
@@ -395,13 +408,6 @@ export function App(): React.JSX.Element {
       // 并入最后一行工具行：调用已完成（不新增行）。
       setRows((prev) => completeLastTool(prev, nextSeq()))
       return
-    }
-    if (payload.event.type === 'turn/end') {
-      stoppingRef.current = false
-      setStopping(false)
-      setWorking(false)
-      clearQuestions()
-      await refreshHistory()
     }
   }
 
@@ -477,6 +483,7 @@ export function App(): React.JSX.Element {
       const created = await api.rpc<{ sessionId: string }>('session.create', {})
       if (sessionTransitionRef.current !== transition) return
       sessionRef.current = created.sessionId
+      sessionRuntimeRef.current.seedRunning(created.sessionId, false)
       await refreshHistory(created.sessionId)
     } catch (cause) {
       if (sessionTransitionRef.current === transition) {
@@ -498,6 +505,9 @@ export function App(): React.JSX.Element {
     setLoadingSessions(true)
     try {
       const result = await api.rpc<{ items: SessionPickerEntry[] }>('session.list', {})
+      for (const entry of result.items ?? []) {
+        sessionRuntimeRef.current.seedRunning(entry.sessionId, entry.running)
+      }
       setSessionList(resumableSessions(result.items ?? []))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -510,7 +520,8 @@ export function App(): React.JSX.Element {
   async function resumeSession(entry: SessionPickerEntry): Promise<void> {
     if (sessionSwitchBlocked || sessionChangingRef.current) return
     const transition = beginSessionTransition()
-    prepareSessionSwitch(entry.running)
+    const runtime = sessionRuntimeRef.current.snapshot(entry.sessionId, entry.running)
+    prepareSessionSwitch(runtime.running, runtime.questions)
     sessionRef.current = entry.sessionId
     try {
       await refreshHistory(entry.sessionId)
@@ -540,13 +551,15 @@ export function App(): React.JSX.Element {
     setSessionChanging(false)
   }
 
-  function prepareSessionSwitch(nextWorking: boolean): void {
+  function prepareSessionSwitch(nextWorking: boolean, nextQuestions: PendingQuestion[] = []): void {
     setRows([])
     setInput('')
     setWorking(nextWorking)
     setStopping(false)
     stoppingRef.current = false
-    clearQuestions()
+    replaceQuestions(nextQuestions)
+    questionSubmissionsRef.current = []
+    setQuestionSubmissions([])
     setError(null)
     setShowSessionPicker(false)
   }
@@ -588,6 +601,7 @@ export function App(): React.JSX.Element {
     try {
       await api.rpc('session.cancel', { sessionId: id })
       if (sessionRef.current === id) {
+        sessionRuntimeRef.current.finishTurn(id)
         setWorking(false)
         clearQuestions()
       }

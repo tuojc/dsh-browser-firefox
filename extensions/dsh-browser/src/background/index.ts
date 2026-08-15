@@ -39,6 +39,7 @@ import {
   actionCoveredByTrustedOrigins,
   normalizeTrustedOrigin,
 } from '../security/trusted-origins.ts'
+import { TransientEventCache } from './transient-events.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -104,6 +105,7 @@ let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
 const interactionResponses = new InteractionResponseRouter()
+const transientEvents = new TransientEventCache()
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
@@ -335,11 +337,15 @@ async function startBridge(): Promise<void> {
         if (state !== 'connected') {
           cancelAllToolCalls()
           interactionResponses.failAll(responseMessages().disconnected)
+          transientEvents.clear()
         }
         broadcastStatus()
       },
       onFrame: (frame) => {
-        if (frame.t === 'event') broadcastEvent(frame)
+        if (frame.t === 'event') {
+          transientEvents.ingest(frame)
+          broadcastEvent(frame)
+        }
         else if (frame.t === 'tool.call') routeToolCall(frame)
         else if (frame.t === 'tool.cancel') cancelToolCall(frame.id)
         else if (frame.t === 'respond.result') interactionResponses.route(frame)
@@ -430,7 +436,10 @@ chrome.runtime.onConnect.addListener((port) => {
         break
       }
       case 'request-status':
-        broadcastStatus()
+        try {
+          port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps })
+          for (const frame of transientEvents.replay()) port.postMessage({ type: 'event', frame })
+        } catch { /* port closed */ }
         break
     }
   })
