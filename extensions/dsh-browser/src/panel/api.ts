@@ -9,6 +9,7 @@ import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import type { Settings } from '../background/index.ts'
+import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
 
 /** Panel-side subset of the extension settings. */
 export type PanelSettings = Settings
@@ -32,13 +33,26 @@ interface EventMessage {
   frame: ServerFrame
 }
 
-type BackgroundMessage = RpcResultMessage | StatusMessage | EventMessage
+interface ApprovalRequestMessage {
+  type: 'approval.request'
+  request: ApprovalRequest
+}
+
+interface ApprovalResolvedMessage {
+  type: 'approval.resolved'
+  id: string
+}
+
+type BackgroundMessage = RpcResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage
 
 /** The panel API surface. */
 export interface PanelApi {
   rpc<T = unknown>(method: string, payload?: unknown): Promise<T>
   onStatus(callback: (state: BridgeState, caps: BridgeCaps | null) => void): () => void
   onEvent(callback: (frame: ServerFrame) => void): () => void
+  onApprovalRequest(callback: (request: ApprovalRequest) => void): () => void
+  onApprovalResolved(callback: (id: string) => void): () => void
+  respondToApproval(id: string, decision: ApprovalDecision): void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -49,6 +63,8 @@ export function connectPanel(): PanelApi {
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
   const eventListeners = new Set<(frame: ServerFrame) => void>()
+  const approvalListeners = new Set<(request: ApprovalRequest) => void>()
+  const approvalResolvedListeners = new Set<(id: string) => void>()
 
   port.onMessage.addListener((message: unknown) => {
     if (typeof message !== 'object' || message === null) return
@@ -72,6 +88,12 @@ export function connectPanel(): PanelApi {
         break
       case 'event':
         for (const listener of eventListeners) listener(msg.frame)
+        break
+      case 'approval.request':
+        for (const listener of approvalListeners) listener(msg.request)
+        break
+      case 'approval.resolved':
+        for (const listener of approvalResolvedListeners) listener(msg.id)
         break
     }
   })
@@ -97,6 +119,17 @@ export function connectPanel(): PanelApi {
     onEvent(callback) {
       eventListeners.add(callback)
       return () => { eventListeners.delete(callback) }
+    },
+    onApprovalRequest(callback) {
+      approvalListeners.add(callback)
+      return () => { approvalListeners.delete(callback) }
+    },
+    onApprovalResolved(callback) {
+      approvalResolvedListeners.add(callback)
+      return () => { approvalResolvedListeners.delete(callback) }
+    },
+    respondToApproval(id, decision) {
+      port.postMessage({ type: 'approval.response', id, decision })
     },
     updateSettings(next) {
       port.postMessage({ type: 'settings', settings: next })

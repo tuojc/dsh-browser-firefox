@@ -8,10 +8,13 @@
  * Panel port protocol (chrome.runtime.connect, name "dsh-panel"):
  *   panel → bg: { type: 'rpc', id, method, payload }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
+ *   panel → bg: { type: 'approval.response', id, decision }
  *   panel → bg: { type: 'request-status' }
  *   bg → panel: { type: 'rpc.result', id, ok, result? | error? }
  *   bg → panel: { type: 'status', state: BridgeState, caps? }
  *   bg → panel: { type: 'event', frame: ServerFrame }
+ *   bg → panel: { type: 'approval.request', request }
+ *   bg → panel: { type: 'approval.resolved', id }
  *
  * @module
  */
@@ -22,19 +25,28 @@ import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser
 import { BridgeClient, type BridgeState } from './bridge.ts'
 import { createRpc } from './rpc.ts'
 import { dispatchToolCall, type ToolCall } from './tools.ts'
+import {
+  isApprovalDecision,
+  type ApprovalDecision,
+  type ApprovalPrompt,
+  type ApprovalRequest,
+} from '../security/approval.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
   bridgeUrl: string
   token: string
   sharePageContent: 'ask' | 'auto' | 'off'
+  /** Origins whose state-changing actions may run without another prompt. */
+  trustedActionOrigins: string[]
 }
 
 const SETTINGS_DEFAULTS: Settings = {
   // 空地址 = 自动探测本机 dsh（零配置）；手动填地址时优先手动。
   bridgeUrl: '',
   token: '',
-  sharePageContent: 'ask',
+  sharePageContent: 'auto',
+  trustedActionOrigins: [],
 }
 
 /** 自动探测的候选端口（dsh web 默认 3080；--port 覆盖的常见值）。 */
@@ -83,10 +95,19 @@ let caps: BridgeCaps | null = null
 let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
+/** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
+const sessionTrustedActionOrigins = new Set<string>()
+/** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
+const activeToolCalls = new Map<string, AbortController>()
+const pendingApprovals = new Map<string, {
+  resolve: (decision: ApprovalDecision) => void
+  timer: ReturnType<typeof setTimeout>
+}>()
+const APPROVAL_TIMEOUT_MS = 30_000
 
 async function loadSettings(): Promise<Settings> {
   const stored = await chrome.storage.local.get(STORAGE_KEY)
-  const loaded = { ...SETTINGS_DEFAULTS, ...(stored[STORAGE_KEY] as Partial<Settings> | undefined) }
+  const loaded = normalizeSettings({ ...SETTINGS_DEFAULTS, ...(stored[STORAGE_KEY] as Partial<Settings> | undefined) })
   if (loaded.bridgeUrl === LEGACY_LOCAL_URL || loaded.bridgeUrl === `${LEGACY_LOCAL_URL}/`) {
     loaded.bridgeUrl = ''
     await chrome.storage.local.set({ [STORAGE_KEY]: loaded })
@@ -95,8 +116,28 @@ async function loadSettings(): Promise<Settings> {
 }
 
 async function persistSettings(next: Partial<Settings>): Promise<void> {
-  settings = { ...settings, ...next }
+  settings = normalizeSettings({ ...settings, ...next })
   await chrome.storage.local.set({ [STORAGE_KEY]: settings })
+}
+
+function normalizeSettings(candidate: Settings): Settings {
+  const trusted = Array.isArray(candidate.trustedActionOrigins)
+    ? [...new Set(candidate.trustedActionOrigins.filter(isCanonicalWebOrigin))].sort()
+    : []
+  const sharePageContent = candidate.sharePageContent === 'auto' || candidate.sharePageContent === 'off'
+    ? candidate.sharePageContent
+    : candidate.sharePageContent === 'ask' ? 'ask' : 'auto'
+  return { ...candidate, sharePageContent, trustedActionOrigins: trusted }
+}
+
+function isCanonicalWebOrigin(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value
+  } catch {
+    return false
+  }
 }
 
 function broadcastStatus(): void {
@@ -110,6 +151,76 @@ function broadcastEvent(frame: ServerFrame): void {
   for (const port of panelPorts) {
     try { port.postMessage({ type: 'event', frame }) } catch { /* port already closed */ }
   }
+}
+
+function broadcastApprovalResolved(id: string): void {
+  for (const port of panelPorts) {
+    try { port.postMessage({ type: 'approval.resolved', id }) } catch { /* port already closed */ }
+  }
+}
+
+function settleApproval(id: string, decision: ApprovalDecision): void {
+  const pending = pendingApprovals.get(id)
+  if (pending === undefined) return
+  pendingApprovals.delete(id)
+  clearTimeout(pending.timer)
+  pending.resolve(decision)
+  broadcastApprovalResolved(id)
+}
+
+function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalDecision> {
+  if (panelPorts.size === 0 || signal.aborted) return Promise.resolve('deny')
+  const request: ApprovalRequest = { ...prompt, id: crypto.randomUUID() }
+  return new Promise((resolve) => {
+    const onAbort = (): void => { settleApproval(request.id, 'deny') }
+    const resolveWithCleanup = (decision: ApprovalDecision): void => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(decision)
+    }
+    const timer = setTimeout(() => { settleApproval(request.id, 'deny') }, APPROVAL_TIMEOUT_MS)
+    pendingApprovals.set(request.id, { resolve: resolveWithCleanup, timer })
+    signal.addEventListener('abort', onAbort, { once: true })
+    // Close the small race between the initial check and listener setup.
+    if (signal.aborted) {
+      settleApproval(request.id, 'deny')
+      return
+    }
+    let delivered = false
+    for (const port of panelPorts) {
+      try {
+        port.postMessage({ type: 'approval.request', request })
+        delivered = true
+      } catch { /* port already closed */ }
+    }
+    if (!delivered) settleApproval(request.id, 'deny')
+  })
+}
+
+async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false
+  if (prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1
+    && (sessionTrustedActionOrigins.has(prompt.origins[0]!)
+      || settings.trustedActionOrigins.includes(prompt.origins[0]!))) {
+    return true
+  }
+  const decision = await requestApproval(prompt, signal)
+  if (signal.aborted) return false
+  if (decision === 'always-allow-reads' && prompt.kind === 'read') {
+    await persistSettings({ sharePageContent: 'auto' })
+    return true
+  }
+  if (decision === 'trust-session' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
+    sessionTrustedActionOrigins.add(prompt.origins[0]!)
+    return true
+  }
+  // Retain wire compatibility with panels from the previous build. The new UI
+  // manages permanent trust explicitly in Settings instead of offering it in
+  // the action dialog.
+  if (decision === 'trust-origin' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
+    await persistSettings({ trustedActionOrigins: [...settings.trustedActionOrigins, prompt.origins[0]!] })
+    return true
+  }
+  return decision === 'allow-once'
 }
 
 /** 把协商的快照预算下发到活动标签页的 content script（配置生效）。 */
@@ -129,18 +240,54 @@ async function pushBudgetToActiveTab(negotiated: BridgeCaps): Promise<void> {
 /** Route one tool.call frame to the active tab and answer over the bridge. */
 function routeToolCall(call: ToolCall): void {
   if (bridge === null) return
+  activeToolCalls.get(call.id)?.abort()
+  const controller = new AbortController()
+  activeToolCalls.set(call.id, controller)
+  const expiryTimer = call.expiresAt === undefined
+    ? undefined
+    : setTimeout(() => { controller.abort() }, Math.max(0, call.expiresAt - Date.now()))
   const budget = caps === null
     ? undefined
     : { maxItems: caps.maxInteractiveItems, maxChars: caps.snapshotMaxChars }
-  void dispatchToolCall(call, settings.sharePageContent, budget).then((answer) => {
-    const socket = bridge
-    if (socket === null) return
-    if (answer.ok) {
-      socket.send({ t: 'tool.result', id: call.id, ok: true, result: answer.result })
-    } else {
-      socket.send({ t: 'tool.result', id: call.id, ok: false, error: answer.error! })
-    }
+  void dispatchToolCall(
+    call,
+    settings.sharePageContent,
+    budget,
+    (prompt) => authorizeToolCall(prompt, controller.signal),
+    controller.signal,
+  ).then(
+    (answer) => {
+      if (controller.signal.aborted) return
+      const socket = bridge
+      if (socket === null) return
+      if (answer.ok) {
+        socket.send({ t: 'tool.result', id: call.id, ok: true, result: answer.result })
+      } else {
+        socket.send({ t: 'tool.result', id: call.id, ok: false, error: answer.error! })
+      }
+    },
+    (error: unknown) => {
+      if (controller.signal.aborted) return
+      bridge?.send({
+        t: 'tool.result',
+        id: call.id,
+        ok: false,
+        error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
+      })
+    },
+  ).finally(() => {
+    if (expiryTimer !== undefined) clearTimeout(expiryTimer)
+    if (activeToolCalls.get(call.id) === controller) activeToolCalls.delete(call.id)
   })
+}
+
+function cancelToolCall(id: string): void {
+  activeToolCalls.get(id)?.abort()
+}
+
+function cancelAllToolCalls(): void {
+  for (const controller of activeToolCalls.values()) controller.abort()
+  activeToolCalls.clear()
 }
 
 /** (Re)start the bridge with the current settings. 零配置：地址留空时自动探测；回环连接无需 token。 */
@@ -167,10 +314,14 @@ async function startBridge(): Promise<void> {
   }
   if (bridge === null) {
     const client = new BridgeClient({
-      onStateChange: () => { broadcastStatus() },
+      onStateChange: (state) => {
+        if (state !== 'connected') cancelAllToolCalls()
+        broadcastStatus()
+      },
       onFrame: (frame) => {
         if (frame.t === 'event') broadcastEvent(frame)
         else if (frame.t === 'tool.call') routeToolCall(frame)
+        else if (frame.t === 'tool.cancel') cancelToolCall(frame.id)
         // rpc.result is settled by the rpc facade (wrapped below).
       },
       onHelloOk: (negotiated) => {
@@ -231,12 +382,25 @@ chrome.runtime.onConnect.addListener((port) => {
         })
         break
       }
+      case 'approval.response': {
+        const approval = message as { id?: unknown; decision?: unknown }
+        if (typeof approval.id === 'string' && isApprovalDecision(approval.decision)) {
+          settleApproval(approval.id, approval.decision)
+        }
+        break
+      }
       case 'request-status':
         broadcastStatus()
         break
     }
   })
-  port.onDisconnect.addListener(() => { panelPorts.delete(port) })
+  port.onDisconnect.addListener(() => {
+    panelPorts.delete(port)
+    if (panelPorts.size === 0) {
+      sessionTrustedActionOrigins.clear()
+      for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
+    }
+  })
 })
 
 // ---- Keepalive ----

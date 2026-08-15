@@ -10,7 +10,7 @@
  * @module
  */
 
-import { accessibleName, pageText, truncate } from './extract.ts'
+import { pageText, truncate } from './extract.ts'
 import type { ElementIds } from './ids.ts'
 import type { SnapshotBudget } from './snapshot.ts'
 import { buildSnapshot, renderSnapshot } from './snapshot.ts'
@@ -54,11 +54,6 @@ export class ActionError extends Error {
     super(message)
     this.name = 'ActionError'
   }
-}
-
-/** Text of an element's own label, for status lines. */
-function labelOf(el: Element): string {
-  return accessibleName(el)
 }
 
 /** React-compatible value write: native setter + input/change events. */
@@ -134,21 +129,20 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
   const index = numberArg(args, 'index')
   const el = elementOrThrow(ctx.ids, index)
   el.scrollIntoView({ block: 'center', behavior: 'instant' })
-  const name = labelOf(el)
   if (el instanceof HTMLAnchorElement) {
     const urlBefore = location.href
     el.click()
     await settle()
     return location.href !== urlBefore
-      ? { text: `已点击链接 [${index}] "${name}"，页面正在跳转… 加载后请重新 browser_snapshot。` }
-      : { text: `已点击链接 [${index}] "${name}"，页面未跳转。` }
+      ? { text: `已点击链接 [${index}]，页面正在跳转… 加载后请重新 browser_snapshot。` }
+      : { text: `已点击链接 [${index}]，页面未跳转。` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
-    throw new ActionError('action-failed', `按钮 [${index}] "${name}" 处于禁用状态`)
+    throw new ActionError('action-failed', `按钮 [${index}] 处于禁用状态`)
   }
   ;(el as HTMLElement).click()
   await settle()
-  return { text: `已点击 [${index}] "${name}"。` }
+  return { text: `已点击 [${index}]。` }
 }
 
 async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
@@ -161,7 +155,6 @@ async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Pr
   if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || contentEditable)) {
     throw new ActionError('action-failed', `编号 ${index} 不是可输入元素（${el.tagName.toLowerCase()}）`)
   }
-  const name = labelOf(el)
   if (contentEditable) {
     if (replace) el.textContent = ''
     el.textContent = `${el.textContent ?? ''}${text}`
@@ -171,7 +164,7 @@ async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Pr
     setNativeValue(el, `${el.value}${text}`)
   }
   await settle()
-  return { text: `已向 [${index}] "${name}" 输入 ${text.length} 字符。` }
+  return { text: `已向 [${index}] 输入 ${text.length} 字符。` }
 }
 
 async function pressAction(args: Record<string, unknown>): Promise<ActionResult> {

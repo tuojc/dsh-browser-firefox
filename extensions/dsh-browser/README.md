@@ -91,18 +91,20 @@ For extension-only development, clone the repository, run `pnpm --filter dsh-bro
 ## Why text-only
 
 - **Snapshot as the view**: the model's entire view of the page is structured text (title/URL/main/numbered elements/forms), budgeted at 12k chars (plugin-configurable, negotiated to the extension via `hello.ok`).
+- **Page text is untrusted input**: snapshots and targeted text reads are enclosed in a fresh nonce-bound trust marker and explicitly tell the model never to treat page-authored commands as instructions. This is defense in depth; extension-side action approval is the enforcement boundary.
 - **Stable numbering**: element numbers persist across snapshots (WeakMap + `data-dsh-el`), so the model can say "click 7"; a large page change explicitly reports "numbers reindexed".
 - **Delta mode**: `browser_snapshot({delta:true})` returns only changed element numbers, saving tokens.
 - **Privacy**: password/credit-card values always render as `••••` and never leave the page; accessible names never use a sensitive field's current value.
+- **Proportional approval**: the default `auto` mode lets the model read the active tab without an extra prompt; `ask` restores per-read confirmation and `off` blocks reads. In `ask` mode, the read dialog can allow one read or persistently switch back to `auto`, which remains reversible in Settings. State-changing tools still fail closed and show their exact origin plus a redacted action summary. The user may deny, allow once, or trust one origin for the current side-panel session; temporary trust clears when the last panel closes or the service worker restarts. Permanent trust is managed explicitly in Settings. Explicit cross-origin `browser_navigate` calls and unknown history destinations cannot inherit trust, and a closed panel means denial. Caller cancellation or bridge timeout withdraws any open approval before an action can run.
 
 ## Permissions
 
-`sidePanel` (sidebar), `storage` (settings), `tabs` + `activeTab` + `scripting` (inject/message the active tab, including lazy recovery for pages opened before install), `alarms` (SW keepalive), and `http/https` (content-script injection on normal pages). Only the **active tab** of the last-focused window is ever operated; the extension never switches tabs silently.
+`sidePanel` (sidebar), `storage` (settings), `tabs` + `activeTab` + `scripting` (inject/message the active tab, including lazy recovery for pages opened before install), `webNavigation` (enumerate and bind messages to the active tab's frame documents), `alarms` (SW keepalive), and `http/https` (content-script injection on normal pages). Only the **active tab** of the last-focused window is ever operated; the extension never switches tabs silently.
 
 ## Known limitations
 
 - Only one extension connection at a time (a second window replaces the first).
-- Cross-origin iframes are counted but not operated.
+- Accessible cross-origin iframes are snapshotted and operated with stable `(frame, index)` addresses. Restricted or short-lived frames are reported as unavailable without failing the whole page snapshot.
 - Captcha/image-only controls cannot be handled — the tool result reports "elements with no accessible name" and asks the user to complete that step manually.
 - No automatic token rotation.
 - Synthetic `browser_press` events do not trigger browser-native default actions such as Tab focus movement, arrow-key scrolling, or Enter activation; use manual input when a workflow depends on those defaults.

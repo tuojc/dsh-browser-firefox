@@ -10,6 +10,7 @@
     "tabs",
     "activeTab",
     "scripting",
+    "webNavigation",
     "alarms"
   ],
   "host_permissions": [
@@ -40,7 +41,8 @@
         "content.js"
       ],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true,
+      "match_origin_as_fallback": true
     }
   ],
   "content_security_policy": {

@@ -40,10 +40,15 @@ function onMessage(message: unknown, _sender: chrome.runtime.MessageSender, send
     return
   }
   if (msg.type !== 'DSH_ACTION') return
-  const actionMsg = message as { action?: string; args?: Record<string, unknown> }
+  const actionMsg = message as {
+    action?: string
+    args?: Record<string, unknown>
+    budget?: Partial<SnapshotBudget>
+  }
   const action = actionMsg.action ?? ''
   const args = actionMsg.args ?? {}
-  void runAction(action, args, { ids, budget }).then(
+  const actionBudget = actionMsg.budget === undefined ? budget : { ...budget, ...actionMsg.budget }
+  void runAction(action, args, { ids, budget: actionBudget }).then(
     (result) => { sendResponse({ ok: true, result }) },
     (error: unknown) => {
       const code = error instanceof ActionError ? error.code : 'action-failed'

@@ -19,6 +19,9 @@
   --danger-soft: #fff4f2;
   --danger-border: #fecdca;
   --warning: #d08a17;
+  --security: #8a5a00;
+  --security-soft: #fffaeb;
+  --security-border: #fedf89;
   --shadow: 0 10px 28px rgba(23, 32, 51, 0.08), 0 2px 6px rgba(23, 32, 51, 0.04);
   --focus-ring: 0 0 0 3px rgba(77, 107, 254, 0.18);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -1029,6 +1032,293 @@ textarea:focus-visible {
   color: var(--faint);
   font-size: 10px;
   line-height: 1.55;
+}
+
+.trusted-origins {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgba(23, 32, 51, 0.05);
+}
+
+.trusted-origins > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trusted-origins > div:first-child > span {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.trusted-origins small,
+.trusted-origins p {
+  margin: 0;
+  color: var(--faint);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.trusted-origin {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+.trusted-origin code {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trusted-origin button {
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.trusted-origin button:hover {
+  background: var(--danger-soft);
+}
+
+.trusted-origin-add {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.trusted-origin-add input {
+  min-width: 0;
+  flex: 1;
+}
+
+.trusted-origin-add button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--blue);
+  border-radius: 9px;
+  background: var(--blue);
+  color: #fff;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.trusted-origin-add button:disabled {
+  border-color: var(--line);
+  background: var(--canvas);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+.trusted-origins .origin-error {
+  color: var(--danger);
+}
+
+.approval-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  padding: 16px;
+  place-items: center;
+  background: rgba(16, 24, 40, 0.48);
+  backdrop-filter: blur(4px);
+}
+
+.approval-dialog {
+  position: relative;
+  width: min(100%, 380px);
+  overflow: hidden;
+  padding: 18px;
+  border: 1px solid var(--security-border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgba(16, 24, 40, 0.24), 0 4px 12px rgba(16, 24, 40, 0.12);
+}
+
+.approval-rail {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 5px;
+  background: repeating-linear-gradient(135deg, #fdb022 0 8px, #1d2939 8px 16px);
+}
+
+.approval-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.approval-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-heading h2 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-family: "Avenir Next", "Segoe UI Variable Display", "PingFang SC", sans-serif;
+  font-size: 17px;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.approval-shield {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--security-border);
+  border-radius: 11px;
+  background: var(--security-soft);
+  color: var(--security);
+}
+
+.approval-shield svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.approval-detail,
+.approval-origins {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--canvas);
+}
+
+.approval-detail {
+  border-radius: 11px 11px 4px 4px;
+}
+
+.approval-origins {
+  margin-top: 3px;
+  border-radius: 4px 4px 11px 11px;
+}
+
+.approval-detail > span,
+.approval-origins > span {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.approval-detail strong {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.approval-origins code {
+  overflow: hidden;
+  color: #344054;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.approval-origins code.unknown {
+  color: var(--danger);
+}
+
+.approval-actions {
+  display: grid;
+  grid-template-columns: 0.7fr 1.3fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.approval-actions button {
+  min-height: 38px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.approval-actions .deny {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.approval-actions .allow {
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.approval-actions .session-trust,
+.approval-actions .read-always {
+  grid-column: 1 / -1;
+  border: 1px solid var(--security-border);
+  background: var(--security-soft);
+  color: var(--security);
+}
+
+.approval-actions .deny:hover {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.approval-actions .allow:hover {
+  border-color: var(--blue-hover);
+  background: var(--blue-hover);
+}
+
+.approval-actions .session-trust:hover,
+.approval-actions .read-always:hover {
+  border-color: #fdb022;
+  background: #fff4d6;
+}
+
+.approval-footnote {
+  display: block;
+  margin-top: 10px;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.4;
+  text-align: center;
 }
 
 @keyframes status-pulse {

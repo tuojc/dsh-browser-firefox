@@ -131,6 +131,14 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
   } as unknown as NonNullable<typeof context.loader.internal>
   await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await context.loader.await()
+  context.effect(() => context.webServer.register({
+    kind: 'exact',
+    path: '/e2e-approval-page',
+    handler: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end('<main><h1>Approval target</h1><button>Continue</button></main>')
+    },
+  }), 'e2e approval page')
   const port = (context.get('webServer') as { port: number }).port
   return { ctx: context, port, root }
 }
@@ -238,6 +246,7 @@ describe('extension ↔ bridge e2e', () => {
     await panel.click('button[aria-label="打开设置"]')
     await panel.fill('input[placeholder*="自动检测"]', `ws://127.0.0.1:${port}`)
     await panel.fill('input[type="password"]', TOKEN)
+    await panel.selectOption('select', 'ask')
     await panel.click('text=保存并连接')
 
     // The settings must land in background storage before the reconnect.
@@ -256,6 +265,95 @@ describe('extension ↔ bridge e2e', () => {
       { timeout: 30_000 },
     ).toContain('已连接')
     const statusText = await panel.textContent('.connection')
+
+    // A real tool call must pause in the service worker until the real panel
+    // resolves its origin-scoped approval. Keep a normal HTTP tab active while
+    // the panel remains open as a separate extension page in this headless test.
+    const target = await ctx.newPage()
+    await target.goto(`http://127.0.0.1:${port}/e2e-approval-page`)
+    await target.setContent('<main><h1>Approval target</h1><button>Continue</button></main>')
+    await target.bringToFront()
+    const snapshot = context.tools.execute({
+      callId: 'e2e-browser-snapshot' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    const approval = panel.locator('.approval-dialog')
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await approval.locator('#approval-title').textContent()).toBe('允许读取页面？')
+    expect(await approval.textContent()).toContain(`http://127.0.0.1:${port}`)
+    expect(await approval.locator('button.session-trust').count()).toBe(0)
+    expect(await approval.locator('button.read-always').count()).toBe(1)
+    await approval.locator('button.read-always').click()
+    const snapshotResult = await snapshot
+    expect(snapshotResult.isError).toBe(false)
+    if (!snapshotResult.isError) {
+      expect(snapshotResult.value).toMatchObject({ text: expect.stringContaining('UNTRUSTED_PAGE_CONTENT') })
+    }
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+    await panel.waitForFunction(() => chrome.storage.local.get('dshSettings').then((stored) => {
+      return (stored.dshSettings as { sharePageContent?: string } | undefined)?.sharePageContent === 'auto'
+    }), undefined, { timeout: 15_000 })
+
+    // "Always allow reads" changes the persisted read policy, so the next
+    // snapshot completes without another approval dialog.
+    await target.bringToFront()
+    const repeatedSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-repeated' as never,
+      name: 'browser_snapshot',
+      arguments: { delta: true },
+      signal: new AbortController().signal,
+    })
+    expect(repeatedSnapshot.isError).toBe(false)
+    expect(await approval.isVisible()).toBe(false)
+
+    // Caller cancellation must withdraw a pending approval in the extension.
+    // A late user response must never navigate after the tool has expired.
+    const urlBeforeCancellation = target.url()
+    const cancelled = new AbortController()
+    const cancelledNavigation = context.tools.execute({
+      callId: 'e2e-browser-navigate-cancelled' as never,
+      name: 'browser_navigate',
+      arguments: { url: `http://127.0.0.1:${port}/must-not-open` },
+      signal: cancelled.signal,
+    })
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await approval.locator('#approval-title').textContent()).toBe('允许执行页面操作？')
+    cancelled.abort()
+    expect((await cancelledNavigation).isError).toBe(true)
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+    await target.waitForTimeout(200)
+    expect(target.url()).toBe(urlBeforeCancellation)
+
+    // The first state-changing operation can trust this origin only for the
+    // current side-panel lifetime. A second operation on the same origin then
+    // runs without another prompt; persistent trust is managed in Settings.
+    await target.bringToFront()
+    const firstPress = context.tools.execute({
+      callId: 'e2e-browser-press-first' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      signal: new AbortController().signal,
+    })
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await approval.locator('#approval-title').textContent()).toBe('允许执行页面操作？')
+    expect(await approval.textContent()).not.toContain('网页内容可能包含')
+    expect(await approval.locator('button.session-trust').count()).toBe(1)
+    await approval.locator('button.session-trust').click()
+    expect((await firstPress).isError).toBe(false)
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+
+    await target.bringToFront()
+    const repeatedPress = await context.tools.execute({
+      callId: 'e2e-browser-press-repeated' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      signal: new AbortController().signal,
+    })
+    expect(repeatedPress.isError).toBe(false)
+    expect(await approval.isVisible()).toBe(false)
+    await target.close()
 
     // Session deferral: opening the panel alone must NOT create a session.
     // Give the panel's ensureSession + history round trip a moment, then the
