@@ -17,15 +17,20 @@ import whaleUrl from '../../assets/icons/deepseek-256.png'
 import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
 import { PANEL_COPY, type PanelCopy } from './strings.ts'
+import { QuestionCard } from './QuestionCard.tsx'
+import type { QuestionAnswer } from './questions.ts'
 
 /** One rendered conversation row. */
 import {
   appendLiveRow,
   completeLastTool,
   mergeHistoryRows,
+  pendingQuestionFromFrame,
+  resolvedQuestionFromFrame,
   rowFromEvent,
   toolSummary,
   type Row,
+  type PendingQuestion,
   type SessionEventView,
 } from './events.ts'
 
@@ -191,11 +196,26 @@ export function App(): React.JSX.Element {
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [question, setQuestion] = useState<PendingQuestion | null>(null)
+  const [questionSubmitting, setQuestionSubmitting] = useState(false)
+  const questionRef = useRef<PendingQuestion | null>(null)
+  const questionSubmittingRef = useRef(false)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
+
+  function replaceQuestion(next: PendingQuestion | null): void {
+    questionRef.current = next
+    setQuestion(next)
+    if (next === null) setQuestionBusy(false)
+  }
+
+  function setQuestionBusy(next: boolean): void {
+    questionSubmittingRef.current = next
+    setQuestionSubmitting(next)
+  }
 
   // Settings: seed from storage, then let the panel own the form.
   useEffect(() => {
@@ -225,6 +245,7 @@ export function App(): React.JSX.Element {
         sessionRef.current = null
         setRows([])
         setWorking(false)
+        replaceQuestion(null)
         setSessionEpoch((epoch) => epoch + 1)
       }
     })
@@ -276,6 +297,25 @@ export function App(): React.JSX.Element {
   /** Live frame handling: session events append rows; turn/end reconciles with history. */
   async function onFrame(frame: ServerFrame): Promise<void> {
     if (frame.t !== 'event') return
+    const pendingQuestion = pendingQuestionFromFrame(frame.frame)
+    if (pendingQuestion !== null) {
+      if (pendingQuestion.sessionId === sessionRef.current) {
+        replaceQuestion(pendingQuestion)
+        setQuestionBusy(false)
+        setError(null)
+      }
+      return
+    }
+    const resolvedQuestion = resolvedQuestionFromFrame(frame.frame)
+    if (resolvedQuestion !== null) {
+      const current = questionRef.current
+      if (current !== null
+        && current.sessionId === resolvedQuestion.sessionId
+        && current.rpcId === resolvedQuestion.rpcId) {
+        replaceQuestion(null)
+      }
+      return
+    }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
     if (payload?.sessionId !== sessionRef.current || payload.event === undefined) return
     if (payload.event.type === 'turn/start') {
@@ -301,7 +341,46 @@ export function App(): React.JSX.Element {
     }
     if (payload.event.type === 'turn/end') {
       setWorking(false)
+      replaceQuestion(null)
       await refreshHistory()
+    }
+  }
+
+  async function answerQuestion(target: PendingQuestion, answers: QuestionAnswer[]): Promise<void> {
+    if (questionSubmittingRef.current || questionRef.current?.rpcId !== target.rpcId) return
+    setQuestionBusy(true)
+    setError(null)
+    try {
+      const receipt = await api.respond(target.rpcId, {
+        ok: true,
+        value: { sessionId: target.sessionId, answer: { answers } },
+      })
+      if (isRejectedReceipt(receipt)) setError(copy.question.alreadyAnswered)
+      if (questionRef.current?.rpcId === target.rpcId) replaceQuestion(null)
+    } catch (cause) {
+      if (questionRef.current?.rpcId === target.rpcId) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+        setQuestionBusy(false)
+      }
+    }
+  }
+
+  async function dismissQuestion(target: PendingQuestion): Promise<void> {
+    if (questionSubmittingRef.current || questionRef.current?.rpcId !== target.rpcId) return
+    setQuestionBusy(true)
+    setError(null)
+    try {
+      const receipt = await api.respond(target.rpcId, {
+        ok: false,
+        error: { code: 'cancelled', message: 'the user dismissed this question request' },
+      })
+      if (isRejectedReceipt(receipt)) setError(copy.question.alreadyAnswered)
+      if (questionRef.current?.rpcId === target.rpcId) replaceQuestion(null)
+    } catch (cause) {
+      if (questionRef.current?.rpcId === target.rpcId) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+        setQuestionBusy(false)
+      }
     }
   }
 
@@ -509,7 +588,7 @@ export function App(): React.JSX.Element {
             {row.kind === 'tool' ? <ToolActivity row={row} copy={copy} /> : <MessageBody row={row} />}
           </div>
         ))}
-        {working && rows[rows.length - 1]?.status !== 'running' && (
+        {working && question === null && rows[rows.length - 1]?.status !== 'running' && (
           <div className="ai-progress" role="status" aria-label={copy.app.assistantWorking}>
             <span className="assistant-avatar"><img src={whaleUrl} alt="" /></span>
             <span className="progress-dots" aria-hidden="true"><i /><i /><i /></span>
@@ -517,6 +596,16 @@ export function App(): React.JSX.Element {
           </div>
         )}
       </div>
+      {question !== null && (
+        <QuestionCard
+          key={question.rpcId}
+          question={question}
+          copy={copy}
+          submitting={questionSubmitting}
+          onAnswer={(answers) => { void answerQuestion(question, answers) }}
+          onDismiss={() => { void dismissQuestion(question) }}
+        />
+      )}
       {error !== null && <div className="error">{error}</div>}
       <footer className="composer">
         <div className="composer-box">
@@ -542,4 +631,8 @@ export function App(): React.JSX.Element {
       </footer>
     </div>{approvalDialog}</>
   )
+}
+
+function isRejectedReceipt(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && (value as { accepted?: unknown }).accepted === false
 }
