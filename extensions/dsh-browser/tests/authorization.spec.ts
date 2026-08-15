@@ -16,12 +16,12 @@ function call(name: string, args: Record<string, unknown> = {}): ToolCall {
 
 describe('approvalPromptForCall', () => {
   it('asks before reading and names every effective frame origin', () => {
-    expect(approvalPromptForCall(call('browser_snapshot'), 'ask', FRAMES)).toMatchObject({
+    expect(approvalPromptForCall(call('browser_snapshot'), 'ask', FRAMES, 'zh')).toMatchObject({
       kind: 'read',
       origins: ['https://app.example', 'https://login.example.net'],
       canTrust: false,
     })
-    expect(approvalPromptForCall(call('browser_snapshot'), 'auto', FRAMES)).toBeUndefined()
+    expect(approvalPromptForCall(call('browser_snapshot'), 'auto', FRAMES, 'zh')).toBeUndefined()
   })
 
   it('scopes a frame-local action to the frame origin and redacts typed text', () => {
@@ -29,7 +29,7 @@ describe('approvalPromptForCall', () => {
       frame: 4,
       index: 7,
       text: 'my-password-must-not-appear',
-    }), 'auto', FRAMES)
+    }), 'auto', FRAMES, 'zh')
 
     expect(prompt).toMatchObject({
       kind: 'action',
@@ -43,7 +43,7 @@ describe('approvalPromptForCall', () => {
   it('never offers persistent trust for cross-origin navigation', () => {
     const prompt = approvalPromptForCall(call('browser_navigate', {
       url: 'https://bank.example/transfer?token=secret#confirm',
-    }), 'auto', FRAMES)
+    }), 'auto', FRAMES, 'zh')
 
     expect(prompt).toMatchObject({
       origins: ['https://app.example', 'https://bank.example'],
@@ -54,17 +54,28 @@ describe('approvalPromptForCall', () => {
   })
 
   it('does not offer trust for invalid navigation and keeps key summaries on one bounded line', () => {
-    expect(approvalPromptForCall(call('browser_navigate', { url: 'javascript:alert(1)' }), 'auto', FRAMES))
+    expect(approvalPromptForCall(call('browser_navigate', { url: 'javascript:alert(1)' }), 'auto', FRAMES, 'zh'))
       .toMatchObject({ canTrust: false })
 
-    const prompt = approvalPromptForCall(call('browser_press', { key: `Enter\n${'x'.repeat(100)}` }), 'auto', FRAMES)
+    const prompt = approvalPromptForCall(call('browser_press', { key: `Enter\n${'x'.repeat(100)}` }), 'auto', FRAMES, 'zh')
     expect(prompt?.summary).not.toContain('\n')
     expect(prompt?.summary.length).toBeLessThan(70)
   })
 
   it('keeps read-only viewport tools outside the approval path', () => {
-    expect(approvalPromptForCall(call('browser_scroll', { direction: 'down' }), 'auto', FRAMES)).toBeUndefined()
-    expect(approvalPromptForCall(call('browser_wait'), 'auto', FRAMES)).toBeUndefined()
+    expect(approvalPromptForCall(call('browser_scroll', { direction: 'down' }), 'auto', FRAMES, 'zh')).toBeUndefined()
+    expect(approvalPromptForCall(call('browser_wait'), 'auto', FRAMES, 'zh')).toBeUndefined()
+  })
+
+  it('renders approval summaries in English for non-Chinese browsers', () => {
+    expect(approvalPromptForCall(call('browser_type', {
+      index: 3,
+      text: 'secret',
+    }), 'auto', FRAMES, 'en')?.summary).toBe(
+      'Enter 6 characters in element [3] (the text is not shown in this dialog)',
+    )
+    expect(approvalPromptForCall(call('browser_snapshot'), 'ask', FRAMES, 'en')?.summary)
+      .toBe('Read the current page and accessible iframes')
   })
 })
 

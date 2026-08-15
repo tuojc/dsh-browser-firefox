@@ -10,6 +10,7 @@ import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.t
 import type { BridgeState } from '../background/bridge.ts'
 import type { Settings } from '../background/index.ts'
 import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
+import { getUiLocale } from '../i18n.ts'
 
 /** Panel-side subset of the extension settings. */
 export type PanelSettings = Settings
@@ -80,7 +81,8 @@ export function connectPanel(): PanelApi {
         const envelope = msg.result as { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } } | undefined
         const business = envelope?.result
         if (msg.ok && business?.ok !== false) entry.resolve(business?.value)
-        else entry.reject(new Error(business?.error?.message ?? msg.error?.message ?? 'rpc failed'))
+        else entry.reject(new Error(business?.error?.message ?? msg.error?.message
+          ?? (getUiLocale() === 'zh' ? 'RPC 请求失败' : 'RPC request failed')))
         break
       }
       case 'status':
@@ -99,7 +101,7 @@ export function connectPanel(): PanelApi {
   })
 
   port.onDisconnect.addListener(() => {
-    const error = new Error('background disconnected')
+    const error = new Error(getUiLocale() === 'zh' ? '后台连接已断开' : 'Background connection lost')
     for (const entry of pending.values()) entry.reject(error)
     pending.clear()
   })

@@ -61,10 +61,11 @@ describe('rowFromEvent', () => {
 
 describe('toolSummary', () => {
   it('appends the inventory index when present', () => {
-    expect(toolSummary('browser_click', '{"index":7}')).toBe('点击元素 #7')
-    expect(toolSummary('browser_snapshot', '{"delta":true}')).toBe('读取页面')
-    expect(toolSummary('browser_navigate', 'not-json')).toBe('打开页面')
-    expect(toolSummary('custom_tool', '{}')).toBe('custom_tool')
+    expect(toolSummary('browser_click', '{"index":7}', 'zh')).toBe('点击元素 #7')
+    expect(toolSummary('browser_snapshot', '{"delta":true}', 'zh')).toBe('读取页面')
+    expect(toolSummary('browser_navigate', 'not-json', 'zh')).toBe('打开页面')
+    expect(toolSummary('custom_tool', '{}', 'zh')).toBe('custom_tool')
+    expect(toolSummary('browser_click', '{"index":7}', 'en')).toBe('Click element #7')
   })
 })
 
@@ -99,7 +100,7 @@ describe('mergeHistoryRows', () => {
       ev('assistant/message', { message: { content: [{ type: 'text', text: '已点击' }] } }),
       ev('turn/end', {}),
     ]
-    const rows = mergeHistoryRows(events, nextSeq)
+    const rows = mergeHistoryRows(events, nextSeq, 'zh')
     expect(rows.map((r) => r.kind)).toEqual(['user', 'tool', 'assistant'])
     expect(rows[0]!.text).toBe('操作页面')
     expect(rows[2]!.text).toBe('已点击')
@@ -113,7 +114,7 @@ describe('mergeHistoryRows', () => {
       ev('assistant/message', { message: { content: [{ type: 'tool_use', name: 'browser_snapshot' }] } }),
       ev('tool/call', { name: 'browser_snapshot', arguments: '{}' }),
       ev('tool/result', {}),
-    ], () => { seq += 1; return seq })
+    ], () => { seq += 1; return seq }, 'zh')
     expect(rows).toEqual([{ seq: 1, kind: 'tool', text: '读取页面', status: 'complete' }])
   })
 

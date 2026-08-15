@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "dsh 浏览器助手",
-  "description": "Chrome sidebar extension that lets DSH operate your browser directly—no vision capabilities required.",
+  "name": "__MSG_extensionName__",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en",
   "version": "0.1.0",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -22,7 +23,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "打开 dsh 助手",
+    "default_title": "__MSG_actionTitle__",
     "default_icon": {
       "16": "assets/icons/icon16.png",
       "32": "assets/icons/icon32.png"

@@ -3,6 +3,7 @@
 import type { ToolCall } from './tools.ts'
 import type { TabFrame } from './frames.ts'
 import type { ApprovalPrompt } from '../security/approval.ts'
+import { getUiLocale, type UiLocale } from '../i18n.ts'
 
 const PAGE_READS = new Set(['browser_snapshot', 'browser_get_text'])
 const STATE_CHANGING_ACTIONS = new Set([
@@ -20,6 +21,7 @@ export function approvalPromptForCall(
   call: ToolCall,
   sharePageContent: 'ask' | 'auto' | 'off',
   frames: TabFrame[],
+  locale: UiLocale = getUiLocale(),
 ): ApprovalPrompt | undefined {
   if (PAGE_READS.has(call.name)) {
     if (sharePageContent !== 'ask') return undefined
@@ -29,7 +31,9 @@ export function approvalPromptForCall(
     return {
       kind: 'read',
       action: call.name,
-      summary: call.name === 'browser_snapshot' ? '读取当前页面及可访问 iframe' : '读取当前页面的指定文本区域',
+      summary: call.name === 'browser_snapshot'
+        ? localized(locale, 'Read the current page and accessible iframes', '读取当前页面及可访问 iframe')
+        : localized(locale, 'Read text from the specified area of the current page', '读取当前页面的指定文本区域'),
       origins: uniqueOrigins(targetFrames, frames),
       canTrust: false,
     }
@@ -50,7 +54,7 @@ export function approvalPromptForCall(
   return {
     kind: 'action',
     action: call.name,
-    summary: summarizeAction(call),
+    summary: summarizeAction(call, locale),
     origins,
     // Cross-origin/invalid navigation and unknown history destinations always
     // require a fresh decision; they must never expand trust implicitly.
@@ -90,31 +94,49 @@ export function originFromUrl(value: string): string | undefined {
   }
 }
 
-function summarizeAction(call: ToolCall): string {
-  const frame = typeof call.args.frame === 'number' && call.args.frame !== 0 ? `，iframe ${call.args.frame}` : ''
+function summarizeAction(call: ToolCall, locale: UiLocale): string {
+  const frame = typeof call.args.frame === 'number' && call.args.frame !== 0
+    ? localized(locale, `, iframe ${call.args.frame}`, `，iframe ${call.args.frame}`)
+    : ''
   const index = typeof call.args.index === 'number' ? call.args.index : '?'
   switch (call.name) {
-    case 'browser_click': return `点击元素 [${index}]${frame}`
+    case 'browser_click': return localized(locale, `Click element [${index}]${frame}`, `点击元素 [${index}]${frame}`)
     case 'browser_type': {
       const length = typeof call.args.text === 'string' ? call.args.text.length : 0
-      return `向元素 [${index}] 输入 ${length} 个字符${frame}（文本内容不会显示在确认框）`
+      return localized(
+        locale,
+        `Enter ${length} characters in element [${index}]${frame} (the text is not shown in this dialog)`,
+        `向元素 [${index}] 输入 ${length} 个字符${frame}（文本内容不会显示在确认框）`,
+      )
     }
-    case 'browser_press': return `发送按键「${safeInline(typeof call.args.key === 'string' ? call.args.key : '')}」${frame}`
-    case 'browser_navigate': return `导航到 ${displayUrl(typeof call.args.url === 'string' ? call.args.url : '')}`
-    case 'browser_back': return '返回浏览历史上一页（目标域名未知）'
-    case 'browser_forward': return '前进到浏览历史下一页（目标域名未知）'
-    case 'browser_reload': return '重新加载当前页面'
+    case 'browser_press': return localized(
+      locale,
+      `Press “${safeInline(typeof call.args.key === 'string' ? call.args.key : '')}”${frame}`,
+      `发送按键「${safeInline(typeof call.args.key === 'string' ? call.args.key : '')}」${frame}`,
+    )
+    case 'browser_navigate': return localized(
+      locale,
+      `Navigate to ${displayUrl(typeof call.args.url === 'string' ? call.args.url : '', locale)}`,
+      `导航到 ${displayUrl(typeof call.args.url === 'string' ? call.args.url : '', locale)}`,
+    )
+    case 'browser_back': return localized(locale, 'Go back in browser history (destination domain unknown)', '返回浏览历史上一页（目标域名未知）')
+    case 'browser_forward': return localized(locale, 'Go forward in browser history (destination domain unknown)', '前进到浏览历史下一页（目标域名未知）')
+    case 'browser_reload': return localized(locale, 'Reload the current page', '重新加载当前页面')
     default: return call.name
   }
 }
 
-function displayUrl(value: string): string {
+function displayUrl(value: string, locale: UiLocale): string {
   try {
     const url = new URL(value)
     return safeInline(`${url.origin}${url.pathname}`, 160)
   } catch {
-    return '(无效 URL)'
+    return localized(locale, '(invalid URL)', '(无效 URL)')
   }
+}
+
+function localized(locale: UiLocale, english: string, chinese: string): string {
+  return locale === 'zh' ? chinese : english
 }
 
 function safeInline(value: string, maxLength = 40): string {

@@ -11,12 +11,13 @@ import { defineConfig } from 'vite'
 
 export const outDir = resolve(import.meta.dirname, 'dist')
 
-/** Copy manifest.json into dist after each target build (Chrome loads dist/). */
+/** Copy manifest, locale catalogs, and icons into dist (Chrome loads dist/). */
 export const copyManifest = {
   name: 'copy-manifest',
   closeBundle(): void {
     mkdirSync(outDir, { recursive: true })
     copyFileSync(resolve(import.meta.dirname, 'manifest.json'), resolve(outDir, 'manifest.json'))
+    cpSync(resolve(import.meta.dirname, '_locales'), resolve(outDir, '_locales'), { recursive: true })
     cpSync(resolve(import.meta.dirname, 'assets'), resolve(outDir, 'assets'), { recursive: true })
   },
 }
