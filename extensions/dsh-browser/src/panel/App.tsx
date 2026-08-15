@@ -192,6 +192,7 @@ export function App(): React.JSX.Element {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [working, setWorking] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
@@ -200,6 +201,7 @@ export function App(): React.JSX.Element {
   const [questionSubmitting, setQuestionSubmitting] = useState(false)
   const questionRef = useRef<PendingQuestion | null>(null)
   const questionSubmittingRef = useRef(false)
+  const stoppingRef = useRef(false)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -245,6 +247,8 @@ export function App(): React.JSX.Element {
         sessionRef.current = null
         setRows([])
         setWorking(false)
+        setStopping(false)
+        stoppingRef.current = false
         replaceQuestion(null)
         setSessionEpoch((epoch) => epoch + 1)
       }
@@ -319,6 +323,8 @@ export function App(): React.JSX.Element {
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
     if (payload?.sessionId !== sessionRef.current || payload.event === undefined) return
     if (payload.event.type === 'turn/start') {
+      stoppingRef.current = false
+      setStopping(false)
       setWorking(true)
       return
     }
@@ -340,6 +346,8 @@ export function App(): React.JSX.Element {
       return
     }
     if (payload.event.type === 'turn/end') {
+      stoppingRef.current = false
+      setStopping(false)
       setWorking(false)
       replaceQuestion(null)
       await refreshHistory()
@@ -429,6 +437,27 @@ export function App(): React.JSX.Element {
     } finally {
       setBusy(false)
       sendingRef.current = false
+    }
+  }
+
+  /** Cancel the active turn while keeping the sidebar session available. */
+  async function stopTurn(): Promise<void> {
+    const id = sessionRef.current
+    if (id === null || stoppingRef.current) return
+    stoppingRef.current = true
+    setStopping(true)
+    setError(null)
+    try {
+      await api.rpc('session.cancel', { sessionId: id })
+      if (sessionRef.current === id) {
+        setWorking(false)
+        replaceQuestion(null)
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      stoppingRef.current = false
+      setStopping(false)
     }
   }
 
@@ -625,7 +654,19 @@ export function App(): React.JSX.Element {
           />
           <div className="composer-actions">
             <span>{copy.app.composerHelp}</span>
-            <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+            {working ? (
+              <button
+                className="stop-button"
+                onClick={() => { void stopTurn() }}
+                disabled={state !== 'connected' || stopping}
+                aria-label={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
+                title={stopping ? copy.app.stoppingTurn : copy.app.stopTurn}
+              >
+                <span className="stop-glyph" aria-hidden="true" />
+              </button>
+            ) : (
+              <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+            )}
           </div>
         </div>
       </footer>

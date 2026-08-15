@@ -84,6 +84,8 @@ export interface PanelCopy {
     disconnectedPlaceholder: string
     composerHelp: string
     sendMessage: string
+    stopTurn: string
+    stoppingTurn: string
   }
 }
 
@@ -187,6 +189,8 @@ const EN: PanelCopy = {
     disconnectedPlaceholder: 'Connect to dsh to get started',
     composerHelp: 'Enter to send · Shift + Enter for a new line',
     sendMessage: 'Send message',
+    stopTurn: 'Stop generating',
+    stoppingTurn: 'Stopping…',
   },
 }
 
@@ -290,6 +294,8 @@ const ZH: PanelCopy = {
     disconnectedPlaceholder: '连接 dsh 后即可开始',
     composerHelp: 'Enter 发送 · Shift + Enter 换行',
     sendMessage: '发送消息',
+    stopTurn: '停止生成',
+    stoppingTurn: '正在停止…',
   },
 }
 

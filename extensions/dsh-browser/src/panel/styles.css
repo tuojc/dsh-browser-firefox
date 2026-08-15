@@ -1114,6 +1114,26 @@ textarea:focus-visible {
   transform: translateY(-1px);
 }
 
+.composer-actions button.stop-button {
+  border-color: var(--navy);
+  border-radius: 50%;
+  background: var(--navy);
+  color: #ffffff;
+  box-shadow: 0 4px 10px rgba(24, 32, 51, 0.2);
+}
+
+.composer-actions button.stop-button:hover:not(:disabled) {
+  border-color: #29334a;
+  background: #29334a;
+}
+
+.stop-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 1.5px;
+  background: currentColor;
+}
+
 .composer-actions button:disabled {
   border-color: #e3e7ee;
   background: #e8ebf1;
