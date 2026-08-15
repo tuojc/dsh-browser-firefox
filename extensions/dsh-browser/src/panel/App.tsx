@@ -26,6 +26,7 @@ import {
   upsertPendingQuestion,
 } from './pending-questions.ts'
 import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
+import { resumableSessions, type SessionPickerEntry } from './sessions.ts'
 
 /** One rendered conversation row. */
 import {
@@ -211,16 +212,15 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(false)
-  const [sessionList, setSessionList] = useState<{
-    sessionId: string
-    updatedAt: number
-    cwd?: string
-  }[]>([])
+  const [sessionChanging, setSessionChanging] = useState(false)
+  const [sessionList, setSessionList] = useState<SessionPickerEntry[]>([])
   const [questions, setQuestions] = useState<PendingQuestion[]>([])
   const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
   const questionsRef = useRef<PendingQuestion[]>([])
   const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
+  const sessionChangingRef = useRef(false)
+  const sessionTransitionRef = useRef(0)
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -228,6 +228,8 @@ export function App(): React.JSX.Element {
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
   const question = questions[0] ?? null
   const questionSubmitting = question !== null && hasPendingQuestion(questionSubmissions, question)
+  const sessionSwitchBlocked = sessionChanging || busy || working || stopping
+    || questions.length > 0 || approvalQueue.length > 0
 
   function replaceQuestions(next: PendingQuestion[]): void {
     questionsRef.current = next
@@ -285,10 +287,14 @@ export function App(): React.JSX.Element {
       const previous = lastStateRef.current
       lastStateRef.current = next
       if (previous !== null && next !== previous && next === 'stopped') {
+        sessionTransitionRef.current += 1
+        sessionChangingRef.current = false
         sessionRef.current = null
         setRows([])
         setWorking(false)
         setStopping(false)
+        setSessionChanging(false)
+        setShowSessionPicker(false)
         stoppingRef.current = false
         clearQuestions()
         setSessionEpoch((epoch) => epoch + 1)
@@ -443,25 +449,32 @@ export function App(): React.JSX.Element {
     setQuestionBusy(target, false)
   }
 
-  async function refreshHistory(): Promise<void> {
-    const id = sessionRef.current
+  async function refreshHistory(requestedId: string | null = sessionRef.current): Promise<void> {
+    const id = requestedId
     if (id === null) return
     try {
       const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
+      if (sessionRef.current !== id) return
       setRows(mergeHistoryRows(result.events.map((entry) => entry.event), nextSeq, locale))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (sessionRef.current === id) setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
   /** 每次打开侧边栏都新建一个会话（与 GUI/其他界面的历史完全隔离）。 */
   async function ensureSession(): Promise<void> {
+    const transition = beginSessionTransition()
     try {
       const created = await api.rpc<{ sessionId: string }>('session.create', {})
+      if (sessionTransitionRef.current !== transition) return
       sessionRef.current = created.sessionId
-      await refreshHistory()
+      await refreshHistory(created.sessionId)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (sessionTransitionRef.current === transition) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    } finally {
+      finishSessionTransition(transition)
     }
   }
 
@@ -471,13 +484,12 @@ export function App(): React.JSX.Element {
       setShowSessionPicker(false)
       return
     }
+    if (state !== 'connected' || sessionSwitchBlocked || sessionChangingRef.current) return
     setShowSessionPicker(true)
     setLoadingSessions(true)
     try {
-      const result = await api.rpc<{
-        items: { sessionId: string; updatedAt: number; cwd?: string; blank: boolean }[]
-      }>('session.list', {})
-      setSessionList((result.items ?? []).filter((entry) => !entry.blank))
+      const result = await api.rpc<{ items: SessionPickerEntry[] }>('session.list', {})
+      setSessionList(resumableSessions(result.items ?? []))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -486,24 +498,47 @@ export function App(): React.JSX.Element {
   }
 
   /** 恢复历史会话：切换当前 session 并加载其历史。 */
-  async function resumeSession(id: string): Promise<void> {
-    sessionRef.current = id
-    setRows([])
-    setWorking(false)
-    setShowSessionPicker(false)
+  async function resumeSession(entry: SessionPickerEntry): Promise<void> {
+    if (sessionSwitchBlocked || sessionChangingRef.current) return
+    const transition = beginSessionTransition()
+    prepareSessionSwitch(entry.running)
+    sessionRef.current = entry.sessionId
     try {
-      await refreshHistory()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      await refreshHistory(entry.sessionId)
+    } finally {
+      finishSessionTransition(transition)
     }
   }
 
   /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
   async function startNewSession(): Promise<void> {
-    setRows([])
-    setWorking(false)
-    setShowSessionPicker(false)
+    if (sessionSwitchBlocked || sessionChangingRef.current) return
+    prepareSessionSwitch(false)
     await ensureSession()
+  }
+
+  function beginSessionTransition(): number {
+    sessionChangingRef.current = true
+    setSessionChanging(true)
+    sessionTransitionRef.current += 1
+    return sessionTransitionRef.current
+  }
+
+  function finishSessionTransition(transition: number): void {
+    if (sessionTransitionRef.current !== transition) return
+    sessionChangingRef.current = false
+    setSessionChanging(false)
+  }
+
+  function prepareSessionSwitch(nextWorking: boolean): void {
+    setRows([])
+    setInput('')
+    setWorking(nextWorking)
+    setStopping(false)
+    stoppingRef.current = false
+    clearQuestions()
+    setError(null)
+    setShowSessionPicker(false)
   }
 
   const sendingRef = useRef(false)
@@ -644,7 +679,7 @@ export function App(): React.JSX.Element {
               value={trustedOriginInput}
               onChange={(event) => setTrustedOriginInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') addTrustedOrigin() }}
-              placeholder="https://example.com / *.example.com"
+              placeholder="https://example.com / https://*.example.com"
             />
             <button disabled={normalizeWebOrigin(trustedOriginInput) === null} onClick={addTrustedOrigin}>{copy.settings.add}</button>
           </div>
@@ -676,14 +711,15 @@ export function App(): React.JSX.Element {
           <span className="brand-copy"><strong>{copy.app.brand}</strong><small>{copy.app.tagline}</small></span>
         </div>
         <span className="connection" role="status"><span className={`dot ${state}`} />{statusText}</span>
-        <button className="icon-button" onClick={() => { void openSessionPicker() }} aria-label={copy.app.openSessions} title={copy.app.sessions}><HistoryIcon /></button>
+        <button className="icon-button" disabled={state !== 'connected' || sessionSwitchBlocked}
+          onClick={() => { void openSessionPicker() }} aria-label={copy.app.openSessions} title={copy.app.sessions}><HistoryIcon /></button>
         <button className="icon-button" onClick={() => setShowSettings(true)} aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
       </header>
       {showSessionPicker && (
         <section className="session-picker" aria-label={copy.app.sessions}>
           <div className="session-picker-head">
             <strong>{copy.app.sessions}</strong>
-            <button className="session-new" disabled={state !== 'connected'}
+            <button className="session-new" disabled={state !== 'connected' || sessionSwitchBlocked}
               onClick={() => { void startNewSession() }}>
               {copy.app.newSession}
             </button>
@@ -696,7 +732,9 @@ export function App(): React.JSX.Element {
                 <ul className="session-list">
                   {sessionList.map((entry) => (
                     <li key={entry.sessionId}>
-                      <button onClick={() => { void resumeSession(entry.sessionId) }}>
+                      <button disabled={sessionSwitchBlocked}
+                        aria-current={entry.sessionId === sessionRef.current ? 'true' : undefined}
+                        onClick={() => { void resumeSession(entry) }}>
                         <span className="session-time">{new Date(entry.updatedAt).toLocaleString()}</span>
                         <span className="session-cwd">{entry.cwd ?? ''}</span>
                       </button>

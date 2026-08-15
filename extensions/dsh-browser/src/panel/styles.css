@@ -1744,6 +1744,15 @@ textarea:focus-visible {
   background: var(--blue-wash);
 }
 
+.session-list button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.session-list button[aria-current="true"] {
+  background: var(--blue-wash);
+}
+
 .session-time {
   color: var(--ink);
   font-size: 12px;
