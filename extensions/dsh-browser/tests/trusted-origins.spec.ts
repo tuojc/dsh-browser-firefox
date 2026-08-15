@@ -35,6 +35,14 @@ describe('normalizeTrustedOrigin', () => {
     expect(normalizeTrustedOrigin('https://*.example.com/path')).toBeUndefined()
     expect(normalizeTrustedOrigin('https://*.localhost')).toBeUndefined()
     expect(normalizeTrustedOrigin('https://user:pass@*.example.com')).toBeUndefined()
+    expect(normalizeTrustedOrigin('https://*.co.uk')).toBeUndefined()
+    expect(normalizeTrustedOrigin('https://*.github.io')).toBeUndefined()
+  })
+
+  it('allows registrable and narrower wildcard roots', () => {
+    expect(normalizeTrustedOrigin('https://*.example.co.uk')).toBe('https://*.example.co.uk')
+    expect(normalizeTrustedOrigin('https://*.user.github.io')).toBe('https://*.user.github.io')
+    expect(normalizeTrustedOrigin('https://*.api.example.com')).toBe('https://*.api.example.com')
   })
 })
 

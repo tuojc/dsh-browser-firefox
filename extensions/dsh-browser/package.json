@@ -16,7 +16,8 @@
     "dompurify": "^3.4.13",
     "marked": "^18.0.9",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tldts": "^6.1.86"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-bridge-browser": "workspace:^",

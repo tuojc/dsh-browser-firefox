@@ -1,3 +1,4 @@
+import { getDomain } from 'tldts'
 import type { ApprovalPrompt } from './approval.ts'
 
 /**
@@ -95,6 +96,7 @@ function parseWildcard(value: string): WildcardOrigin | undefined {
 
 function isDomainName(hostname: string): boolean {
   const labels = hostname.split('.')
-  return labels.length >= 2 && labels.every((label) =>
-    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+  return labels.length >= 2
+    && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+    && getDomain(hostname, { allowPrivateDomains: true }) !== null
 }
