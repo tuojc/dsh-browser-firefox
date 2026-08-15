@@ -50,8 +50,10 @@ npx @deepseek-ai/dsh web
 
 帧为按 `t` 判别的 JSON 对象，定义在 [`protocol.ts`](src/protocol.ts)，是通过 workspace 包的 `./src/*` export 与扩展共享的真源。构建后的包还会发布 `@deepseek-ai/dsh-bridge-browser/protocol`，供外部消费方使用。
 
-- 客户端 → 服务端：`hello`（认证+caps）、`rpc`（网关方法透传）、`tool.result`、`pong`。
-- 服务端 → 客户端：`hello.ok`（回显协商后的 caps）、`rpc.result`、`event`（网关事件信封，与 `/api/events.mux` 同形）、`tool.call`、`ping`、`error`。
+- 客户端 → 服务端：`hello`（认证+caps）、`rpc`（网关方法透传）、`respond`（按 RPC id 结算宿主交互）、`tool.result`、`pong`。
+- 服务端 → 客户端：`hello.ok`（回显协商后的 caps）、`rpc.result`、`respond.result`（相关联的受理结果或错误）、`event`（网关事件信封，与 `/api/events.mux` 同形）、`tool.call`、`ping`、`error`。
+
+每个 `respond` 同时携带全局唯一的传输 id 与宿主交互的 `rpcId`。扩展只把回执路由给发起操作的面板，并在超时、面板关闭或桥断线时拒绝尚未完成的响应。
 
 ## 工具
 
