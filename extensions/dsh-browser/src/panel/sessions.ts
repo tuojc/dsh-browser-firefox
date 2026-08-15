@@ -9,11 +9,25 @@ export interface SessionPickerEntry {
   blank: boolean
   cwd?: string
   origin?: 'subagent'
+  projections?: {
+    asOfSeq: number
+    values: Record<string, unknown>
+  }
 }
 
 /** Only ordinary, started conversations can be resumed through session.prompt. */
 export function resumableSessions(items: readonly SessionPickerEntry[]): SessionPickerEntry[] {
   return items.filter((entry) => !entry.blank && entry.origin !== 'subagent')
+}
+
+/** Match dsh's display-title fallback without loading a session's history. */
+export function sessionDisplayTitle(entry: SessionPickerEntry): string {
+  const projectedTitle = entry.projections?.values.title
+  if (typeof projectedTitle === 'string' && projectedTitle.trim() !== '') return projectedTitle.trim()
+
+  const normalizedCwd = entry.cwd?.replace(/[\\/]+$/u, '')
+  const directoryName = normalizedCwd?.split(/[\\/]/u).at(-1)
+  return directoryName === undefined || directoryName === '' ? entry.sessionId : directoryName
 }
 
 /** A prompt target exists only after the current session transition settles. */

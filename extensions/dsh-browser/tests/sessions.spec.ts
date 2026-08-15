@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   resumableSessions,
   sessionAcceptsPrompts,
+  sessionDisplayTitle,
   SessionRuntimeCache,
   type SessionPickerEntry,
 } from '../src/panel/sessions.ts'
@@ -28,6 +29,32 @@ describe('resumableSessions', () => {
       { ...ordinary, sessionId: 'subagent', origin: 'subagent' },
       ordinary,
     ])).toEqual([ordinary])
+  })
+})
+
+describe('sessionDisplayTitle', () => {
+  it('uses the durable dsh title projection when present', () => {
+    expect(sessionDisplayTitle({
+      ...ordinary,
+      projections: { asOfSeq: 4, values: { title: 'Review pull request feedback' } },
+    })).toBe('Review pull request feedback')
+  })
+
+  it('falls back through the directory basename and session ID', () => {
+    expect(sessionDisplayTitle({ ...ordinary, cwd: '/workspace/dsh-browser/' })).toBe('dsh-browser')
+    expect(sessionDisplayTitle({ ...ordinary, cwd: 'C:\\work\\dsh-browser\\' })).toBe('dsh-browser')
+    expect(sessionDisplayTitle({ ...ordinary, cwd: undefined })).toBe('ordinary')
+  })
+
+  it('ignores malformed or blank title projections', () => {
+    expect(sessionDisplayTitle({
+      ...ordinary,
+      projections: { asOfSeq: 4, values: { title: '   ' } },
+    })).toBe('workspace')
+    expect(sessionDisplayTitle({
+      ...ordinary,
+      projections: { asOfSeq: 4, values: { title: { unsafe: true } } },
+    })).toBe('workspace')
   })
 })
 

@@ -29,6 +29,7 @@ import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
 import {
   resumableSessions,
   sessionAcceptsPrompts,
+  sessionDisplayTitle,
   SessionRuntimeCache,
   type SessionPickerEntry,
 } from './sessions.ts'
@@ -755,16 +756,22 @@ export function App(): React.JSX.Element {
               ? <p className="session-empty">{copy.app.sessionPickerEmpty}</p>
               : (
                 <ul className="session-list">
-                  {sessionList.map((entry) => (
-                    <li key={entry.sessionId}>
-                      <button disabled={sessionSwitchBlocked}
-                        aria-current={entry.sessionId === sessionRef.current ? 'true' : undefined}
-                        onClick={() => { void resumeSession(entry) }}>
-                        <span className="session-time">{new Date(entry.updatedAt).toLocaleString()}</span>
-                        <span className="session-cwd">{entry.cwd ?? ''}</span>
-                      </button>
-                    </li>
-                  ))}
+                  {sessionList.map((entry) => {
+                    const title = sessionDisplayTitle(entry)
+                    return (
+                      <li key={entry.sessionId}>
+                        <button disabled={sessionSwitchBlocked}
+                          aria-current={entry.sessionId === sessionRef.current ? 'true' : undefined}
+                          onClick={() => { void resumeSession(entry) }}>
+                          <span className="session-title" title={title}>{title}</span>
+                          <span className="session-meta">
+                            <span className="session-time">{new Date(entry.updatedAt).toLocaleString()}</span>
+                            {entry.cwd !== undefined && <span className="session-cwd" title={entry.cwd}>{entry.cwd}</span>}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
         </section>

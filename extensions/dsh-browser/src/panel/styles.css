@@ -1728,11 +1728,11 @@ textarea:focus-visible {
 }
 
 .session-list button {
-  display: flex;
+  display: grid;
   width: 100%;
-  flex-direction: column;
-  gap: 2px;
-  padding: 7px 6px;
+  min-width: 0;
+  gap: 3px;
+  padding: 8px 6px;
   text-align: left;
   background: none;
   border: 0;
@@ -1753,16 +1753,32 @@ textarea:focus-visible {
   background: var(--blue-wash);
 }
 
-.session-time {
+.session-title {
+  overflow: hidden;
   color: var(--ink);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 680;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.session-time {
+  flex: 0 0 auto;
 }
 
 .session-cwd {
   overflow: hidden;
-  color: var(--faint);
-  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
