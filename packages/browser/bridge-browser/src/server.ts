@@ -54,6 +54,9 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.unset',
 ])
 
+/** Session mutations whose WebSocket arrival order is behaviorally significant. */
+const ORDERED_SESSION_METHODS = new Set(['session.prompt', 'session.cancel'])
+
 /** Loopback IPv4/IPv6 literals (IPv4-mapped included). Exported for tests and reuse. */
 export function isLoopbackAddress(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
@@ -139,6 +142,7 @@ export class BridgeServer {
   private readonly wss = new WebSocketServer({ noServer: true })
   private current: ReadyConnection | null = null
   private readonly pendingTools = new Map<string, PendingTool>()
+  private readonly orderedSessionRpcs = new Map<string, Promise<void>>()
   private closed = false
 
   constructor(private readonly deps: BridgeServerDeps) {}
@@ -329,7 +333,7 @@ export class BridgeServer {
   private handleReadyFrame(frame: BridgeFrame): void {
     switch (frame.t) {
       case 'rpc':
-        void this.handleRpc(frame)
+        this.routeRpc(frame)
         break
       case 'respond':
         void this.handleRespond(frame)
@@ -351,6 +355,29 @@ export class BridgeServer {
         // the extension is the only sender on this channel.
         break
     }
+  }
+
+  /**
+   * Preserve prompt/cancel arrival order per session. In particular, the
+   * first prompt may still be materializing a provisional session; its cancel
+   * must not reach the gateway until that admission has completed.
+   */
+  private routeRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): void {
+    const sessionId = orderedSessionId(frame)
+    if (sessionId === undefined) {
+      void this.handleRpc(frame)
+      return
+    }
+    const previous = this.orderedSessionRpcs.get(sessionId) ?? Promise.resolve()
+    const task = previous.then(
+      () => this.handleRpc(frame),
+      () => this.handleRpc(frame),
+    )
+    this.orderedSessionRpcs.set(sessionId, task)
+    const clear = (): void => {
+      if (this.orderedSessionRpcs.get(sessionId) === task) this.orderedSessionRpcs.delete(sessionId)
+    }
+    void task.then(clear, clear)
   }
 
   private async handleRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): Promise<void> {
@@ -442,6 +469,13 @@ export class BridgeServer {
       pending.reject(new BridgeToolError('bridge-closed', 'the extension connection was replaced'))
     }
   }
+}
+
+function orderedSessionId(frame: Extract<ClientFrame, { t: 'rpc' }>): string | undefined {
+  if (!ORDERED_SESSION_METHODS.has(frame.method)) return undefined
+  if (typeof frame.payload !== 'object' || frame.payload === null || Array.isArray(frame.payload)) return undefined
+  const sessionId = (frame.payload as Record<string, unknown>).sessionId
+  return typeof sessionId === 'string' ? sessionId : undefined
 }
 
 /**

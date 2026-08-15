@@ -200,6 +200,48 @@ describe('BridgeServer', () => {
     ws.close()
   })
 
+  it('orders prompt before cancel for one session without blocking other sessions', async () => {
+    let releasePrompt!: () => void
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    const calls: Array<{ method: string; sessionId: string }> = []
+    const apiHandler = { fetch: vi.fn(async (request: Request) => {
+      const body = await request.json() as { rpcId: string; method: string; payload: { sessionId: string } }
+      calls.push({ method: body.method, sessionId: body.payload.sessionId })
+      if (body.method === 'session.prompt' && body.payload.sessionId === 'provisional') await promptGate
+      return Response.json({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: { accepted: true } },
+      })
+    }) }
+    const h = await startBridge({ apiHandler })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((frame) => frame.t === 'hello.ok'))
+
+    send(ws, {
+      t: 'rpc', id: 'prompt', method: 'session.prompt',
+      payload: { sessionId: 'provisional', mode: 'queue', content: [] },
+    })
+    send(ws, { t: 'rpc', id: 'cancel', method: 'session.cancel', payload: { sessionId: 'provisional' } })
+    send(ws, { t: 'rpc', id: 'other-cancel', method: 'session.cancel', payload: { sessionId: 'other' } })
+
+    await waitFor(() => calls.some((call) => call.sessionId === 'other'))
+    expect(calls).toContainEqual({ method: 'session.prompt', sessionId: 'provisional' })
+    expect(calls).toContainEqual({ method: 'session.cancel', sessionId: 'other' })
+    expect(calls).not.toContainEqual({ method: 'session.cancel', sessionId: 'provisional' })
+
+    releasePrompt()
+    await waitFor(() => calls.some((call) => call.method === 'session.cancel' && call.sessionId === 'provisional'))
+    expect(calls.filter((call) => call.sessionId === 'provisional')).toEqual([
+      { method: 'session.prompt', sessionId: 'provisional' },
+      { method: 'session.cancel', sessionId: 'provisional' },
+    ])
+    await waitFor(() => frames.filter((frame) => frame.t === 'rpc.result').length === 3)
+    ws.close()
+  })
+
   it('relays interaction responses to /api/respond with the original rpcId', async () => {
     const h = await startBridge()
     harnesses.push(h)
