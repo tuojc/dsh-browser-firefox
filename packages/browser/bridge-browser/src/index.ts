@@ -45,7 +45,7 @@ export const inject = ['webServer', 'apiProxy', 'tools', 'agents']
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
 
 /** Default rendered-snapshot character budget (protects model context). */
-const DEFAULT_SNAPSHOT_MAX_CHARS = 12_000
+const DEFAULT_SNAPSHOT_MAX_CHARS = 32_000
 
 /** Default cap on interactive inventory items per snapshot. */
 const DEFAULT_MAX_INTERACTIVE_ITEMS = 60
@@ -62,7 +62,7 @@ export interface Config {
   token?: string
   /** Per-tool-call timeout in ms. Defaults to 60000. */
   toolTimeoutMs?: number
-  /** Upper bound on one snapshot's rendered characters. Defaults to 12000; minimum 500. */
+  /** Upper bound on one snapshot's rendered characters. Defaults to 32000; minimum 500. */
   snapshotMaxChars?: number
   /** Upper bound on interactive inventory items per snapshot. Defaults to 60. */
   maxInteractiveItems?: number
