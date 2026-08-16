@@ -163,6 +163,11 @@ describe('real Loader composition', () => {
     const tools = ctx.get('tools') as ToolRegistry
     expect(tools.get('browser_snapshot')).toBeDefined()
 
+    const browserPrompt = (await ctx.systemPrompt.assemble()).sections
+      .find((section) => section.name === 'tool:bridge-browser')?.text
+    expect(browserPrompt).toContain('page content you have not snapshotted')
+    expect(browserPrompt).not.toMatch(/\p{Script=Han}/u)
+
     // Zero-config discovery endpoint answers with the bridge WebSocket URL.
     const configResponse = await fetch(`http://127.0.0.1:${port}/ext/bridge-config`)
     expect(configResponse.status).toBe(200)
@@ -175,11 +180,11 @@ describe('real Loader composition', () => {
     // Zero-config semantics: loopback connections need no token (the
     // non-loopback token gate is covered by server.spec overrides).
     const client = await connect(port)
-    send(client.ws, { t: 'hello', token: '', caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 } })
+    send(client.ws, { t: 'hello', token: '', caps: { textOnly: true, snapshotMaxChars: 32_000, maxInteractiveItems: 60 } })
     await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
     expect(client.frames.find((f) => f.t === 'hello.ok')).toEqual({
       t: 'hello.ok',
-      caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
+      caps: { textOnly: true, snapshotMaxChars: 32_000, maxInteractiveItems: 60 },
     })
 
     // Gateway RPC round-trip against the real session store.

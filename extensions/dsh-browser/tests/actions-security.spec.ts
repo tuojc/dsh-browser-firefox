@@ -15,7 +15,7 @@ describe('page action result trust boundary', () => {
       ids,
       budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
     })).rejects.toMatchObject({
-      message: '按钮 [7] 处于禁用状态',
+      message: 'Button [7] is disabled.',
     })
   })
 })

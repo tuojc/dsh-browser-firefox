@@ -2,6 +2,8 @@
 
 export type ApprovalKind = 'read' | 'action'
 export type ApprovalDecision = 'deny' | 'allow-once' | 'always-allow-reads' | 'trust-session' | 'trust-origin'
+/** Background authorization result; transport failures must not masquerade as a user decision. */
+export type ApprovalAuthorization = 'approved' | 'denied' | 'unavailable' | 'timed-out' | 'cancelled'
 
 /** A policy decision awaiting a user response. */
 export interface ApprovalPrompt {

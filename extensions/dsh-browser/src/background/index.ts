@@ -36,6 +36,7 @@ import { createRpc } from './rpc.ts'
 import { dispatchToolCall, resetTabSnapshot, type ToolAnswer, type ToolCall } from './tools.ts'
 import {
   isApprovalDecision,
+  type ApprovalAuthorization,
   type ApprovalDecision,
   type ApprovalPrompt,
   type ApprovalRequest,
@@ -130,8 +131,11 @@ const focusedWindow = new FocusedWindowTracker()
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
 const activeToolCalls = new Map<string, AbortController>()
+type ApprovalRequestResult =
+  | { status: 'decision'; decision: ApprovalDecision }
+  | { status: 'unavailable' | 'timed-out' | 'cancelled' }
 const pendingApprovals = new Map<string, {
-  resolve: (decision: ApprovalDecision) => void
+  resolve: (result: ApprovalRequestResult) => void
   timer: ReturnType<typeof setTimeout>
 }>()
 const APPROVAL_TIMEOUT_MS = 30_000
@@ -208,17 +212,17 @@ function responseMessages(): { unavailable: string; timeout: string; duplicate: 
       }
 }
 
-function settleApproval(id: string, decision: ApprovalDecision): void {
+function settleApproval(id: string, result: ApprovalRequestResult): void {
   const pending = pendingApprovals.get(id)
   if (pending === undefined) return
   pendingApprovals.delete(id)
   clearTimeout(pending.timer)
-  pending.resolve(decision)
+  pending.resolve(result)
   broadcastApprovalResolved(id)
 }
 
-function denyPendingApprovals(): void {
-  for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
+function cancelPendingApprovals(): void {
+  for (const id of [...pendingApprovals.keys()]) settleApproval(id, { status: 'cancelled' })
 }
 
 function summarizeTab(tab: chrome.tabs.Tab): AffinityTab | null {
@@ -262,7 +266,7 @@ function observeActiveSummary(summary: AffinityTab): void {
   if (!tabAffinity.observeActive(summary)) return
   if (previousStatus !== 'handoff' && tabAffinity.snapshot().status === 'handoff') {
     activeFollowRefresh?.abort()
-    denyPendingApprovals()
+    cancelPendingApprovals()
   }
   persistTabAffinity()
   broadcastTabAffinity()
@@ -360,16 +364,16 @@ function affinityFailure(kind: 'handoff' | 'lost' | 'missing'): ToolAnswer {
   if (kind === 'handoff') {
     return {
       ok: false,
-      error: { code: 'action-failed', message: '用户切换了标签页；浏览器操作已暂停，请先在侧栏选择继续原页面或跟随当前页面' },
+      error: { code: 'action-failed', message: 'The user switched tabs, so browser operations are paused. In the side panel, choose whether to keep the previous page or follow the current page.' },
     }
   }
   if (kind === 'lost') {
     return {
       ok: false,
-      error: { code: 'content-unavailable', message: '受控标签页已关闭；请先在侧栏选择当前页面后再试' },
+      error: { code: 'content-unavailable', message: 'The controlled tab was closed. Select the current page in the side panel before retrying.' },
     }
   }
-  return { ok: false, error: { code: 'no-active-tab', message: '没有活动的标签页可操作' } }
+  return { ok: false, error: { code: 'no-active-tab', message: 'No active tab is available for browser operations.' } }
 }
 
 /** Resolve one stable tab target without allowing a manual switch to drift it. */
@@ -394,7 +398,7 @@ async function resolveToolTab(): Promise<Pick<chrome.tabs.Tab, 'id' | 'url'> | T
       if (current.kind === 'target' && current.tab.tabId === summary.tabId) return tab
     } catch {
       if (tabAffinity.removeTab(resolution.tab.tabId)) {
-        denyPendingApprovals()
+        cancelPendingApprovals()
         persistTabAffinity()
         broadcastTabAffinity()
       }
@@ -404,21 +408,22 @@ async function resolveToolTab(): Promise<Pick<chrome.tabs.Tab, 'id' | 'url'> | T
   return affinityFailure('handoff')
 }
 
-function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalDecision> {
-  if (panelPorts.size === 0 || signal.aborted) return Promise.resolve('deny')
+function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalRequestResult> {
+  if (signal.aborted) return Promise.resolve({ status: 'cancelled' })
+  if (panelPorts.size === 0) return Promise.resolve({ status: 'unavailable' })
   const request: ApprovalRequest = { ...prompt, id: crypto.randomUUID() }
   return new Promise((resolve) => {
-    const onAbort = (): void => { settleApproval(request.id, 'deny') }
-    const resolveWithCleanup = (decision: ApprovalDecision): void => {
+    const onAbort = (): void => { settleApproval(request.id, { status: 'cancelled' }) }
+    const resolveWithCleanup = (result: ApprovalRequestResult): void => {
       signal.removeEventListener('abort', onAbort)
-      resolve(decision)
+      resolve(result)
     }
-    const timer = setTimeout(() => { settleApproval(request.id, 'deny') }, APPROVAL_TIMEOUT_MS)
+    const timer = setTimeout(() => { settleApproval(request.id, { status: 'timed-out' }) }, APPROVAL_TIMEOUT_MS)
     pendingApprovals.set(request.id, { resolve: resolveWithCleanup, timer })
     signal.addEventListener('abort', onAbort, { once: true })
     // Close the small race between the initial check and listener setup.
     if (signal.aborted) {
-      settleApproval(request.id, 'deny')
+      settleApproval(request.id, { status: 'cancelled' })
       return
     }
     let delivered = false
@@ -428,37 +433,39 @@ function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<A
         delivered = true
       } catch { /* port already closed */ }
     }
-    if (!delivered) settleApproval(request.id, 'deny')
+    if (!delivered) settleApproval(request.id, { status: 'unavailable' })
   })
 }
 
-async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return false
+async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalAuthorization> {
+  if (signal.aborted) return 'cancelled'
   if (actionCoveredByTrustedOrigins(
     prompt,
     sessionTrustedActionOrigins,
     settings.trustedActionOrigins,
   )) {
-    return true
+    return 'approved'
   }
-  const decision = await requestApproval(prompt, signal)
-  if (signal.aborted) return false
+  const result = await requestApproval(prompt, signal)
+  if (signal.aborted) return 'cancelled'
+  if (result.status !== 'decision') return result.status
+  const { decision } = result
   if (decision === 'always-allow-reads' && prompt.kind === 'read') {
     await persistSettings({ sharePageContent: 'auto' })
-    return true
+    return 'approved'
   }
   if (decision === 'trust-session' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
     sessionTrustedActionOrigins.add(prompt.origins[0]!)
-    return true
+    return 'approved'
   }
   // Retain wire compatibility with panels from the previous build. The new UI
   // manages permanent trust explicitly in Settings instead of offering it in
   // the action dialog.
   if (decision === 'trust-origin' && prompt.kind === 'action' && prompt.canTrust && prompt.origins.length === 1) {
     await persistSettings({ trustedActionOrigins: [...settings.trustedActionOrigins, prompt.origins[0]!] })
-    return true
+    return 'approved'
   }
-  return decision === 'allow-once'
+  return decision === 'allow-once' ? 'approved' : 'denied'
 }
 
 /** Capture the newly controlled tab and seed it into this session's next Agent step. */
@@ -720,7 +727,7 @@ chrome.runtime.onConnect.addListener((port) => {
       case 'approval.response': {
         const approval = message as { id?: unknown; decision?: unknown }
         if (typeof approval.id === 'string' && isApprovalDecision(approval.decision)) {
-          settleApproval(approval.id, approval.decision)
+          settleApproval(approval.id, { status: 'decision', decision: approval.decision })
         }
         break
       }
@@ -751,7 +758,7 @@ chrome.runtime.onConnect.addListener((port) => {
     interactionResponses.removePort(port)
     if (panelPorts.size === 0) {
       sessionTrustedActionOrigins.clear()
-      for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
+      for (const id of [...pendingApprovals.keys()]) settleApproval(id, { status: 'unavailable' })
     }
   })
 })
@@ -791,7 +798,7 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
     // separately controlled page.
     if (controlledReplaced) {
       activeFollowRefresh?.abort()
-      denyPendingApprovals()
+      cancelPendingApprovals()
     }
     resetTabSnapshot(removedTabId)
     resetTabSnapshot(addedTabId)
@@ -808,7 +815,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   void affinityReady.then(() => {
     if (!tabAffinity.removeTab(tabId)) return
     activeFollowRefresh?.abort()
-    denyPendingApprovals()
+    cancelPendingApprovals()
     persistTabAffinity()
     broadcastTabAffinity()
   })

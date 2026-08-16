@@ -10,7 +10,11 @@
  */
 
 import type { BridgeCaps, ClientFrame, ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import { isServerFrame, parseBridgeFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import {
+  DEFAULT_SNAPSHOT_MAX_CHARS,
+  isServerFrame,
+  parseBridgeFrame,
+} from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 
 /** Coarse connection state for the UI. */
 export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped'
@@ -124,7 +128,7 @@ export class BridgeClient {
       socket.send(JSON.stringify({
         t: 'hello',
         token: this.token,
-        caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
+        caps: { textOnly: true, snapshotMaxChars: DEFAULT_SNAPSHOT_MAX_CHARS, maxInteractiveItems: 60 },
       } satisfies ClientFrame))
 
       let authed = false

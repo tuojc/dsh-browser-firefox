@@ -12,7 +12,7 @@ dsh 的**浏览器操作桥**：在宿主 webserver 上挂载一个 **token 认�
 |---|---|---|---|
 | `token` | `string` | 自动生成 | 固定 bearer token。缺省时首次启动生成，写入 `~/.dsh/ext-bridge-token`（0600）并打印在启动日志。 |
 | `toolTimeoutMs` | `number` | 60000 | 单次工具调用预算。 |
-| `snapshotMaxChars` | `number` | 12000 | 单次快照渲染字符上限（经 `hello.ok` caps 协商给扩展）。 |
+| `snapshotMaxChars` | `number` | 32000 | 单次快照渲染字符上限，最小为 500（经 `hello.ok` caps 协商给扩展）。 |
 | `maxInteractiveItems` | `number` | 60 | 单次快照交互清单条数上限。 |
 | `sessionWorkspacePath` | `string` | `~/.dsh/browser-sessions` | 扩展创建的会话所用的专用 Host Workspace。插件会在首次调用未显式指定工作区的 `session.create` 时创建并幂等注册该目录；会话的 cwd 随之变为此路径，因此 GUI 会显示 `browser-sessions` 工作区分组。设为 `""` 可让会话继续显示在“未分组”中。 |
 | `deferSessionCreate` | `boolean` | `true` | 会话只在第一条消息时才真正创建：`session.create` 先返回一个内存暂定 ID（不落库），历史读取为空，第一次 `session.prompt` 才创建真实会话（同一 ID、回放原始创建参数）。只打开面板不说话，会在会话库/GUI 里不留任何痕迹。 |
@@ -66,7 +66,7 @@ npx @deepseek-ai/dsh web
 
 ## 模型体验
 
-- **Token 影响**：一次 `browser_snapshot`（默认 12k 字符）约 3–4k token；delta 快照只需零头。系统提示段落引导模型按需快照而非囤积页面文本。
+- **Token 影响**：一次 `browser_snapshot`（默认 32k 字符）对常见英文文本约为 8–10k token，具体取决于语言和分词器；delta 快照只需零头。系统提示段落引导模型按需快照而非囤积页面文本。
 - **KV 缓存影响**：无（快照不做服务端缓存）。
 - **延迟**：每次动作等待扩展在真实页面执行 + 稳定检测（通常 0.2–2s；导航最长 5s）。
 - **失败模式**：`bridge-closed`（扩展未连接）、`timeout`、`no-active-tab`、`content-unavailable`（页面需刷新）、`action-failed`（编号过期——模型应重新快照）。

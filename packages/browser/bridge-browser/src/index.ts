@@ -30,7 +30,12 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
 import { BrowserContextInjector } from './browser-context.ts'
 import { registerBrowserTools } from './tools.ts'
-import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from './protocol.ts'
+import {
+  BRIDGE_CONFIG_PATH,
+  BRIDGE_PATH,
+  DEFAULT_SNAPSHOT_MAX_CHARS,
+  MIN_SNAPSHOT_MAX_CHARS,
+} from './protocol.ts'
 import { withSessionDeferral } from './session-deferral.ts'
 import { withSessionWorkspace } from './session-workspace.ts'
 import { resolveToken } from './token.ts'
@@ -43,9 +48,6 @@ export const inject = ['webServer', 'apiProxy', 'tools', 'agents']
 
 /** Default per-tool-call budget (ms). */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
-
-/** Default rendered-snapshot character budget (protects model context). */
-const DEFAULT_SNAPSHOT_MAX_CHARS = 12_000
 
 /** Default cap on interactive inventory items per snapshot. */
 const DEFAULT_MAX_INTERACTIVE_ITEMS = 60
@@ -62,7 +64,7 @@ export interface Config {
   token?: string
   /** Per-tool-call timeout in ms. Defaults to 60000. */
   toolTimeoutMs?: number
-  /** Upper bound on one snapshot's rendered characters. Defaults to 12000. */
+  /** Upper bound on one snapshot's rendered characters. Defaults to 32000; minimum 500. */
   snapshotMaxChars?: number
   /** Upper bound on interactive inventory items per snapshot. Defaults to 60. */
   maxInteractiveItems?: number
@@ -75,7 +77,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   token: z.string(),
   toolTimeoutMs: z.number().step(1).min(1).default(DEFAULT_TOOL_TIMEOUT_MS),
-  snapshotMaxChars: z.number().step(1).min(1).default(DEFAULT_SNAPSHOT_MAX_CHARS),
+  snapshotMaxChars: z.number().step(1).min(MIN_SNAPSHOT_MAX_CHARS).default(DEFAULT_SNAPSHOT_MAX_CHARS),
   maxInteractiveItems: z.number().step(1).min(1).default(DEFAULT_MAX_INTERACTIVE_ITEMS),
   sessionWorkspacePath: z.string().default(DEFAULT_SESSION_WORKSPACE_PATH),
   deferSessionCreate: z.boolean().default(DEFAULT_DEFER_SESSION_CREATE),
@@ -107,6 +109,9 @@ export function resolveConfig(config: Config): ResolvedConfig {
   }
   assertPositiveInteger('toolTimeoutMs', resolved.toolTimeoutMs)
   assertPositiveInteger('snapshotMaxChars', resolved.snapshotMaxChars)
+  if (resolved.snapshotMaxChars < MIN_SNAPSHOT_MAX_CHARS) {
+    throw new Error(`bridge-browser: snapshotMaxChars must be at least ${MIN_SNAPSHOT_MAX_CHARS}`)
+  }
   assertPositiveInteger('maxInteractiveItems', resolved.maxInteractiveItems)
   return resolved
 }
@@ -186,7 +191,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       name: 'tool:bridge-browser',
       order: 107,
       text: 'A browser bridge may be connected. To read or operate the user\'s active browser page, call browser_snapshot '
-        + '(text-only; numbered items are the click/type targets). Never assume page content you have not snapshot.',
+        + '(text-only; numbered items are the click/type targets). Never assume page content you have not snapshotted.',
     }), 'bridge-browser: system prompt section')
   }
 

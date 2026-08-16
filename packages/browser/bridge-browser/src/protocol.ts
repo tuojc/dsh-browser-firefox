@@ -30,6 +30,12 @@ export const PING_INTERVAL_MS = 30_000
 /** Default bytes of the generated bearer token (256-bit). */
 export const DEFAULT_TOKEN_BYTES = 32
 
+/** Default rendered-snapshot character budget. */
+export const DEFAULT_SNAPSHOT_MAX_CHARS = 32_000
+
+/** Smallest snapshot budget that can carry both trust boundaries and page text. */
+export const MIN_SNAPSHOT_MAX_CHARS = 500
+
 /** Error codes a tool call may settle with. Open set: consumers must tolerate unknown codes. */
 export type ToolErrorCode =
   | 'no-active-tab'
@@ -55,7 +61,7 @@ export type RespondResult =
 export interface BridgeCaps {
   /** The extension renders page state as text only (no screenshots). */
   textOnly: true
-  /** Upper bound on one rendered snapshot's characters (plugin config). */
+  /** Upper bound on one rendered snapshot's characters (plugin config, minimum 500). */
   snapshotMaxChars: number
   /** Upper bound on interactive inventory items per snapshot (plugin config). */
   maxInteractiveItems: number
@@ -213,7 +219,9 @@ function isCaps(value: unknown): value is BridgeCaps {
   if (typeof value !== 'object' || value === null) return false
   const caps = value as Record<string, unknown>
   return caps.textOnly === true
-    && typeof caps.snapshotMaxChars === 'number' && caps.snapshotMaxChars > 0
+    && typeof caps.snapshotMaxChars === 'number'
+    && Number.isInteger(caps.snapshotMaxChars)
+    && caps.snapshotMaxChars >= MIN_SNAPSHOT_MAX_CHARS
     && typeof caps.maxInteractiveItems === 'number' && caps.maxInteractiveItems > 0
 }
 

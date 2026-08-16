@@ -352,6 +352,23 @@ describe('extension ↔ bridge e2e', () => {
     await target.waitForTimeout(200)
     expect(target.url()).toBe(urlBeforeCancellation)
 
+    // An explicit denial must reach the tool caller as that exact event. It
+    // must not be collapsed with a missing panel or an unanswered prompt.
+    const deniedPress = context.tools.execute({
+      callId: 'e2e-browser-press-denied' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      signal: new AbortController().signal,
+    })
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    await approval.locator('button.deny').click()
+    const deniedResult = await deniedPress
+    expect(deniedResult.isError).toBe(true)
+    if (deniedResult.isError) {
+      expect(deniedResult.error.message).toBe('The user denied the browser approval request for "browser_press".')
+    }
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+
     // The first state-changing operation can trust this origin only for the
     // current side-panel lifetime. A second operation on the same origin then
     // runs without another prompt; persistent trust is managed in Settings.
@@ -420,6 +437,11 @@ describe('extension ↔ bridge e2e', () => {
       signal: new AbortController().signal,
     })
     expect(blockedSnapshot.isError).toBe(true)
+    if (blockedSnapshot.isError) {
+      expect(blockedSnapshot.error.message).toBe(
+        'The user switched tabs, so browser operations are paused. In the side panel, choose whether to keep the previous page or follow the current page.',
+      )
+    }
 
     await handoff.locator('button.keep').click()
     const backgroundAffinity = panel.locator('.tab-affinity.background')
@@ -474,6 +496,18 @@ describe('extension ↔ bridge e2e', () => {
     const lostAffinity = panel.locator('.tab-affinity.lost')
     await lostAffinity.waitFor({ state: 'visible', timeout: 15_000 })
     expect(await lostAffinity.textContent()).toContain('受控标签页已关闭')
+    const lostSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-blocked-by-lost-tab' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(lostSnapshot.isError).toBe(true)
+    if (lostSnapshot.isError) {
+      expect(lostSnapshot.error.message).toBe(
+        'The controlled tab was closed. Select the current page in the side panel before retrying.',
+      )
+    }
     await lostAffinity.locator('button.follow').click()
     await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
 

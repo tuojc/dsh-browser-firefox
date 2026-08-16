@@ -8,6 +8,7 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { DEFAULT_SNAPSHOT_MAX_CHARS } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
@@ -785,7 +786,7 @@ export function App(): React.JSX.Element {
           <button className="primary" onClick={saveSettings}>{copy.settings.save}</button>
           <button className="secondary" onClick={() => setShowSettings(false)}>{copy.settings.cancel}</button>
         </div>
-        <p className="hint">{copy.settings.snapshotHint(caps?.snapshotMaxChars ?? 12000)}</p>
+        <p className="hint">{copy.settings.snapshotHint(caps?.snapshotMaxChars ?? DEFAULT_SNAPSHOT_MAX_CHARS)}</p>
       </div>{approvalDialog}</>
     )
   }
