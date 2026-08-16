@@ -849,6 +849,38 @@ export function App(): React.JSX.Element {
             </select>
           </label>
         </div>
+        <div className="settings-panel preference-toggles">
+          <label className="setting-toggle">
+            <span className="setting-toggle-copy">
+              <strong>{copy.settings.approvalNotifications}</strong>
+              <small>{copy.settings.approvalNotificationsHelp}</small>
+            </span>
+            <input
+              className="setting-toggle-input"
+              type="checkbox"
+              checked={settings?.approvalNotifications ?? true}
+              onChange={(event) => setSettings((current) => current === null
+                ? current
+                : { ...current, approvalNotifications: event.target.checked })}
+            />
+            <span className="setting-toggle-control" aria-hidden="true"><span /></span>
+          </label>
+          <label className="setting-toggle">
+            <span className="setting-toggle-copy">
+              <strong>{copy.settings.autoResumeSession}</strong>
+              <small>{copy.settings.autoResumeSessionHelp}</small>
+            </span>
+            <input
+              className="setting-toggle-input"
+              type="checkbox"
+              checked={settings?.autoResumeSession ?? true}
+              onChange={(event) => setSettings((current) => current === null
+                ? current
+                : { ...current, autoResumeSession: event.target.checked })}
+            />
+            <span className="setting-toggle-control" aria-hidden="true"><span /></span>
+          </label>
+        </div>
         <section className="trusted-origins" aria-labelledby="trusted-origins-title">
           <div>
             <span id="trusted-origins-title">{copy.settings.trustedOrigins}</span>
