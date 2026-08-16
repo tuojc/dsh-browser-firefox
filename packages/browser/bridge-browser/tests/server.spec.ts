@@ -5,7 +5,7 @@ import WebSocket from 'ws'
 import type { MuxFrame, RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { BridgeServer, BridgeToolError, isLoopbackAddress, messageToText, payloadCode, payloadMessage } from '../src/server.ts'
-import type { BridgeFrame } from '../src/protocol.ts'
+import { BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD, type BridgeFrame } from '../src/protocol.ts'
 
 const TOKEN = 'deadbeefdeadbeefdeadbeefdeadbeef'
 
@@ -39,6 +39,7 @@ async function startBridge(overrides: Partial<ConstructorParameters<typeof Bridg
     openEvents: () => events,
     toolTimeoutMs: 1_000,
     caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
+    injectBrowserSnapshot: vi.fn(),
     ...overrides,
   })
   const server = createServer()
@@ -197,6 +198,72 @@ describe('BridgeServer', () => {
     await waitFor(() => frames.some((f) => f.t === 'rpc.result' && f.id === 'rpc-2'))
     expect(frames.find((f) => f.t === 'rpc.result' && f.id === 'rpc-2'))
       .toMatchObject({ t: 'rpc.result', id: 'rpc-2', ok: false, error: { code: 'http' } })
+    ws.close()
+  })
+
+  it('injects followed-page snapshots without forwarding the internal RPC to the gateway', async () => {
+    const injectBrowserSnapshot = vi.fn()
+    const h = await startBridge({ injectBrowserSnapshot })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((frame) => frame.t === 'hello.ok'))
+
+    send(ws, {
+      t: 'rpc',
+      id: 'snapshot-1',
+      method: BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD,
+      payload: { sessionId: 'session-1', snapshot: 'Page: Other target' },
+    })
+    await waitFor(() => frames.some((frame) => frame.t === 'rpc.result' && frame.id === 'snapshot-1'))
+
+    expect(injectBrowserSnapshot).toHaveBeenCalledWith('session-1', 'Page: Other target')
+    expect(h.fetchMock).not.toHaveBeenCalled()
+    expect(frames).toContainEqual({
+      t: 'rpc.result', id: 'snapshot-1', ok: true, result: { accepted: true },
+    })
+
+    send(ws, {
+      t: 'rpc',
+      id: 'snapshot-invalid',
+      method: BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD,
+      payload: { sessionId: '', snapshot: '' },
+    })
+    await waitFor(() => frames.some((frame) => frame.t === 'rpc.result' && frame.id === 'snapshot-invalid'))
+    expect(frames).toContainEqual(expect.objectContaining({
+      t: 'rpc.result', id: 'snapshot-invalid', ok: false, error: expect.objectContaining({ code: 'bad-request' }),
+    }))
+    ws.close()
+  })
+
+  it('finishes snapshot injection before forwarding a prompt for the same session', async () => {
+    let releaseInjection!: () => void
+    const injectionGate = new Promise<void>((resolve) => { releaseInjection = resolve })
+    const injectBrowserSnapshot = vi.fn(async () => { await injectionGate })
+    const h = await startBridge({ injectBrowserSnapshot })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((frame) => frame.t === 'hello.ok'))
+
+    send(ws, {
+      t: 'rpc', id: 'snapshot', method: BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD,
+      payload: { sessionId: 'session-ordered', snapshot: 'Current page' },
+    })
+    send(ws, {
+      t: 'rpc', id: 'prompt-after-snapshot', method: 'session.prompt',
+      payload: { sessionId: 'session-ordered', mode: 'queue', content: [] },
+    })
+
+    await waitFor(() => injectBrowserSnapshot.mock.calls.length === 1)
+    expect(h.fetchMock).not.toHaveBeenCalled()
+    releaseInjection()
+    await waitFor(() => h.fetchMock.mock.calls.length === 1)
+    await waitFor(() => frames.some((frame) => frame.t === 'rpc.result' && frame.id === 'prompt-after-snapshot'))
+    expect(frames.filter((frame) => frame.t === 'rpc.result').map((frame) => frame.id)).toEqual([
+      'snapshot',
+      'prompt-after-snapshot',
+    ])
     ws.close()
   })
 

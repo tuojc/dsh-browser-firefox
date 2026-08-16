@@ -18,6 +18,9 @@ export const BRIDGE_PATH = '/ext/bridge'
 /** Zero-config discovery endpoint: returns `{ wsUrl }` for the extension. */
 export const BRIDGE_CONFIG_PATH = '/ext/bridge-config'
 
+/** Internal RPC used after an explicit tab handoff to seed the Agent's next step. */
+export const BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD = 'bridge.injectBrowserSnapshot'
+
 /** Seconds a fresh socket may take to present `hello` before it is closed. */
 export const HELLO_TIMEOUT_MS = 5_000
 
