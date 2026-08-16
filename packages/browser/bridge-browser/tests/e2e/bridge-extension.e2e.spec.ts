@@ -31,7 +31,7 @@ import SessionStore from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
-import LlmService from '@deepseek-ai/dsh-llm'
+import LlmService, { type UserMessage } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
@@ -208,6 +208,10 @@ describe('extension ↔ bridge e2e', () => {
     }
 
     const ctx = browser
+    const inboxInsertions: Array<{ agentId: string; message: UserMessage }> = []
+    context.on('agent/inbox/inserted', ({ agent, message }) => {
+      inboxInsertions.push({ agentId: String(agent.id), message })
+    })
     // The service worker may already be registered when launchPersistentContext
     // returns — waitForEvent would then miss it and time out; check first.
     let sw = ctx.serviceWorkers()[0]
@@ -432,14 +436,36 @@ describe('extension ↔ bridge e2e', () => {
 
     await backgroundAffinity.locator('button.follow').click()
     await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
-    const followedSnapshot = await context.tools.execute({
-      callId: 'e2e-browser-snapshot-followed-tab' as never,
-      name: 'browser_snapshot',
-      arguments: {},
-      signal: new AbortController().signal,
+
+    // Session deferral: opening the panel and using browser tools alone must
+    // leave no session trace. The first prompt materializes the provisional
+    // session, but it may not overtake the followed-page refresh.
+    await panel.waitForSelector('.messages', { timeout: 30_000 })
+    await panel.waitForTimeout(1_200)
+    expect(sessions.list().length).toBe(initialSessions.length)
+    await panel.fill('textarea', '这个页面的标题是什么？')
+    await panel.press('textarea', 'Enter')
+    await expect.poll(() => sessions.list().length, { timeout: 30_000 }).toBeGreaterThan(initialSessions.length)
+
+    const createdSession = sessions.list().find(session => !initialIds.has(session.id))
+    if (createdSession === undefined) throw new Error('the panel did not materialize its deferred session')
+    await expect.poll(
+      () => inboxInsertions.filter(entry => entry.agentId === createdSession.id).length,
+      { timeout: 15_000 },
+    ).toBeGreaterThanOrEqual(1)
+    const sessionInbox = inboxInsertions.filter(entry => entry.agentId === createdSession.id)
+    const browserContextIndex = sessionInbox.findIndex(({ message }) => {
+      return message.source.kind === 'plugin'
+        && message.source.plugin === BRIDGE
+        && message.source.form === 'snapshot'
     })
-    expect(followedSnapshot.isError).toBe(false)
-    if (!followedSnapshot.isError) expect(followedSnapshot.value).toMatchObject({ text: expect.stringContaining('Other target') })
+    expect(browserContextIndex).toBeGreaterThanOrEqual(0)
+    expect(JSON.stringify(sessionInbox[browserContextIndex]!.message.content)).toContain('Other target')
+
+    const workspace = (context.get('workspaceRegistry') as WorkspaceRegistry).list()[0]
+    expect(workspace?.path).toBe(await realpath(join(root as string, 'browser-sessions')))
+    expect(workspace?.sessionIds).toContain(createdSession.id)
+    expect(createdSession.header.cwd).toBe(workspace?.path)
 
     // Closing the controlled tab is a distinct fail-closed state; the current
     // page must be selected explicitly before tools can resume.
@@ -450,25 +476,6 @@ describe('extension ↔ bridge e2e', () => {
     expect(await lostAffinity.textContent()).toContain('受控标签页已关闭')
     await lostAffinity.locator('button.follow').click()
     await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
-
-    // Session deferral: opening the panel alone must NOT create a session.
-    // Give the panel's ensureSession + history round trip a moment, then the
-    // store must still equal the pre-save baseline (zero trace).
-    await panel.waitForSelector('.messages', { timeout: 30_000 })
-    await panel.waitForTimeout(1_200)
-    expect(sessions.list().length).toBe(initialSessions.length)
-
-    // The first message materializes the session through the real bridge.
-    await panel.fill('textarea', '你好')
-    await panel.press('textarea', 'Enter')
-    await expect.poll(() => sessions.list().length, { timeout: 30_000 }).toBeGreaterThan(initialSessions.length)
-
-    const createdSession = sessions.list().find(session => !initialIds.has(session.id))
-    if (createdSession === undefined) throw new Error('the panel did not materialize its deferred session')
-    const workspace = (context.get('workspaceRegistry') as WorkspaceRegistry).list()[0]
-    expect(workspace?.path).toBe(await realpath(join(root as string, 'browser-sessions')))
-    expect(workspace?.sessionIds).toContain(createdSession.id)
-    expect(createdSession.header.cwd).toBe(workspace?.path)
 
     // A host-side ask_user_question request for this exact live agent must be
     // rendered and answered by the sidebar. Keep both the short header and the
