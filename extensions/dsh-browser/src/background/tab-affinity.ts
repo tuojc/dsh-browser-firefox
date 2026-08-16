@@ -129,6 +129,25 @@ export class TabAffinityController {
     return this.bumpIfChanged(previousActive, previousControlled, previousKept)
   }
 
+  /** Transfer tracked identity when Chrome replaces a tab without a user switch. */
+  replaceTab(removedTabId: number, addedTabId: number): boolean {
+    if (removedTabId === addedTabId) return false
+    if (this.controlled?.tabId !== removedTabId
+      && this.active?.tabId !== removedTabId
+      && this.keptActiveTabId !== removedTabId) return false
+    const previousActive = this.active
+    const previousControlled = this.controlled
+    const previousKept = this.keptActiveTabId
+    if (this.controlled?.tabId === removedTabId) {
+      this.controlled = { ...this.controlled, tabId: addedTabId }
+    }
+    if (this.active?.tabId === removedTabId) {
+      this.active = { ...this.active, tabId: addedTabId }
+    }
+    if (this.keptActiveTabId === removedTabId) this.keptActiveTabId = addedTabId
+    return this.bumpIfChanged(previousActive, previousControlled, previousKept)
+  }
+
   /** Apply a panel choice only if it still describes the visible revision. */
   decide(decision: TabAffinityDecision, revision: number): boolean {
     if (revision !== this.revision) return false

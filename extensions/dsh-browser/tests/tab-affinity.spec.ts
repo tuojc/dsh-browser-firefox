@@ -70,6 +70,53 @@ describe('TabAffinityController', () => {
     expect(affinity.snapshot()).toMatchObject({ status: 'following', controlled: { tabId: 2 } })
   })
 
+  it('preserves a following tab when Chrome replaces its identity', () => {
+    const affinity = new TabAffinityController()
+    affinity.observeActive(tab(1))
+    affinity.bindInitial(tab(1))
+    const before = affinity.snapshot()
+
+    expect(affinity.replaceTab(1, 9)).toBe(true)
+    expect(affinity.snapshot()).toMatchObject({
+      revision: before.revision + 1,
+      status: 'following',
+      controlled: { tabId: 9 },
+      active: { tabId: 9 },
+    })
+    expect(affinity.tracks(1)).toBe(false)
+    expect(affinity.allowsTarget(9)).toBe(true)
+
+    affinity.observeTab(tab(9, 'Replacement metadata'))
+    expect(affinity.snapshot()).toMatchObject({
+      controlled: { tabId: 9, title: 'Replacement metadata' },
+      active: { tabId: 9, title: 'Replacement metadata' },
+    })
+  })
+
+  it('preserves background affinity when either tracked tab is replaced', () => {
+    const affinity = new TabAffinityController()
+    affinity.observeActive(tab(1))
+    affinity.bindInitial(tab(1))
+    affinity.observeActive(tab(2))
+    affinity.decide('keep', affinity.snapshot().revision)
+
+    expect(affinity.replaceTab(1, 10)).toBe(true)
+    expect(affinity.snapshot()).toMatchObject({
+      status: 'background',
+      controlled: { tabId: 10 },
+      active: { tabId: 2 },
+    })
+
+    expect(affinity.replaceTab(2, 20)).toBe(true)
+    expect(affinity.snapshot()).toMatchObject({
+      status: 'background',
+      controlled: { tabId: 10 },
+      active: { tabId: 20 },
+    })
+    expect(affinity.allowsTarget(10)).toBe(true)
+    expect(affinity.replaceTab(999, 30)).toBe(false)
+  })
+
   it('clears the handoff if the user returns to the controlled tab', () => {
     const affinity = new TabAffinityController()
     affinity.observeActive(tab(1))
