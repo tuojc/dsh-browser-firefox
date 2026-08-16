@@ -14,15 +14,20 @@ describe('buildSnapshot', () => {
       <input id="email" type="email" value="user@example.com" />
       <input id="pass" type="password" value="hunter2" />
     `
+    document.title = '示例页标题'
     const ids = new ElementIds()
     const view = buildSnapshot(ids, { budget: BUDGET }, null)
     expect(view.version).toBe(1)
     expect(view.url).toBe('http://localhost:3000/')
     expect(view.items.length).toBeGreaterThanOrEqual(3)
     const text = renderSnapshot(view, false)
+    expect(text).toContain('Title: 示例页标题')
+    expect(text).toContain('Main content:')
+    expect(text).toContain('Interactive elements:')
+    expect(text).toContain('Form fields:')
     expect(text).toContain('登录')
     expect(text).toContain('user@example.com')
-    expect(text).toContain('值="••••"')
+    expect(text).toContain('value="••••"')
     expect(text).not.toContain('hunter2')
   })
 
@@ -54,6 +59,7 @@ describe('buildSnapshot', () => {
     document.getElementById('b')!.remove()
     const third = buildSnapshot(ids, { delta: true, budget: BUDGET }, second)
     expect(third.removed).toContain(bIndex)
+    expect(renderSnapshot(third, true)).toContain('Removed elements:')
   })
 
   it('caps inventory by budget and reports drops', () => {

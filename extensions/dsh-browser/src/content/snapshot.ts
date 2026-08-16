@@ -241,37 +241,37 @@ function sameForm(a: FormFieldView, b: FormFieldView): boolean {
 /** 渲染结果的整体预算：主文/清单之外的部分（标题、URL、包装行）也计入。 */
 function capRendered(text: string, budgetChars: number): string {
   if (text.length <= budgetChars) return text
-  return `${text.slice(0, budgetChars)}…(已按预算截断)`
+  return `${text.slice(0, budgetChars)}…(truncated to the snapshot character budget)`
 }
 
 export function renderSnapshot(view: SnapshotView, delta: boolean): string {
   const lines: string[] = []
   if (delta) {
-    lines.push(`页面变化 v${view.version} (${view.url})`)
-    if (view.changed.includes(-1)) lines.push('正文/标题/URL 发生变化')
+    lines.push(`Page change v${view.version} (${view.url})`)
+    if (view.changed.includes(-1)) lines.push('Main content, title, or URL changed.')
     const elementChanges = view.changed.filter((id) => id !== -1)
-    if (elementChanges.length > 0) lines.push(`变化的元素: ${elementChanges.join(', ')}`)
-    if (view.removed.length > 0) lines.push(`消失的元素: ${view.removed.join(', ')}`)
-    if (view.changed.length === 0 && view.removed.length === 0) lines.push('(无可见变化)')
-    lines.push('如需完整快照，请不带 delta 重新调用 browser_snapshot。')
+    if (elementChanges.length > 0) lines.push(`Changed elements: ${elementChanges.join(', ')}`)
+    if (view.removed.length > 0) lines.push(`Removed elements: ${view.removed.join(', ')}`)
+    if (view.changed.length === 0 && view.removed.length === 0) lines.push('(No visible changes.)')
+    lines.push('Call browser_snapshot again without delta for a full snapshot.')
     return capRendered(lines.join('\n'), view.budgetChars)
   }
-  lines.push(`标题: ${view.title || '(无标题)'}`)
+  lines.push(`Title: ${view.title || '(untitled)'}`)
   lines.push(`URL: ${view.url}`)
-  lines.push(`状态: ${view.ready}${view.reindexed ? '（元素编号已重排，请以本快照编号为准）' : ''}`)
+  lines.push(`Status: ${view.ready}${view.reindexed ? ' (element indices were reassigned; use the indices in this snapshot)' : ''}`)
   if (view.main.length > 0) {
     lines.push('')
-    lines.push('正文:')
+    lines.push('Main content:')
     lines.push(view.main)
   }
   if (view.items.length > 0) {
     lines.push('')
-    lines.push('交互元素:')
+    lines.push('Interactive elements:')
     for (const item of view.items) {
       const state = [
-        item.disabled === true ? '禁用' : undefined,
-        item.checked === true ? '已勾选' : undefined,
-        item.inViewport ? undefined : '视口外',
+        item.disabled === true ? 'disabled' : undefined,
+        item.checked === true ? 'checked' : undefined,
+        item.inViewport ? undefined : 'outside viewport',
       ].filter((x) => x !== undefined).join('/')
       const stateText = state === '' ? '' : ` [${state}]`
       const hrefText = item.href !== undefined ? ` → ${item.href}` : ''
@@ -280,15 +280,15 @@ export function renderSnapshot(view: SnapshotView, delta: boolean): string {
   }
   if (view.forms.length > 0) {
     lines.push('')
-    lines.push('表单字段:')
+    lines.push('Form fields:')
     for (const form of view.forms) {
-      lines.push(`  [${form.index}] ${form.label} (${form.kind}) 值="${form.masked ? '••••' : form.value}"${form.required === true ? ' 必填' : ''}`)
+      lines.push(`  [${form.index}] ${form.label} (${form.kind}) value="${form.masked ? '••••' : form.value}"${form.required === true ? ' required' : ''}`)
     }
   }
   const notes: string[] = []
-  if (view.truncated.mainChars > 0) notes.push(`正文截断 ${view.truncated.mainChars} 字符`)
-  if (view.truncated.itemsDropped > 0) notes.push(`另有 ${view.truncated.itemsDropped} 个元素未列出`)
-  if (view.truncated.formsDropped > 0) notes.push(`另有 ${view.truncated.formsDropped} 个表单字段未列出`)
-  if (notes.length > 0) lines.push(`\n(${notes.join('；')}。需要更多内容请用 browser_get_text 或指定 region。)`)
+  if (view.truncated.mainChars > 0) notes.push(`Main content truncated by ${view.truncated.mainChars} characters`)
+  if (view.truncated.itemsDropped > 0) notes.push(`${view.truncated.itemsDropped} additional elements omitted`)
+  if (view.truncated.formsDropped > 0) notes.push(`${view.truncated.formsDropped} additional form fields omitted`)
+  if (notes.length > 0) lines.push(`\n(${notes.join('; ')}. Use browser_get_text or specify region for more content.)`)
   return capRendered(lines.join('\n'), view.budgetChars)
 }

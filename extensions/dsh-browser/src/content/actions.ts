@@ -40,7 +40,7 @@ function sleep(ms: number): Promise<void> {
 function elementOrThrow(ids: ElementIds, index: number): Element {
   const el = ids.elementByIndex(index)
   if (el === undefined) {
-    throw new ActionError('action-failed', `编号 ${index} 不存在：页面可能已变化，请重新 browser_snapshot 获取最新编号`)
+    throw new ActionError('action-failed', `Element [${index}] does not exist; the page may have changed. Call browser_snapshot again to get current indices.`)
   }
   return el
 }
@@ -98,13 +98,13 @@ export async function runAction(action: string, args: Record<string, unknown>, c
       return historyAction(1)
     case 'browser_reload':
       location.reload()
-      return { text: '页面正在重新加载…' }
+      return { text: 'The page is reloading.' }
     case 'browser_get_text':
       return getTextAction(args)
     case 'browser_wait':
       return waitAction(args)
     default:
-      throw new ActionError('bad-args', `未知动作: ${action}`)
+      throw new ActionError('bad-args', `Unknown action: ${action}`)
   }
 }
 
@@ -134,26 +134,26 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
     el.click()
     await settle()
     return location.href !== urlBefore
-      ? { text: `已点击链接 [${index}]，页面正在跳转… 加载后请重新 browser_snapshot。` }
-      : { text: `已点击链接 [${index}]，页面未跳转。` }
+      ? { text: `Clicked link [${index}]; the page is navigating. Call browser_snapshot again after it loads.` }
+      : { text: `Clicked link [${index}]; the page did not navigate.` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
-    throw new ActionError('action-failed', `按钮 [${index}] 处于禁用状态`)
+    throw new ActionError('action-failed', `Button [${index}] is disabled.`)
   }
   ;(el as HTMLElement).click()
   await settle()
-  return { text: `已点击 [${index}]。` }
+  return { text: `Clicked [${index}].` }
 }
 
 async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const index = numberArg(args, 'index')
   const text = typeof args.text === 'string' ? args.text : ''
-  if (text === '') throw new ActionError('bad-args', 'text 不能为空')
+  if (text === '') throw new ActionError('bad-args', 'text must not be empty.')
   const replace = args.replace === true
   const el = elementOrThrow(ctx.ids, index)
   const contentEditable = el instanceof HTMLElement && el.isContentEditable
   if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || contentEditable)) {
-    throw new ActionError('action-failed', `编号 ${index} 不是可输入元素（${el.tagName.toLowerCase()}）`)
+    throw new ActionError('action-failed', `Element [${index}] is not editable (${el.tagName.toLowerCase()}).`)
   }
   if (contentEditable) {
     if (replace) el.textContent = ''
@@ -164,12 +164,12 @@ async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Pr
     setNativeValue(el, `${el.value}${text}`)
   }
   await settle()
-  return { text: `已向 [${index}] 输入 ${text.length} 字符。` }
+  return { text: `Entered ${text.length} characters into [${index}].` }
 }
 
 async function pressAction(args: Record<string, unknown>): Promise<ActionResult> {
   const key = typeof args.key === 'string' && args.key !== '' ? args.key : ''
-  if (key === '') throw new ActionError('bad-args', 'key 不能为空')
+  if (key === '') throw new ActionError('bad-args', 'key must not be empty.')
   const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
   target.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }))
@@ -177,7 +177,7 @@ async function pressAction(args: Record<string, unknown>): Promise<ActionResult>
     target.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   }
   await settle()
-  return { text: `已发送按键 ${key}。` }
+  return { text: `Sent key "${key}".` }
 }
 
 async function scrollAction(args: Record<string, unknown>): Promise<ActionResult> {
@@ -197,58 +197,58 @@ async function scrollAction(args: Record<string, unknown>): Promise<ActionResult
       window.scrollBy({ top: amount, behavior: 'instant' })
       break
     default:
-      throw new ActionError('bad-args', `direction 必须是 up/down/top/bottom，收到 "${direction}"`)
+      throw new ActionError('bad-args', `direction must be up, down, top, or bottom; received "${direction}".`)
   }
   await settle()
-  return { text: `已滚动（${direction}）。` }
+  return { text: `Scrolled ${direction}.` }
 }
 
 async function navigateAction(args: Record<string, unknown>): Promise<ActionResult> {
   const url = typeof args.url === 'string' && args.url !== '' ? args.url : ''
-  if (url === '') throw new ActionError('bad-args', 'url 不能为空')
+  if (url === '') throw new ActionError('bad-args', 'url must not be empty.')
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
-    throw new ActionError('bad-args', `url 不是合法地址: ${url}`)
+    throw new ActionError('bad-args', `url is not valid: ${url}`)
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new ActionError('bad-args', `仅支持 http/https 地址，收到 ${parsed.protocol}`)
+    throw new ActionError('bad-args', `Only http and https URLs are supported; received ${parsed.protocol}.`)
   }
   resetDeltaState()
   // Cross-document navigation unloads this content script and destroys the
   // tabs.sendMessage response port before any await settles — so answer
   // FIRST, then navigate in a fresh task. The model re-snapshots after load.
   setTimeout(() => { location.href = parsed.href }, 0)
-  return { text: `正在导航到 ${parsed.href}… 页面加载后请重新 browser_snapshot。` }
+  return { text: `Navigating to ${parsed.href}. Call browser_snapshot again after the page loads.` }
 }
 
 async function historyAction(delta: 1 | -1): Promise<ActionResult> {
   resetDeltaState()
   // 同 navigate：先响应再导航（文档卸载会销毁响应端口）。
   setTimeout(() => { if (delta === -1) history.back(); else history.forward() }, 0)
-  return { text: '正在导航… 页面加载后请重新 browser_snapshot。' }
+  return { text: 'Navigating through browser history. Call browser_snapshot again after the page loads.' }
 }
 
 async function getTextAction(args: Record<string, unknown>): Promise<ActionResult> {
   const selector = typeof args.selector === 'string' && args.selector !== '' ? args.selector : undefined
   const source = selector !== undefined ? document.querySelector(selector) : null
-  const text = source !== null ? pageText(source) : selector !== undefined ? `未找到元素: ${selector}` : pageText()
+  const text = source !== null ? pageText(source) : selector !== undefined ? `No element matched selector: ${selector}` : pageText()
   const truncated = truncate(text, 8_000)
-  return { text: truncated.text + (truncated.truncated > 0 ? `\n(截断 ${truncated.truncated} 字符)` : '') }
+  return { text: truncated.text + (truncated.truncated > 0 ? `\n(Truncated ${truncated.truncated} characters.)` : '') }
 }
 
 async function waitAction(args: Record<string, unknown>): Promise<ActionResult> {
   const ms = typeof args.ms === 'number' && args.ms > 0 ? args.ms : 0
   await settle()
   if (ms > 0) await sleep(ms)
-  return { text: `页面已稳定${ms > 0 ? `（额外等待 ${ms}ms）` : ''}。` }
+  return { text: `The page is stable${ms > 0 ? ` after an additional ${ms}ms wait` : ''}.` }
 }
 
 function numberArg(args: Record<string, unknown>, name: string): number {
   const value = args[name]
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new ActionError('bad-args', `${name} 必须是非负整数，收到 ${String(value)}`)
+    throw new ActionError('bad-args', `${name} must be a non-negative integer; received ${String(value)}.`)
   }
   return value
 }
