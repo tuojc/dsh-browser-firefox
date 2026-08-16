@@ -28,6 +28,8 @@ export interface ToolCall {
   args: Record<string, unknown>
   /** Server-authored wall-clock deadline; absent only in direct unit tests. */
   expiresAt?: number
+  /** Owning Agent session, when supplied by a current bridge. */
+  sessionId?: string
 }
 
 /** The wire answer for one tool call. */

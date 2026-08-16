@@ -39,6 +39,26 @@ describe('registerBrowserTools', () => {
     expect(result).toEqual({ text: 'ok' })
   })
 
+  it('associates browser calls with the owning Agent session', async () => {
+    const { ctx, bridge, requestTool, registered } = makeHarness()
+    registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
+    const tool = registered.find((r) => r.name === 'browser_click')!
+    const exec = {
+      signal: new AbortController().signal,
+      agent: { id: 'session-browser' },
+    }
+
+    await (tool.definition.execute as (args: unknown, e: typeof exec) => Promise<unknown>)({ index: 3 }, exec)
+
+    expect(requestTool).toHaveBeenCalledWith(
+      'browser_click',
+      { index: 3 },
+      exec.signal,
+      1_000,
+      'session-browser',
+    )
+  })
+
   it('normalizes snapshot args (delta/region omitted when absent)', async () => {
     const { ctx, bridge, requestTool, registered } = makeHarness()
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })

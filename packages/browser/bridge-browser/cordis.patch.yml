@@ -24,6 +24,6 @@
       config:
         token: !!js process.env.DSH_EXT_TOKEN
         sessionWorkspacePath: !!js process.env.DSH_BROWSER_SESSION_WORKSPACE
-        toolTimeoutMs: 60000
+        toolTimeoutMs: 90000
         snapshotMaxChars: 32000
         maxInteractiveItems: 60

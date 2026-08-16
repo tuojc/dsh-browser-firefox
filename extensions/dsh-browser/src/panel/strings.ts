@@ -69,6 +69,10 @@ export interface PanelCopy {
     sharingAuto: string
     sharingAsk: string
     sharingOff: string
+    approvalNotifications: string
+    approvalNotificationsHelp: string
+    autoResumeSession: string
+    autoResumeSessionHelp: string
     trustedOrigins: string
     trustedOriginsHelp: string
     trustedOriginInput: string
@@ -191,6 +195,10 @@ const EN: PanelCopy = {
     sharingAuto: 'Share automatically (default)',
     sharingAsk: 'Ask every time',
     sharingOff: 'Off',
+    approvalNotifications: 'Browser approval notifications',
+    approvalNotificationsHelp: 'Notify you when an approval arrives while the side panel is closed',
+    autoResumeSession: 'Resume the last conversation',
+    autoResumeSessionHelp: 'Reopen the most recently active browser conversation instead of starting over',
     trustedOrigins: 'Always-allowed domains',
     trustedOriginsHelp: 'The approval dialog can trust a domain for the current side-panel session only. Domains added here permanently skip action confirmation when every known origin is trusted. Wildcards include the base domain and subdomains, and stay scoped to their scheme and port; `*.example.com` defaults to HTTPS.',
     trustedOriginInput: 'Domain to always trust (e.g. https://example.com or https://*.example.com)',
@@ -313,6 +321,10 @@ const ZH: PanelCopy = {
     sharingAuto: '自动共享（默认）',
     sharingAsk: '每次询问',
     sharingOff: '关闭',
+    approvalNotifications: '浏览器审批通知',
+    approvalNotificationsHelp: '侧栏关闭时收到审批请求，通过系统通知提醒你',
+    autoResumeSession: '续接上次会话',
+    autoResumeSessionHelp: '重新打开最近活跃的浏览器会话，而不是从新会话开始',
     trustedOrigins: '永久免确认域名',
     trustedOriginsHelp: '审批框可只信任本次侧栏会话。这里添加的域名仅在所有已知来源均受信任时免除操作确认。通配符包含主域及其子域，并严格区分协议和端口；`*.example.com` 默认使用 HTTPS。',
     trustedOriginInput: '要永久信任的域名（如 https://example.com 或 https://*.example.com）',

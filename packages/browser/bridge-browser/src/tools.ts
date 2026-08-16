@@ -13,7 +13,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { BridgeServer } from './server.ts'
 
 /** Options resolved from plugin config before tool registration. */
@@ -87,8 +87,11 @@ export function registerBrowserTools(
   options: BrowserToolsOptions,
 ): Map<string, () => void> {
   const disposers = new Map<string, () => void>()
-  const call = async (exec: { signal: AbortSignal }, name: string, args: Record<string, unknown>): Promise<TextResult> => {
-    const result = await bridge.requestTool(name, args, exec.signal, options.toolTimeoutMs)
+  const call = async (exec: Pick<ToolRunContext, 'agent' | 'signal'>, name: string, args: Record<string, unknown>): Promise<TextResult> => {
+    const sessionId = exec.agent === undefined ? undefined : String(exec.agent.id)
+    const result = sessionId === undefined
+      ? await bridge.requestTool(name, args, exec.signal, options.toolTimeoutMs)
+      : await bridge.requestTool(name, args, exec.signal, options.toolTimeoutMs, sessionId)
     return normalizeTextResult(result, name)
   }
 
@@ -107,7 +110,7 @@ function normalizeTextResult(result: unknown, name: string): TextResult {
 }
 
 interface Call {
-  (exec: { signal: AbortSignal }, name: string, args: Record<string, unknown>): Promise<TextResult>
+  (exec: Pick<ToolRunContext, 'agent' | 'signal'>, name: string, args: Record<string, unknown>): Promise<TextResult>
 }
 
 /** The v1 tool set, model-perspective contracts only (no transport vocabulary). */

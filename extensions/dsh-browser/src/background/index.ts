@@ -9,6 +9,7 @@
  *   panel → bg: { type: 'rpc', id, method, payload }
  *   panel → bg: { type: 'respond', id, rpcId, result }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
+ *   panel → bg: { type: 'session.active', sessionId }
  *   panel → bg: { type: 'approval.response', id, decision }
  *   panel → bg: { type: 'tab-affinity.response', revision, decision, sessionId }
  *   panel → bg: { type: 'request-status' }
@@ -18,6 +19,7 @@
  *   bg → panel: { type: 'event', frame: ServerFrame }
  *   bg → panel: { type: 'approval.request', request }
  *   bg → panel: { type: 'approval.resolved', id }
+ *   bg → panel: { type: 'session.resume-hint', sessionId }
  *   bg → panel: { type: 'tab-affinity', state }
  *
  * @module
@@ -37,7 +39,6 @@ import { dispatchToolCall, resetTabSnapshot, type ToolAnswer, type ToolCall } fr
 import {
   isApprovalDecision,
   type ApprovalAuthorization,
-  type ApprovalDecision,
   type ApprovalPrompt,
   type ApprovalRequest,
 } from '../security/approval.ts'
@@ -54,6 +55,12 @@ import {
   type TabAffinityDecision,
 } from './tab-affinity.ts'
 import { FocusedWindowTracker } from './focused-window.ts'
+import { ApprovalCoordinator, type ApprovalRequestResult } from './approval-coordinator.ts'
+import {
+  RECENT_SESSION_STORAGE_KEY,
+  RecentSessionTracker,
+  sessionIdFromFrame,
+} from './session-continuity.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -62,6 +69,10 @@ export interface Settings {
   sharePageContent: 'ask' | 'auto' | 'off'
   /** Origins whose state-changing actions may run without another prompt. */
   trustedActionOrigins: string[]
+  /** Show an OS notification when no side panel can display an approval. */
+  approvalNotifications: boolean
+  /** Restore the last active browser conversation when the panel reopens. */
+  autoResumeSession: boolean
 }
 
 const SETTINGS_DEFAULTS: Settings = {
@@ -70,6 +81,8 @@ const SETTINGS_DEFAULTS: Settings = {
   token: '',
   sharePageContent: 'auto',
   trustedActionOrigins: [],
+  approvalNotifications: true,
+  autoResumeSession: true,
 }
 
 /** 自动探测的候选端口（dsh web 默认 3080；--port 覆盖的常见值）。 */
@@ -127,18 +140,16 @@ const interactionResponses = new InteractionResponseRouter()
 const transientEvents = new TransientEventCache()
 const tabAffinity = new TabAffinityController()
 const focusedWindow = new FocusedWindowTracker()
+const recentSession = new RecentSessionTracker({
+  read: async () => (await chrome.storage.session.get(RECENT_SESSION_STORAGE_KEY))[RECENT_SESSION_STORAGE_KEY],
+  write: async (sessionId) => {
+    await chrome.storage.session.set({ [RECENT_SESSION_STORAGE_KEY]: sessionId })
+  },
+})
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
 const activeToolCalls = new Map<string, AbortController>()
-type ApprovalRequestResult =
-  | { status: 'decision'; decision: ApprovalDecision }
-  | { status: 'unavailable' | 'timed-out' | 'cancelled' }
-const pendingApprovals = new Map<string, {
-  resolve: (result: ApprovalRequestResult) => void
-  timer: ReturnType<typeof setTimeout>
-}>()
-const APPROVAL_TIMEOUT_MS = 30_000
 let lastPersistedAffinity: string | undefined
 let affinityPersistence = Promise.resolve()
 /** The next prompt waits until an accepted follow has refreshed dsh context. */
@@ -167,7 +178,13 @@ function normalizeSettings(candidate: Settings): Settings {
   const sharePageContent = candidate.sharePageContent === 'auto' || candidate.sharePageContent === 'off'
     ? candidate.sharePageContent
     : candidate.sharePageContent === 'ask' ? 'ask' : 'auto'
-  return { ...candidate, sharePageContent, trustedActionOrigins: trusted }
+  return {
+    ...candidate,
+    sharePageContent,
+    trustedActionOrigins: trusted,
+    approvalNotifications: candidate.approvalNotifications !== false,
+    autoResumeSession: candidate.autoResumeSession !== false,
+  }
 }
 
 function broadcastStatus(): void {
@@ -196,6 +213,54 @@ function broadcastApprovalResolved(id: string): void {
   }
 }
 
+const APPROVAL_NOTIFICATION_PREFIX = 'dsh-browser-approval:'
+
+function approvalNotificationId(id: string): string {
+  return `${APPROVAL_NOTIFICATION_PREFIX}${id}`
+}
+
+function deliverApproval(request: ApprovalRequest): boolean {
+  let delivered = false
+  for (const port of panelPorts) {
+    try {
+      port.postMessage({ type: 'approval.request', request })
+      delivered = true
+    } catch { /* port already closed */ }
+  }
+  return delivered
+}
+
+function notifyApproval(request: ApprovalRequest, _windowId: number): void {
+  if (!settings.approvalNotifications) return
+  const copy = getUiLocale() === 'zh'
+    ? {
+        title: '浏览器操作等待确认',
+        message: '点击通知打开 dsh 浏览器助手，并在 60 秒内确认或拒绝。',
+      }
+    : {
+        title: 'Browser action awaiting approval',
+        message: 'Click to open dsh Browser Assistant, then allow or deny within 60 seconds.',
+      }
+  void Promise.resolve(chrome.notifications.create(approvalNotificationId(request.id), {
+    type: 'basic',
+    iconUrl: chrome.runtime.getURL('assets/icons/icon128.png'),
+    title: copy.title,
+    message: copy.message,
+    requireInteraction: true,
+  })).catch(() => {})
+}
+
+function clearApprovalNotification(id: string): void {
+  void Promise.resolve(chrome.notifications.clear(approvalNotificationId(id))).catch(() => {})
+}
+
+const approvals = new ApprovalCoordinator({
+  deliver: deliverApproval,
+  notify: notifyApproval,
+  clearNotification: clearApprovalNotification,
+  resolved: broadcastApprovalResolved,
+})
+
 function responseMessages(): { unavailable: string; timeout: string; duplicate: string; disconnected: string } {
   return getUiLocale() === 'zh'
     ? {
@@ -212,17 +277,8 @@ function responseMessages(): { unavailable: string; timeout: string; duplicate: 
       }
 }
 
-function settleApproval(id: string, result: ApprovalRequestResult): void {
-  const pending = pendingApprovals.get(id)
-  if (pending === undefined) return
-  pendingApprovals.delete(id)
-  clearTimeout(pending.timer)
-  pending.resolve(result)
-  broadcastApprovalResolved(id)
-}
-
 function cancelPendingApprovals(): void {
-  for (const id of [...pendingApprovals.keys()]) settleApproval(id, { status: 'cancelled' })
+  approvals.cancelAll()
 }
 
 function summarizeTab(tab: chrome.tabs.Tab): AffinityTab | null {
@@ -377,7 +433,7 @@ function affinityFailure(kind: 'handoff' | 'lost' | 'missing'): ToolAnswer {
 }
 
 /** Resolve one stable tab target without allowing a manual switch to drift it. */
-async function resolveToolTab(): Promise<Pick<chrome.tabs.Tab, 'id' | 'url'> | ToolAnswer> {
+async function resolveToolTab(): Promise<Pick<chrome.tabs.Tab, 'id' | 'url' | 'windowId'> | ToolAnswer> {
   await affinityReady
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const resolution = tabAffinity.resolveTarget()
@@ -408,36 +464,12 @@ async function resolveToolTab(): Promise<Pick<chrome.tabs.Tab, 'id' | 'url'> | T
   return affinityFailure('handoff')
 }
 
-function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalRequestResult> {
-  if (signal.aborted) return Promise.resolve({ status: 'cancelled' })
-  if (panelPorts.size === 0) return Promise.resolve({ status: 'unavailable' })
-  const request: ApprovalRequest = { ...prompt, id: crypto.randomUUID() }
-  return new Promise((resolve) => {
-    const onAbort = (): void => { settleApproval(request.id, { status: 'cancelled' }) }
-    const resolveWithCleanup = (result: ApprovalRequestResult): void => {
-      signal.removeEventListener('abort', onAbort)
-      resolve(result)
-    }
-    const timer = setTimeout(() => { settleApproval(request.id, { status: 'timed-out' }) }, APPROVAL_TIMEOUT_MS)
-    pendingApprovals.set(request.id, { resolve: resolveWithCleanup, timer })
-    signal.addEventListener('abort', onAbort, { once: true })
-    // Close the small race between the initial check and listener setup.
-    if (signal.aborted) {
-      settleApproval(request.id, { status: 'cancelled' })
-      return
-    }
-    let delivered = false
-    for (const port of panelPorts) {
-      try {
-        port.postMessage({ type: 'approval.request', request })
-        delivered = true
-      } catch { /* port already closed */ }
-    }
-    if (!delivered) settleApproval(request.id, { status: 'unavailable' })
-  })
-}
-
-async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalAuthorization> {
+async function authorizeToolCall(
+  prompt: ApprovalPrompt,
+  signal: AbortSignal,
+  windowId: number,
+  sessionId?: string,
+): Promise<ApprovalAuthorization> {
   if (signal.aborted) return 'cancelled'
   if (actionCoveredByTrustedOrigins(
     prompt,
@@ -446,7 +478,7 @@ async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): P
   )) {
     return 'approved'
   }
-  const result = await requestApproval(prompt, signal)
+  const result: ApprovalRequestResult = await approvals.request(prompt, signal, windowId, sessionId)
   if (signal.aborted) return 'cancelled'
   if (result.status !== 'decision') return result.status
   const { decision } = result
@@ -483,7 +515,7 @@ async function refreshFollowedPage(sessionId: string, tabId: number): Promise<vo
       { id: crypto.randomUUID(), name: 'browser_snapshot', args: {} },
       settings.sharePageContent,
       budget,
-      (prompt) => authorizeToolCall(prompt, controller.signal),
+      (prompt) => authorizeToolCall(prompt, controller.signal, target.windowId, sessionId),
       controller.signal,
       target,
       () => target.id !== undefined && tabAffinity.allowsTarget(target.id),
@@ -540,6 +572,7 @@ async function pushBudgetToControlledTab(negotiated: BridgeCaps): Promise<void> 
 /** Route one tool.call frame to the user-approved controlled tab. */
 function routeToolCall(call: ToolCall): void {
   if (bridge === null) return
+  recentSession.remember(call.sessionId)
   activeToolCalls.get(call.id)?.abort()
   const controller = new AbortController()
   activeToolCalls.set(call.id, controller)
@@ -555,7 +588,7 @@ function routeToolCall(call: ToolCall): void {
         call,
         settings.sharePageContent,
         budget,
-        (prompt) => authorizeToolCall(prompt, controller.signal),
+        (prompt) => authorizeToolCall(prompt, controller.signal, target.windowId, call.sessionId),
         controller.signal,
         target,
         () => target.id !== undefined && tabAffinity.allowsTarget(target.id),
@@ -628,6 +661,7 @@ async function startBridge(): Promise<void> {
       },
       onFrame: (frame) => {
         if (frame.t === 'event') {
+          recentSession.noteActivity(sessionIdFromFrame(frame))
           transientEvents.ingest(frame)
           broadcastEvent(frame)
         }
@@ -724,10 +758,15 @@ chrome.runtime.onConnect.addListener((port) => {
         })
         break
       }
+      case 'session.active': {
+        const session = message as { sessionId?: unknown }
+        recentSession.remember(session.sessionId)
+        break
+      }
       case 'approval.response': {
         const approval = message as { id?: unknown; decision?: unknown }
         if (typeof approval.id === 'string' && isApprovalDecision(approval.decision)) {
-          settleApproval(approval.id, { status: 'decision', decision: approval.decision })
+          approvals.respond(approval.id, approval.decision)
         }
         break
       }
@@ -749,6 +788,15 @@ chrome.runtime.onConnect.addListener((port) => {
           port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps })
           port.postMessage({ type: 'tab-affinity', state: tabAffinity.snapshot() })
           for (const frame of transientEvents.replay()) port.postMessage({ type: 'event', frame })
+          approvals.replay((request) => {
+            port.postMessage({ type: 'approval.request', request })
+            return true
+          })
+          void recentSession.ready.then(() => {
+            try {
+              port.postMessage({ type: 'session.resume-hint', sessionId: recentSession.current() })
+            } catch { /* port closed */ }
+          })
         } catch { /* port closed */ }
         break
     }
@@ -758,9 +806,20 @@ chrome.runtime.onConnect.addListener((port) => {
     interactionResponses.removePort(port)
     if (panelPorts.size === 0) {
       sessionTrustedActionOrigins.clear()
-      for (const id of [...pendingApprovals.keys()]) settleApproval(id, { status: 'unavailable' })
+      approvals.notifyPending()
     }
   })
+})
+
+chrome.notifications.onClicked.addListener((notificationId) => {
+  if (!notificationId.startsWith(APPROVAL_NOTIFICATION_PREFIX)) return
+  const id = notificationId.slice(APPROVAL_NOTIFICATION_PREFIX.length)
+  const windowId = approvals.windowId(id)
+  if (windowId === undefined) return
+  clearApprovalNotification(id)
+  // Notification clicks are extension user gestures; Chrome permits
+  // sidePanel.open() only from such a user-initiated event.
+  void chrome.sidePanel.open({ windowId }).catch(() => {})
 })
 
 // ---- Tab affinity ----

@@ -84,6 +84,26 @@ describe('panel approval protocol', () => {
     })
   })
 
+  it('delivers a resume hint and records the panel session', () => {
+    let receive: ((message: unknown) => void) | undefined
+    const postMessage = vi.fn()
+    const port = {
+      postMessage,
+      onMessage: { addListener: vi.fn((listener: (message: unknown) => void) => { receive = listener }) },
+      onDisconnect: { addListener: vi.fn() },
+    }
+    vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
+    const api = connectPanel()
+    const listener = vi.fn()
+    api.onSessionResumeHint(listener)
+
+    receive?.({ type: 'session.resume-hint', sessionId: 'session-recent' })
+    api.setActiveSession('session-current')
+
+    expect(listener).toHaveBeenCalledWith('session-recent')
+    expect(postMessage).toHaveBeenCalledWith({ type: 'session.active', sessionId: 'session-current' })
+  })
+
   it('correlates host-interaction answers with globally unique response ids', async () => {
     let receive: ((message: unknown) => void) | undefined
     const postMessage = vi.fn()

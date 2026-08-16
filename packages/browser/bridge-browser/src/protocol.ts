@@ -94,7 +94,7 @@ export type ServerFrame =
   /** One gateway event envelope (the same server-request shape the GUI's /api/events.mux carries). */
   | { t: 'event'; frame: { rpcId: string; method: string; payload: unknown } }
   /** A model-requested browser action to execute in the user-controlled tab. */
-  | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; expiresAt: number }
+  | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; expiresAt: number; sessionId?: string }
   /** Withdraw a tool call that timed out or whose caller was cancelled. */
   | { t: 'tool.cancel'; id: string }
   /** Liveness probe. */
@@ -197,10 +197,19 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
         ? { t: 'event', frame: frame.frame as ServerFrame extends { t: 'event' } ? ServerFrame['frame'] : never }
         : undefined
     case 'tool.call':
+      if (frame.sessionId !== undefined
+        && (typeof frame.sessionId !== 'string' || frame.sessionId.trim() === '')) return undefined
       return typeof frame.id === 'string' && typeof frame.name === 'string'
         && typeof frame.args === 'object' && frame.args !== null && !Array.isArray(frame.args)
         && typeof frame.expiresAt === 'number' && Number.isFinite(frame.expiresAt) && frame.expiresAt > 0
-        ? { t: 'tool.call', id: frame.id, name: frame.name, args: frame.args as Record<string, unknown>, expiresAt: frame.expiresAt }
+        ? {
+            t: 'tool.call',
+            id: frame.id,
+            name: frame.name,
+            args: frame.args as Record<string, unknown>,
+            expiresAt: frame.expiresAt,
+            ...(typeof frame.sessionId === 'string' ? { sessionId: frame.sessionId } : {}),
+          }
         : undefined
     case 'tool.cancel':
       return typeof frame.id === 'string' ? { t: 'tool.cancel', id: frame.id } : undefined

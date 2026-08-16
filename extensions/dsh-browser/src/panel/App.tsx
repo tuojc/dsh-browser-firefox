@@ -28,12 +28,14 @@ import {
   upsertPendingQuestion,
 } from './pending-questions.ts'
 import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
+import { approvalReadyForSession, approvalSessionToFocus } from './approvals.ts'
 import {
   latestSessionTitle,
   projectedSessionTitle,
   resumableSessions,
   sessionAcceptsPrompts,
   sessionDisplayTitle,
+  sessionResumeCandidates,
   sessionTitleFromEvent,
   SessionRuntimeCache,
   type SessionPickerEntry,
@@ -282,13 +284,16 @@ export function App(): React.JSX.Element {
   const [sessionChanging, setSessionChanging] = useState(false)
   const [sessionList, setSessionList] = useState<SessionPickerEntry[]>([])
   const [sessionTitle, setSessionTitle] = useState<string | null>(null)
+  const [resumeHint, setResumeHint] = useState<{ ready: boolean; sessionId: string | null }>({ ready: false, sessionId: null })
   const [questions, setQuestions] = useState<PendingQuestion[]>([])
   const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
+  const approvalQueueRef = useRef<ApprovalRequest[]>([])
   const questionsRef = useRef<PendingQuestion[]>([])
   const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
   const sessionChangingRef = useRef(false)
   const sessionTransitionRef = useRef(0)
+  const sessionInitializationRef = useRef(false)
   const sessionRuntimeRef = useRef(new SessionRuntimeCache())
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
@@ -308,6 +313,14 @@ export function App(): React.JSX.Element {
   function replaceQuestions(next: PendingQuestion[]): void {
     questionsRef.current = next
     setQuestions(next)
+  }
+
+  function updateApprovalQueue(update: (current: ApprovalRequest[]) => ApprovalRequest[]): void {
+    setApprovalQueue((current) => {
+      const next = update(current)
+      approvalQueueRef.current = next
+      return next
+    })
   }
 
   function removeQuestion(target: ResolvedQuestion): void {
@@ -342,6 +355,8 @@ export function App(): React.JSX.Element {
         token: raw?.token ?? '',
         sharePageContent: raw?.sharePageContent ?? 'auto',
         trustedActionOrigins: raw?.trustedActionOrigins ?? [],
+        approvalNotifications: raw?.approvalNotifications ?? true,
+        autoResumeSession: raw?.autoResumeSession ?? true,
       })
     })
   }, [])
@@ -359,6 +374,7 @@ export function App(): React.JSX.Element {
       lastStateRef.current = next
       if (previous !== null && next !== previous && next === 'stopped') {
         sessionTransitionRef.current += 1
+        sessionInitializationRef.current = false
         sessionChangingRef.current = false
         sessionRef.current = null
         sessionRuntimeRef.current.clear()
@@ -375,21 +391,35 @@ export function App(): React.JSX.Element {
     })
     const offEvent = api.onEvent((frame) => { void onFrame(frame) })
     const offApproval = api.onApprovalRequest((request) => {
-      setApprovalQueue((current) => current.some((entry) => entry.id === request.id) ? current : [...current, request])
+      updateApprovalQueue((current) => current.some((entry) => entry.id === request.id) ? current : [...current, request])
     })
     const offApprovalResolved = api.onApprovalResolved((id) => {
-      setApprovalQueue((current) => current.filter((request) => request.id !== id))
+      updateApprovalQueue((current) => current.filter((request) => request.id !== id))
     })
     const offTabAffinity = api.onTabAffinity(setTabAffinity)
+    const offResumeHint = api.onSessionResumeHint((sessionId) => {
+      setResumeHint({ ready: true, sessionId })
+    })
     api.requestStatus()
-    return () => { offStatus(); offEvent(); offApproval(); offApprovalResolved(); offTabAffinity() }
+    return () => { offStatus(); offEvent(); offApproval(); offApprovalResolved(); offTabAffinity(); offResumeHint() }
   }, [api])
 
   useEffect(() => {
-    if (state === 'connected' && sessionRef.current === null) {
-      void ensureSession()
+    if (state === 'connected' && settings !== null && resumeHint.ready && sessionRef.current === null) {
+      void initializeSession()
     }
-  }, [state, sessionEpoch])
+  }, [state, sessionEpoch, settings, resumeHint])
+
+  const queuedApproval = approvalQueue[0]
+  useEffect(() => {
+    const sessionId = approvalSessionToFocus(
+      queuedApproval,
+      sessionRef.current,
+      sessionChangingRef.current,
+      state === 'connected',
+    )
+    if (sessionId !== undefined && queuedApproval !== undefined) void focusApprovalSession(queuedApproval)
+  }, [queuedApproval?.id, queuedApproval?.sessionId, sessionChanging, state])
 
   // Auto-scroll to the newest row.
   useEffect(() => {
@@ -511,31 +541,86 @@ export function App(): React.JSX.Element {
     setQuestionBusy(target, false)
   }
 
+  async function readHistory(id: string): Promise<SessionEventView[]> {
+    const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
+    return result.events.map((entry) => entry.event)
+  }
+
+  function applyHistory(id: string, events: SessionEventView[]): void {
+    if (sessionRef.current !== id) return
+    const historyTitle = latestSessionTitle(events)
+    if (historyTitle !== undefined) setSessionTitle(historyTitle)
+    setRows(mergeHistoryRows(events, nextSeq, locale))
+  }
+
   async function refreshHistory(requestedId: string | null = sessionRef.current): Promise<void> {
     const id = requestedId
     if (id === null) return
     try {
-      const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
-      if (sessionRef.current !== id) return
-      const events = result.events.map((entry) => entry.event)
-      const historyTitle = latestSessionTitle(events)
-      if (historyTitle !== undefined) setSessionTitle(historyTitle)
-      setRows(mergeHistoryRows(events, nextSeq, locale))
+      applyHistory(id, await readHistory(id))
     } catch (cause) {
       if (sessionRef.current === id) setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
-  /** 每次打开侧边栏都新建一个会话（与 GUI/其他界面的历史完全隔离）。 */
+  async function createSession(transition: number): Promise<void> {
+    const created = await api.rpc<{ sessionId: string }>('session.create', {})
+    if (sessionTransitionRef.current !== transition) return
+    sessionRef.current = created.sessionId
+    api.setActiveSession(created.sessionId)
+    setSessionTitle(null)
+    sessionRuntimeRef.current.seedRunning(created.sessionId, false)
+    applyHistory(created.sessionId, await readHistory(created.sessionId))
+  }
+
+  /** Restore the last browser conversation, then the latest durable one, before creating a chat. */
+  async function initializeSession(): Promise<void> {
+    if (sessionInitializationRef.current || sessionChangingRef.current || sessionRef.current !== null) return
+    sessionInitializationRef.current = true
+    const transition = beginSessionTransition()
+    try {
+      if (settings?.autoResumeSession === true) {
+        let entries: SessionPickerEntry[] = []
+        try {
+          const listed = await api.rpc<{ items: SessionPickerEntry[] }>('session.list', {})
+          entries = resumableSessions(listed.items ?? [])
+        } catch {
+          // The direct resume hint may still identify a live provisional session.
+        }
+        const hinted = resumeHint.sessionId
+        const candidates = sessionResumeCandidates(hinted, entries)
+        for (const id of candidates) {
+          try {
+            const events = await readHistory(id)
+            if (sessionTransitionRef.current !== transition) return
+            const entry = entries.find((candidate) => candidate.sessionId === id)
+            const runtime = sessionRuntimeRef.current.snapshot(id, entry?.running ?? false)
+            prepareSessionSwitch(runtime.running, runtime.questions)
+            sessionRef.current = id
+            api.setActiveSession(id)
+            setSessionTitle(entry === undefined ? null : projectedSessionTitle(entry) ?? sessionDisplayTitle(entry))
+            applyHistory(id, events)
+            return
+          } catch {
+            // Stale hints are expected after a bridge restart; try the next durable session.
+          }
+        }
+      }
+      await createSession(transition)
+    } catch (cause) {
+      if (sessionTransitionRef.current === transition) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    } finally {
+      sessionInitializationRef.current = false
+      finishSessionTransition(transition)
+    }
+  }
+
   async function ensureSession(): Promise<void> {
     const transition = beginSessionTransition()
     try {
-      const created = await api.rpc<{ sessionId: string }>('session.create', {})
-      if (sessionTransitionRef.current !== transition) return
-      sessionRef.current = created.sessionId
-      setSessionTitle(null)
-      sessionRuntimeRef.current.seedRunning(created.sessionId, false)
-      await refreshHistory(created.sessionId)
+      await createSession(transition)
     } catch (cause) {
       if (sessionTransitionRef.current === transition) {
         setError(cause instanceof Error ? cause.message : String(cause))
@@ -578,9 +663,37 @@ export function App(): React.JSX.Element {
     const runtime = sessionRuntimeRef.current.snapshot(entry.sessionId, entry.running)
     prepareSessionSwitch(runtime.running, runtime.questions)
     sessionRef.current = entry.sessionId
+    api.setActiveSession(entry.sessionId)
     setSessionTitle(projectedSessionTitle(entry) ?? sessionDisplayTitle(entry))
     try {
       await refreshHistory(entry.sessionId)
+    } finally {
+      finishSessionTransition(transition)
+    }
+  }
+
+  /** Load the session that owns an approval before exposing its decision UI. */
+  async function focusApprovalSession(request: ApprovalRequest): Promise<void> {
+    const sessionId = request.sessionId
+    if (sessionId === undefined || sessionChangingRef.current || sessionRef.current === sessionId) return
+    const transition = beginSessionTransition()
+    let events: SessionEventView[] | undefined
+    let historyError: unknown
+    try {
+      try {
+        events = await readHistory(sessionId)
+      } catch (cause) {
+        historyError = cause
+      }
+      if (sessionTransitionRef.current !== transition
+        || !approvalQueueRef.current.some((entry) => entry.id === request.id)) return
+      const runtime = sessionRuntimeRef.current.snapshot(sessionId)
+      prepareSessionSwitch(runtime.running, runtime.questions)
+      sessionRef.current = sessionId
+      api.setActiveSession(sessionId)
+      setSessionTitle(sessionId)
+      if (events !== undefined) applyHistory(sessionId, events)
+      else setError(historyError instanceof Error ? historyError.message : String(historyError))
     } finally {
       finishSessionTransition(transition)
     }
@@ -683,7 +796,7 @@ export function App(): React.JSX.Element {
     if (decision === 'always-allow-reads') {
       setSettings((current) => current === null ? current : { ...current, sharePageContent: 'auto' })
     }
-    setApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
+    updateApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
   }
 
   function decideTabAffinity(decision: TabAffinityDecision): void {
@@ -709,9 +822,9 @@ export function App(): React.JSX.Element {
   // 状态栏只显示连接状态；快照上限是技术细节，在设置页说明（见 hint）。
   const statusText = copy.status[state]
   const sessionMenuTitle = sessionTitle ?? copy.app.newSession
-  const approvalDialog = approvalQueue[0] === undefined
+  const approvalDialog = !approvalReadyForSession(queuedApproval, sessionRef.current, sessionChanging)
     ? null
-    : <ApprovalDialog request={approvalQueue[0]} onDecision={decideApproval} copy={copy} />
+    : <ApprovalDialog request={queuedApproval!} onDecision={decideApproval} copy={copy} />
 
   if (showSettings) {
     return (
@@ -754,6 +867,38 @@ export function App(): React.JSX.Element {
               <option value="ask">{copy.settings.sharingAsk}</option>
               <option value="off">{copy.settings.sharingOff}</option>
             </select>
+          </label>
+        </div>
+        <div className="settings-panel preference-toggles">
+          <label className="setting-toggle">
+            <span className="setting-toggle-copy">
+              <strong>{copy.settings.approvalNotifications}</strong>
+              <small>{copy.settings.approvalNotificationsHelp}</small>
+            </span>
+            <input
+              className="setting-toggle-input"
+              type="checkbox"
+              checked={settings?.approvalNotifications ?? true}
+              onChange={(event) => setSettings((current) => current === null
+                ? current
+                : { ...current, approvalNotifications: event.target.checked })}
+            />
+            <span className="setting-toggle-control" aria-hidden="true"><span /></span>
+          </label>
+          <label className="setting-toggle">
+            <span className="setting-toggle-copy">
+              <strong>{copy.settings.autoResumeSession}</strong>
+              <small>{copy.settings.autoResumeSessionHelp}</small>
+            </span>
+            <input
+              className="setting-toggle-input"
+              type="checkbox"
+              checked={settings?.autoResumeSession ?? true}
+              onChange={(event) => setSettings((current) => current === null
+                ? current
+                : { ...current, autoResumeSession: event.target.checked })}
+            />
+            <span className="setting-toggle-control" aria-hidden="true"><span /></span>
           </label>
         </div>
         <section className="trusted-origins" aria-labelledby="trusted-origins-title">

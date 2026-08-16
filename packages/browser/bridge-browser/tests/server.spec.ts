@@ -469,6 +469,27 @@ describe('BridgeServer', () => {
     ws.close()
   })
 
+  it('forwards the owning session with a tool call', async () => {
+    const h = await startBridge()
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+    const pending = h.bridge.requestTool(
+      'browser_click',
+      {},
+      new AbortController().signal,
+      1_000,
+      'session-browser',
+    )
+    await waitFor(() => frames.some((f) => f.t === 'tool.call'))
+    const call = frames.find((frame) => frame.t === 'tool.call') as Extract<BridgeFrame, { t: 'tool.call' }>
+    expect(call.sessionId).toBe('session-browser')
+    send(ws, { t: 'tool.result', id: call.id, ok: true, result: { text: 'done' } })
+    await expect(pending).resolves.toEqual({ text: 'done' })
+    ws.close()
+  })
+
   it('pumps event frames to the connected extension', async () => {
     const h = await startBridge()
     harnesses.push(h)

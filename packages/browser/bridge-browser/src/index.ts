@@ -47,7 +47,7 @@ export const name = 'bridge-browser'
 export const inject = ['webServer', 'apiProxy', 'tools', 'agents']
 
 /** Default per-tool-call budget (ms). */
-const DEFAULT_TOOL_TIMEOUT_MS = 60_000
+const DEFAULT_TOOL_TIMEOUT_MS = 90_000
 
 /** Default cap on interactive inventory items per snapshot. */
 const DEFAULT_MAX_INTERACTIVE_ITEMS = 60
@@ -62,7 +62,7 @@ const DEFAULT_DEFER_SESSION_CREATE = true
 export interface Config {
   /** Fixed bearer token. When absent, a token is generated on first boot and persisted under the dsh home (0600). */
   token?: string
-  /** Per-tool-call timeout in ms. Defaults to 60000. */
+  /** Per-tool-call timeout in ms. Defaults to 90000. */
   toolTimeoutMs?: number
   /** Upper bound on one snapshot's rendered characters. Defaults to 32000; minimum 500. */
   snapshotMaxChars?: number

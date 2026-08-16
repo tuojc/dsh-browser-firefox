@@ -581,6 +581,42 @@ describe('extension ↔ bridge e2e', () => {
     expect(await secondConcurrentOutcome).toMatchObject({ ok: false, error: { code: 'ASK_CANCELLED' } })
     await questionCard.waitFor({ state: 'hidden', timeout: 15_000 })
 
+    // Closing the panel must leave a new approval pending, surface a system
+    // notification, and replay the request when the panel returns. The owning
+    // session is restored before the approval becomes visible, so its history
+    // supplies the decision context instead of a fresh empty chat.
+    await panel.close()
+    const pendingAfterClose = context.tools.execute({
+      callId: 'e2e-browser-press-panel-closed' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      agent,
+      signal: new AbortController().signal,
+    })
+    await expect.poll(async () => {
+      return Object.keys(await sw.evaluate(() => chrome.notifications.getAll())).length
+    }, { timeout: 15_000 }).toBeGreaterThan(0)
+
+    const reopenedUrl = `chrome-extension://${extensionId}/panel/index.html`
+    const reopenedPage = ctx.waitForEvent('page')
+    await sw.evaluate(async (url) => {
+      await chrome.tabs.create({ url, active: false })
+    }, reopenedUrl)
+    const reopenedPanel = await reopenedPage
+    await reopenedPanel.waitForSelector('header.topbar', { timeout: 15_000 })
+    const reopenedApproval = reopenedPanel.locator('.approval-dialog')
+    await reopenedApproval.waitFor({ state: 'visible', timeout: 15_000 })
+    await expect.poll(async () => {
+      const stored = await sw.evaluate(() => chrome.storage.session.get('dshRecentBrowserSession'))
+      return stored.dshRecentBrowserSession
+    }, { timeout: 15_000 }).toBe(createdSession.id)
+    await reopenedApproval.locator('button.allow').click()
+    expect((await pendingAfterClose).isError).toBe(false)
+    await expect.poll(async () => {
+      return Object.keys(await sw.evaluate(() => chrome.notifications.getAll())).length
+    }, { timeout: 15_000 }).toBe(0)
+    await reopenedPanel.close()
+
     expect(statusText).toContain('已连接')
 
   }, 120_000)

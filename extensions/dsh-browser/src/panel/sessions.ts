@@ -20,6 +20,17 @@ export function resumableSessions(items: readonly SessionPickerEntry[]): Session
   return items.filter((entry) => !entry.blank && entry.origin !== 'subagent')
 }
 
+/** Prefer the explicit recent-session hint, then durable sessions in host recency order. */
+export function sessionResumeCandidates(
+  hint: string | null,
+  entries: readonly SessionPickerEntry[],
+): string[] {
+  return [
+    ...(hint === null || hint.trim() === '' ? [] : [hint]),
+    ...resumableSessions(entries).map((entry) => entry.sessionId).filter((id) => id !== hint),
+  ]
+}
+
 /** Match dsh's display-title fallback without loading a session's history. */
 export function sessionDisplayTitle(entry: SessionPickerEntry): string {
   const projectedTitle = projectedSessionTitle(entry)
