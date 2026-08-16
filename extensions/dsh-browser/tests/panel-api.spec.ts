@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { connectPanel } from '../src/panel/api.ts'
 import { isApprovalDecision, type ApprovalRequest } from '../src/security/approval.ts'
+import type { TabAffinityState } from '../src/background/tab-affinity.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -49,6 +50,36 @@ describe('panel approval protocol', () => {
       type: 'approval.response',
       id: request.id,
       decision: 'trust-session',
+    })
+  })
+
+  it('delivers tab-affinity state and sends revision-bound handoff choices', () => {
+    let receive: ((message: unknown) => void) | undefined
+    const postMessage = vi.fn()
+    const port = {
+      postMessage,
+      onMessage: { addListener: vi.fn((listener: (message: unknown) => void) => { receive = listener }) },
+      onDisconnect: { addListener: vi.fn() },
+    }
+    vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
+    const api = connectPanel()
+    const listener = vi.fn()
+    api.onTabAffinity(listener)
+    const state: TabAffinityState = {
+      revision: 4,
+      status: 'handoff',
+      controlled: { tabId: 1, windowId: 2, title: 'Original', url: 'https://original.example/' },
+      active: { tabId: 3, windowId: 2, title: 'Current', url: 'https://current.example/' },
+    }
+
+    receive?.({ type: 'tab-affinity', state })
+    api.resolveTabAffinity(state.revision, 'follow')
+
+    expect(listener).toHaveBeenCalledWith(state)
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'tab-affinity.response',
+      revision: 4,
+      decision: 'follow',
     })
   })
 

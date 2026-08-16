@@ -11,6 +11,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
+import type { AffinityTab, TabAffinityDecision, TabAffinityState } from '../background/tab-affinity.ts'
 import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import whaleUrl from '../../assets/icons/deepseek-256.png'
@@ -103,6 +104,72 @@ function ShieldIcon(): React.JSX.Element {
       <path d="M10 2.5 16 5v4.2c0 3.8-2.45 6.45-6 8.3-3.55-1.85-6-4.5-6-8.3V5l6-2.5Z" />
       <path d="M10 6.5v4M10 13.5h.01" />
     </svg>
+  )
+}
+
+function tabLabel(tab: AffinityTab | null, unknownTab: string): string {
+  const title = tab?.title.trim()
+  if (title !== undefined && title !== '') return title
+  try {
+    const hostname = new URL(tab?.url ?? '').hostname
+    return hostname === '' ? unknownTab : hostname
+  } catch {
+    return unknownTab
+  }
+}
+
+function TabAffinityBanner({
+  state,
+  copy,
+  onDecision,
+}: {
+  state: TabAffinityState | null
+  copy: PanelCopy
+  onDecision: (decision: TabAffinityDecision) => void
+}): React.JSX.Element | null {
+  if (state === null || state.status === 'unbound' || state.status === 'following') return null
+  const controlled = tabLabel(state.controlled, copy.tabHandoff.closedTab)
+  const active = tabLabel(state.active, copy.tabHandoff.unknownTab)
+  const lost = state.status === 'lost'
+  const handoff = state.status === 'handoff'
+  const title = lost
+    ? copy.tabHandoff.lostTitle
+    : handoff
+      ? copy.tabHandoff.questionTitle
+      : copy.tabHandoff.backgroundTitle(controlled)
+  const body = lost
+    ? copy.tabHandoff.lostBody
+    : handoff
+      ? copy.tabHandoff.questionBody(controlled, active)
+      : copy.tabHandoff.backgroundBody(active)
+
+  return (
+    <section className={`tab-affinity ${state.status}`} role={handoff || lost ? 'alert' : 'status'}>
+      <div className="tab-affinity-heading">
+        <span className="eyebrow">{copy.tabHandoff.eyebrow}</span>
+        <strong>{title}</strong>
+      </div>
+      <div className="tab-affinity-route" aria-hidden="true">
+        <span className={`tab-affinity-node ${lost ? 'closed' : 'controlled'}`}>
+          <small>{copy.tabHandoff.assistant}</small>
+          <span title={controlled}>{controlled}</span>
+        </span>
+        <span className="tab-affinity-arrow">→</span>
+        <span className="tab-affinity-node active">
+          <small>{copy.tabHandoff.you}</small>
+          <span title={active}>{active}</span>
+        </span>
+      </div>
+      <p>{body}</p>
+      <div className="tab-affinity-actions">
+        {handoff && <button className="keep" onClick={() => onDecision('keep')}>{copy.tabHandoff.keep}</button>}
+        {state.active !== null && (
+          <button className="follow" onClick={() => onDecision('follow')}>
+            {lost ? copy.tabHandoff.useCurrent : handoff ? copy.tabHandoff.follow : copy.tabHandoff.followCurrent}
+          </button>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -206,6 +273,7 @@ export function App(): React.JSX.Element {
   const [stopping, setStopping] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
+  const [tabAffinity, setTabAffinity] = useState<TabAffinityState | null>(null)
   const [trustedOriginInput, setTrustedOriginInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [showSessionPicker, setShowSessionPicker] = useState(false)
@@ -311,8 +379,9 @@ export function App(): React.JSX.Element {
     const offApprovalResolved = api.onApprovalResolved((id) => {
       setApprovalQueue((current) => current.filter((request) => request.id !== id))
     })
+    const offTabAffinity = api.onTabAffinity(setTabAffinity)
     api.requestStatus()
-    return () => { offStatus(); offEvent(); offApproval(); offApprovalResolved() }
+    return () => { offStatus(); offEvent(); offApproval(); offApprovalResolved(); offTabAffinity() }
   }, [api])
 
   useEffect(() => {
@@ -616,6 +685,11 @@ export function App(): React.JSX.Element {
     setApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
   }
 
+  function decideTabAffinity(decision: TabAffinityDecision): void {
+    if (tabAffinity === null) return
+    api.resolveTabAffinity(tabAffinity.revision, decision)
+  }
+
   function addTrustedOrigin(): void {
     const origin = normalizeWebOrigin(trustedOriginInput)
     if (origin === null) return
@@ -732,6 +806,7 @@ export function App(): React.JSX.Element {
         <button className="icon-button settings-trigger" onClick={() => setShowSettings(true)}
           aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
       </header>
+      <TabAffinityBanner state={tabAffinity} copy={copy} onDecision={decideTabAffinity} />
       {showSessionPicker && (
         <section className="session-picker" aria-label={copy.app.sessions}>
           <div className="session-picker-head">

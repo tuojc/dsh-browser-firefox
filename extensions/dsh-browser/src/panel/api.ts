@@ -9,6 +9,7 @@ import type { BridgeCaps, RespondResult } from '@deepseek-ai/dsh-bridge-browser/
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import type { Settings } from '../background/index.ts'
+import type { TabAffinityDecision, TabAffinityState } from '../background/tab-affinity.ts'
 import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
 
@@ -52,7 +53,12 @@ interface ApprovalResolvedMessage {
   id: string
 }
 
-type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage
+interface TabAffinityMessage {
+  type: 'tab-affinity'
+  state: TabAffinityState
+}
+
+type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage | TabAffinityMessage
 
 /** The panel API surface. */
 export interface PanelApi {
@@ -62,7 +68,9 @@ export interface PanelApi {
   onEvent(callback: (frame: ServerFrame) => void): () => void
   onApprovalRequest(callback: (request: ApprovalRequest) => void): () => void
   onApprovalResolved(callback: (id: string) => void): () => void
+  onTabAffinity(callback: (state: TabAffinityState) => void): () => void
   respondToApproval(id: string, decision: ApprovalDecision): void
+  resolveTabAffinity(revision: number, decision: TabAffinityDecision): void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -80,6 +88,7 @@ export function connectPanel(): PanelApi {
   const eventListeners = new Set<(frame: ServerFrame) => void>()
   const approvalListeners = new Set<(request: ApprovalRequest) => void>()
   const approvalResolvedListeners = new Set<(id: string) => void>()
+  const tabAffinityListeners = new Set<(state: TabAffinityState) => void>()
 
   port.onMessage.addListener((message: unknown) => {
     if (typeof message !== 'object' || message === null) return
@@ -120,6 +129,9 @@ export function connectPanel(): PanelApi {
         break
       case 'approval.resolved':
         for (const listener of approvalResolvedListeners) listener(msg.id)
+        break
+      case 'tab-affinity':
+        for (const listener of tabAffinityListeners) listener(msg.state)
         break
     }
   })
@@ -170,8 +182,15 @@ export function connectPanel(): PanelApi {
       approvalResolvedListeners.add(callback)
       return () => { approvalResolvedListeners.delete(callback) }
     },
+    onTabAffinity(callback) {
+      tabAffinityListeners.add(callback)
+      return () => { tabAffinityListeners.delete(callback) }
+    },
     respondToApproval(id, decision) {
       port.postMessage({ type: 'approval.response', id, decision })
+    },
+    resolveTabAffinity(revision, decision) {
+      port.postMessage({ type: 'tab-affinity.response', revision, decision })
     },
     updateSettings(next) {
       port.postMessage({ type: 'settings', settings: next })

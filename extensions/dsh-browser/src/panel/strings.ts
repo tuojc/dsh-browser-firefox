@@ -27,6 +27,23 @@ export interface PanelCopy {
     labels: Record<string, string>
     overflow: (shown: string[], total: number) => string
   }
+  tabHandoff: {
+    eyebrow: string
+    assistant: string
+    you: string
+    unknownTab: string
+    closedTab: string
+    questionTitle: string
+    questionBody: (controlled: string, active: string) => string
+    keep: string
+    follow: string
+    backgroundTitle: (controlled: string) => string
+    backgroundBody: (active: string) => string
+    followCurrent: string
+    lostTitle: string
+    lostBody: string
+    useCurrent: string
+  }
   question: {
     eyebrow: string
     title: string
@@ -132,6 +149,23 @@ const EN: PanelCopy = {
     },
     overflow: (shown, total) => `${shown.join(' → ')} → ${total - shown.length} more`,
   },
+  tabHandoff: {
+    eyebrow: 'Page control',
+    assistant: 'Assistant',
+    you: 'You',
+    unknownTab: 'Untitled tab',
+    closedTab: 'Closed tab',
+    questionTitle: 'Should the assistant follow you?',
+    questionBody: (controlled, active) => `It is still bound to “${controlled}”, while you moved to “${active}”. Browser actions are paused until you choose.`,
+    keep: 'Continue original page',
+    follow: 'Follow this page',
+    backgroundTitle: (controlled) => `Continuing on “${controlled}”`,
+    backgroundBody: (active) => `You are viewing “${active}”. Future browser actions still run on the original page.`,
+    followCurrent: 'Follow current page',
+    lostTitle: 'The controlled tab was closed',
+    lostBody: 'Browser actions are paused to avoid operating the wrong page.',
+    useCurrent: 'Use current page',
+  },
   question: {
     eyebrow: 'Waiting for your answer',
     title: 'The assistant needs your input',
@@ -236,6 +270,23 @@ const ZH: PanelCopy = {
       browser_wait: '等待页面',
     },
     overflow: (shown, total) => `${shown.join(' → ')} 等${total}个工具`,
+  },
+  tabHandoff: {
+    eyebrow: '页面控制',
+    assistant: '助手',
+    you: '你',
+    unknownTab: '未命名标签页',
+    closedTab: '已关闭的标签页',
+    questionTitle: '要让助手跟着切换吗？',
+    questionBody: (controlled, active) => `助手仍绑定“${controlled}”，你刚切到“${active}”。选择前，浏览器操作会暂停。`,
+    keep: '继续原页面',
+    follow: '跟随这个页面',
+    backgroundTitle: (controlled) => `助手继续在“${controlled}”`,
+    backgroundBody: (active) => `你正在查看“${active}”，后续浏览器操作仍会在原页面执行。`,
+    followCurrent: '改为跟随当前页',
+    lostTitle: '受控标签页已关闭',
+    lostBody: '为避免操作错页，浏览器操作已暂停。',
+    useCurrent: '使用当前页面',
   },
   question: {
     eyebrow: '等待你的回答',

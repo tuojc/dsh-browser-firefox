@@ -114,6 +114,160 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.92);
 }
 
+.tab-affinity {
+  flex: 0 0 auto;
+  margin: 10px 12px 0;
+  padding: 11px 12px 12px;
+  border: 1px solid var(--security-border);
+  border-radius: 14px;
+  background: linear-gradient(145deg, var(--security-soft), #fffdf7);
+  box-shadow: 0 6px 18px rgba(138, 90, 0, 0.08);
+}
+
+.tab-affinity.background {
+  border-color: #ccd6ff;
+  background: linear-gradient(145deg, var(--blue-wash), #fff);
+  box-shadow: 0 6px 18px rgba(77, 107, 254, 0.07);
+}
+
+.tab-affinity.lost {
+  border-color: var(--danger-border);
+  background: linear-gradient(145deg, var(--danger-soft), #fff);
+  box-shadow: 0 6px 18px rgba(180, 35, 24, 0.07);
+}
+
+.tab-affinity-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tab-affinity-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-strong);
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: -0.012em;
+  line-height: 1.35;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-affinity-route {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.tab-affinity-node {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid rgba(203, 211, 225, 0.84);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.tab-affinity-node small {
+  color: var(--faint);
+  font-size: 8px;
+  font-weight: 760;
+  letter-spacing: 0.09em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.tab-affinity-node > span {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-affinity-node.controlled {
+  border-color: #bdc9ff;
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+.tab-affinity-node.active {
+  box-shadow: inset 3px 0 0 #22a06b;
+}
+
+.tab-affinity-node.closed {
+  border-style: dashed;
+  opacity: 0.68;
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.tab-affinity-arrow {
+  color: var(--faint);
+  font-size: 14px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.tab-affinity > p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.tab-affinity-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.tab-affinity-actions button {
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease;
+}
+
+.tab-affinity-actions button:active {
+  transform: translateY(1px);
+}
+
+.tab-affinity-actions .keep {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.tab-affinity-actions .keep:hover {
+  border-color: var(--security-border);
+  background: var(--security-soft);
+}
+
+.tab-affinity-actions .follow {
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.tab-affinity-actions .follow:hover {
+  border-color: var(--blue-hover);
+  background: var(--blue-hover);
+}
+
 .settings h1 {
   font-family: "Avenir Next", "Segoe UI Variable Display", "PingFang SC", sans-serif;
 }
