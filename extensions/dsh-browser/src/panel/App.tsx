@@ -287,6 +287,7 @@ export function App(): React.JSX.Element {
   const [resumeHint, setResumeHint] = useState<{ ready: boolean; sessionId: string | null }>({ ready: false, sessionId: null })
   const [questions, setQuestions] = useState<PendingQuestion[]>([])
   const [questionSubmissions, setQuestionSubmissions] = useState<ResolvedQuestion[]>([])
+  const approvalQueueRef = useRef<ApprovalRequest[]>([])
   const questionsRef = useRef<PendingQuestion[]>([])
   const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
@@ -312,6 +313,14 @@ export function App(): React.JSX.Element {
   function replaceQuestions(next: PendingQuestion[]): void {
     questionsRef.current = next
     setQuestions(next)
+  }
+
+  function updateApprovalQueue(update: (current: ApprovalRequest[]) => ApprovalRequest[]): void {
+    setApprovalQueue((current) => {
+      const next = update(current)
+      approvalQueueRef.current = next
+      return next
+    })
   }
 
   function removeQuestion(target: ResolvedQuestion): void {
@@ -382,10 +391,10 @@ export function App(): React.JSX.Element {
     })
     const offEvent = api.onEvent((frame) => { void onFrame(frame) })
     const offApproval = api.onApprovalRequest((request) => {
-      setApprovalQueue((current) => current.some((entry) => entry.id === request.id) ? current : [...current, request])
+      updateApprovalQueue((current) => current.some((entry) => entry.id === request.id) ? current : [...current, request])
     })
     const offApprovalResolved = api.onApprovalResolved((id) => {
-      setApprovalQueue((current) => current.filter((request) => request.id !== id))
+      updateApprovalQueue((current) => current.filter((request) => request.id !== id))
     })
     const offTabAffinity = api.onTabAffinity(setTabAffinity)
     const offResumeHint = api.onSessionResumeHint((sessionId) => {
@@ -409,7 +418,7 @@ export function App(): React.JSX.Element {
       sessionChangingRef.current,
       state === 'connected',
     )
-    if (sessionId !== undefined) void focusApprovalSession(sessionId)
+    if (sessionId !== undefined && queuedApproval !== undefined) void focusApprovalSession(queuedApproval)
   }, [queuedApproval?.id, queuedApproval?.sessionId, sessionChanging, state])
 
   // Auto-scroll to the newest row.
@@ -664,16 +673,27 @@ export function App(): React.JSX.Element {
   }
 
   /** Load the session that owns an approval before exposing its decision UI. */
-  async function focusApprovalSession(sessionId: string): Promise<void> {
-    if (sessionChangingRef.current || sessionRef.current === sessionId) return
+  async function focusApprovalSession(request: ApprovalRequest): Promise<void> {
+    const sessionId = request.sessionId
+    if (sessionId === undefined || sessionChangingRef.current || sessionRef.current === sessionId) return
     const transition = beginSessionTransition()
-    const runtime = sessionRuntimeRef.current.snapshot(sessionId)
-    prepareSessionSwitch(runtime.running, runtime.questions)
-    sessionRef.current = sessionId
-    api.setActiveSession(sessionId)
-    setSessionTitle(sessionId)
+    let events: SessionEventView[] | undefined
+    let historyError: unknown
     try {
-      await refreshHistory(sessionId)
+      try {
+        events = await readHistory(sessionId)
+      } catch (cause) {
+        historyError = cause
+      }
+      if (sessionTransitionRef.current !== transition
+        || !approvalQueueRef.current.some((entry) => entry.id === request.id)) return
+      const runtime = sessionRuntimeRef.current.snapshot(sessionId)
+      prepareSessionSwitch(runtime.running, runtime.questions)
+      sessionRef.current = sessionId
+      api.setActiveSession(sessionId)
+      setSessionTitle(sessionId)
+      if (events !== undefined) applyHistory(sessionId, events)
+      else setError(historyError instanceof Error ? historyError.message : String(historyError))
     } finally {
       finishSessionTransition(transition)
     }
@@ -776,7 +796,7 @@ export function App(): React.JSX.Element {
     if (decision === 'always-allow-reads') {
       setSettings((current) => current === null ? current : { ...current, sharePageContent: 'auto' })
     }
-    setApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
+    updateApprovalQueue((current) => current.filter((entry) => entry.id !== request.id))
   }
 
   function decideTabAffinity(decision: TabAffinityDecision): void {
