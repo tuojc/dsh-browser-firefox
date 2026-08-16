@@ -14,10 +14,12 @@ describe('wrapUntrustedContent', () => {
   })
 
   it('keeps both boundaries while truncating content to the negotiated cap', () => {
-    const text = wrapUntrustedContent('x'.repeat(5_000), 500, 'bounded')
+    const pageText = `page-authored text ${'x'.repeat(5_000)}`
+    const text = wrapUntrustedContent(pageText, 500, '00000000-0000-0000-0000-000000000000')
 
     expect(text).toHaveLength(500)
+    expect(text).toContain('page-authored text')
     expect(text).toContain('page content truncated to the secure boundary budget')
-    expect(text).toContain('</UNTRUSTED_PAGE_CONTENT nonce="bounded">')
+    expect(text).toContain('</UNTRUSTED_PAGE_CONTENT nonce="00000000-0000-0000-0000-000000000000">')
   })
 })
