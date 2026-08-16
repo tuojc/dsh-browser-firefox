@@ -12,7 +12,7 @@ dsh 的**浏览器操作桥**：在宿主 webserver 上挂载一个 **token 认�
 |---|---|---|---|
 | `token` | `string` | 自动生成 | 固定 bearer token。缺省时首次启动生成，写入 `~/.dsh/ext-bridge-token`（0600）并打印在启动日志。 |
 | `toolTimeoutMs` | `number` | 60000 | 单次工具调用预算。 |
-| `snapshotMaxChars` | `number` | 12000 | 单次快照渲染字符上限（经 `hello.ok` caps 协商给扩展）。 |
+| `snapshotMaxChars` | `number` | 12000 | 单次快照渲染字符上限，最小为 500（经 `hello.ok` caps 协商给扩展）。 |
 | `maxInteractiveItems` | `number` | 60 | 单次快照交互清单条数上限。 |
 | `sessionWorkspacePath` | `string` | `~/.dsh/browser-sessions` | 扩展创建的会话所用的专用 Host Workspace。插件会在首次调用未显式指定工作区的 `session.create` 时创建并幂等注册该目录；会话的 cwd 随之变为此路径，因此 GUI 会显示 `browser-sessions` 工作区分组。设为 `""` 可让会话继续显示在“未分组”中。 |
 | `deferSessionCreate` | `boolean` | `true` | 会话只在第一条消息时才真正创建：`session.create` 先返回一个内存暂定 ID（不落库），历史读取为空，第一次 `session.prompt` 才创建真实会话（同一 ID、回放原始创建参数）。只打开面板不说话，会在会话库/GUI 里不留任何痕迹。 |

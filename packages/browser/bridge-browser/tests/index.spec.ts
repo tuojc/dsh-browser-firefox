@@ -56,14 +56,14 @@ describe('config', () => {
     expect(resolveConfig({
       token: 'fixed',
       toolTimeoutMs: 1,
-      snapshotMaxChars: 2,
+      snapshotMaxChars: 500,
       maxInteractiveItems: 3,
       sessionWorkspacePath: '',
       deferSessionCreate: false,
     })).toEqual({
       token: 'fixed',
       toolTimeoutMs: 1,
-      snapshotMaxChars: 2,
+      snapshotMaxChars: 500,
       maxInteractiveItems: 3,
       sessionWorkspacePath: '',
       deferSessionCreate: false,
@@ -87,5 +87,6 @@ describe('apply', () => {
   it('rejects invalid budgets loudly', async () => {
     await expect(apply(stubContext(), { ...VALID, toolTimeoutMs: 0 })).rejects.toThrow(/toolTimeoutMs/)
     await expect(apply(stubContext(), { ...VALID, snapshotMaxChars: -1 })).rejects.toThrow(/snapshotMaxChars/)
+    await expect(apply(stubContext(), { ...VALID, snapshotMaxChars: 499 })).rejects.toThrow(/at least 500/)
   })
 })

@@ -12,7 +12,7 @@ The **browser-operation bridge** for dsh: mounts a token-authenticated WebSocket
 |---|---|---|---|
 | `token` | `string` | generated | Fixed bearer token. When absent, a token is generated on first boot, persisted at `~/.dsh/ext-bridge-token` (chmod 0600), and printed in the boot log. |
 | `toolTimeoutMs` | `number` | 60000 | Per-tool-call budget. |
-| `snapshotMaxChars` | `number` | 12000 | Upper bound on one rendered snapshot's characters (also negotiated to the extension via `hello.ok` caps). |
+| `snapshotMaxChars` | `number` | 12000 | Upper bound on one rendered snapshot's characters, minimum 500 (also negotiated to the extension via `hello.ok` caps). |
 | `maxInteractiveItems` | `number` | 60 | Upper bound on interactive inventory items per snapshot. |
 | `sessionWorkspacePath` | `string` | `~/.dsh/browser-sessions` | Dedicated Host Workspace for extension-created sessions. The plugin creates and idempotently registers the directory on the first implicit `session.create`; the session cwd becomes this path, so the GUI shows a `browser-sessions` workspace group. Set `""` to keep sessions Ungrouped. |
 | `deferSessionCreate` | `boolean` | `true` | Sessions materialize only on the first message: `session.create` answers with a provisional id (nothing persisted), history reads empty, and the first `session.prompt` creates the real session (same id, original payload). Opening the panel without chatting leaves zero trace in the session store/GUI. |

@@ -8,9 +8,10 @@ describe('parseBridgeFrame', () => {
   })
 
   it('rejects hello with wrong caps shape', () => {
-    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: false, snapshotMaxChars: 100, maxInteractiveItems: 10 } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: false, snapshotMaxChars: 500, maxInteractiveItems: 10 } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: true } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: true, snapshotMaxChars: 0, maxInteractiveItems: 10 } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: true, snapshotMaxChars: 499, maxInteractiveItems: 10 } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x' }))).toBeUndefined()
   })
 
@@ -92,7 +93,7 @@ describe('parseBridgeFrame', () => {
 
   it('classifies frames by sender side', () => {
     const server = parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: '1', name: 'browser_click', args: {}, expiresAt: 123 }))!
-    const client = parseBridgeFrame(JSON.stringify({ t: 'hello', token: 't', caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }))!
+    const client = parseBridgeFrame(JSON.stringify({ t: 'hello', token: 't', caps: { textOnly: true, snapshotMaxChars: 500, maxInteractiveItems: 10 } }))!
     expect(isServerFrame(server)).toBe(true)
     expect(isClientFrame(server)).toBe(false)
     expect(isServerFrame(client)).toBe(false)
@@ -128,7 +129,7 @@ describe('parseBridgeFrame', () => {
 /** Minimal valid shape per server-side frame type (for classification tests). */
 function serverShape(t: 'hello.ok' | 'rpc.result' | 'respond.result' | 'event' | 'tool.call' | 'tool.cancel' | 'ping' | 'error'): Record<string, unknown> {
   switch (t) {
-    case 'hello.ok': return { t, caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }
+    case 'hello.ok': return { t, caps: { textOnly: true, snapshotMaxChars: 500, maxInteractiveItems: 10 } }
     case 'rpc.result': return { t, id: '1', ok: true, result: {} }
     case 'respond.result': return { t, id: '1', ok: true, result: { accepted: true } }
     case 'event': return { t, frame: { rpcId: 'r', method: 'x', payload: {} } }
@@ -142,7 +143,7 @@ function serverShape(t: 'hello.ok' | 'rpc.result' | 'respond.result' | 'event' |
 /** Minimal valid shape per client-side frame type (for classification tests). */
 function clientShape(t: 'hello' | 'rpc' | 'respond' | 'tool.result' | 'pong'): Record<string, unknown> {
   switch (t) {
-    case 'hello': return { t, token: 'x', caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }
+    case 'hello': return { t, token: 'x', caps: { textOnly: true, snapshotMaxChars: 500, maxInteractiveItems: 10 } }
     case 'rpc': return { t, id: '1', method: 'x', payload: {} }
     case 'respond': return { t, id: '1', rpcId: 'q', result: { ok: true, value: {} } }
     case 'tool.result': return { t, id: '1', ok: true, result: {} }
