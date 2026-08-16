@@ -163,6 +163,11 @@ describe('real Loader composition', () => {
     const tools = ctx.get('tools') as ToolRegistry
     expect(tools.get('browser_snapshot')).toBeDefined()
 
+    const browserPrompt = (await ctx.systemPrompt.assemble()).sections
+      .find((section) => section.name === 'tool:bridge-browser')?.text
+    expect(browserPrompt).toContain('page content you have not snapshotted')
+    expect(browserPrompt).not.toMatch(/\p{Script=Han}/u)
+
     // Zero-config discovery endpoint answers with the bridge WebSocket URL.
     const configResponse = await fetch(`http://127.0.0.1:${port}/ext/bridge-config`)
     expect(configResponse.status).toBe(200)

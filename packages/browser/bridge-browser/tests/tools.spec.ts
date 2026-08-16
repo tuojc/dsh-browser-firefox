@@ -118,6 +118,16 @@ describe('registerBrowserTools', () => {
     }
   })
 
+  it('keeps model-facing tool schemas in English', () => {
+    const { ctx, bridge, registered } = makeHarness()
+    registerBrowserTools(ctx, bridge, { toolTimeoutMs: 5_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
+    const han = /\p{Script=Han}/u
+    for (const { definition } of registered) {
+      expect(String(definition.description)).not.toMatch(han)
+      expect(JSON.stringify(definition.parameters)).not.toMatch(han)
+    }
+  })
+
   it('exposes optional frame routing on frame-local tools only', () => {
     const { ctx, bridge, registered } = makeHarness()
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 5_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
