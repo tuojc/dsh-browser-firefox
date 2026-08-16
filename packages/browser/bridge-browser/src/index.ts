@@ -8,7 +8,7 @@
  * from the extension are dispatched through the same fetch-shaped handler the
  * /api carrier uses, and session events are pumped per connection. Tools
  * execute by dispatching `tool.call` frames to the connected extension, which
- * performs the action in the user's active tab.
+ * performs the action in the tab explicitly controlled by the user.
  *
  * Opt-in by design: nothing is registered unless this plugin appears in the
  * composition. No dsh core code is touched.

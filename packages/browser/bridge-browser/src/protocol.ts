@@ -84,7 +84,7 @@ export type ServerFrame =
   | { t: 'respond.result'; id: string; ok: false; error: { code: string; message: string } }
   /** One gateway event envelope (the same server-request shape the GUI's /api/events.mux carries). */
   | { t: 'event'; frame: { rpcId: string; method: string; payload: unknown } }
-  /** A model-requested browser action to execute in the active tab. */
+  /** A model-requested browser action to execute in the user-controlled tab. */
   | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; expiresAt: number }
   /** Withdraw a tool call that timed out or whose caller was cancelled. */
   | { t: 'tool.cancel'; id: string }

@@ -1,7 +1,7 @@
 /**
  * Model-facing browser tools. Every tool executes by dispatching a `tool.call`
  * over the bridge to the connected extension, which performs the action in the
- * user's active tab and returns a pure-text result.
+ * user's explicitly controlled tab and returns a pure-text result.
  *
  * The whole surface is text-only by design (DeepSeek models have no vision):
  * `browser_snapshot` renders the page as structured text with a numbered
@@ -205,7 +205,7 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
 
   const navigate = (): ToolDefinition => ({
     name: 'browser_navigate',
-    description: '在当前标签页导航到指定 URL。保留当前登录状态（cookie/会话）。',
+    description: '在助手当前受控的标签页内导航到指定 URL。保留当前登录状态（cookie/会话），不会新开或静默切换标签页。',
     parameters: {
       ...OBJECT_SCHEMA,
       url: { type: 'string', required: true, description: '完整 URL（http/https）。' },
