@@ -18,6 +18,8 @@ export interface ApprovalPrompt {
 /** Correlated request delivered to every open side-panel view. */
 export interface ApprovalRequest extends ApprovalPrompt {
   id: string
+  /** Agent session that requested the browser operation, when known. */
+  sessionId?: string
 }
 
 export function isApprovalDecision(value: unknown): value is ApprovalDecision {
