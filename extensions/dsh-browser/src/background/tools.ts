@@ -92,7 +92,7 @@ function unavailable(message: string): ToolAnswer {
 }
 
 function cancelled(): ToolAnswer {
-  return { ok: false, error: { code: 'bridge-closed', message: '浏览器工具调用已取消' } }
+  return { ok: false, error: { code: 'bridge-closed', message: 'The browser tool call was cancelled.' } }
 }
 
 /** Preserve the factual approval outcome for the model without prescribing a response. */
@@ -125,7 +125,7 @@ function approvalFailure(approval: ApprovalPrompt, authorization: Exclude<Approv
 }
 
 function targetChanged(): ToolAnswer {
-  return unavailable('受控标签页在操作期间发生变化；请在侧栏确认页面后重试')
+  return unavailable('The controlled tab changed during the operation. Confirm the page in the side panel before retrying.')
 }
 
 function isCancelled(call: ToolCall, signal: AbortSignal | undefined): boolean {
@@ -178,19 +178,19 @@ async function snapshotAllFrames(
     const frame = frames[index]!
     if (outcome.status === 'rejected') {
       if (frame.frameId === 0) throw outcome.reason
-      sections.push(frameHeader(frame), '(该 iframe 无法访问或已在加载期间销毁)')
+      sections.push(frameHeader(frame), '(This iframe was inaccessible or destroyed while loading.)')
       continue
     }
     const answer = outcome.value.response
     if (!isToolAnswer(answer)) {
-      if (frame.frameId === 0) return unavailable('页面内容脚本返回了无效响应')
-      sections.push(frameHeader(frame), '(该 iframe 返回了无效响应)')
+      if (frame.frameId === 0) return unavailable('The page content script returned an invalid response.')
+      sections.push(frameHeader(frame), '(This iframe returned an invalid response.)')
       continue
     }
     const text = answerText(answer)
     if (text === undefined) {
       if (frame.frameId === 0) return answer
-      sections.push(frameHeader(frame), `(该 iframe 读取失败：${answer.error?.message ?? '未知错误'})`)
+      sections.push(frameHeader(frame), `(This iframe could not be read: ${answer.error?.message ?? 'unknown error'})`)
       continue
     }
     capturedDocuments.set(frame.frameId, frameDocumentKey(frame))
@@ -201,7 +201,7 @@ async function snapshotAllFrames(
   if (deltaRequested) {
     const liveIds = new Set(frames.map((frame) => frame.frameId))
     const removed = [...previous.keys()].filter((frameId) => frameId !== 0 && !liveIds.has(frameId))
-    if (removed.length > 0) sections.push(`\n消失的 iframe: ${removed.join(', ')}`)
+    if (removed.length > 0) sections.push(`\nRemoved iframes: ${removed.join(', ')}`)
   }
 
   snapshotDocumentsByTab.set(tabId, capturedDocuments)
@@ -225,10 +225,10 @@ async function dispatchOnce(
   if (call.name === 'browser_snapshot') return snapshotAllFrames(tabId, frames, call, budget)
 
   const frameId = requestedFrame(call.args)
-  if (frameId < 0) return { ok: false, error: { code: 'action-failed', message: 'frame 必须是非负整数' } }
+  if (frameId < 0) return { ok: false, error: { code: 'action-failed', message: 'frame must be a non-negative integer.' } }
   const frame = frames.find((candidate) => candidate.frameId === frameId)
   if (frame === undefined) {
-    return unavailable(`frame ${frameId} 不存在或已经导航，请重新 browser_snapshot`)
+    return unavailable(`Frame ${frameId} does not exist or has navigated. Call browser_snapshot again.`)
   }
   // No await occurs between this guard and tabs.sendMessage, so an expired
   // approval cannot cross the final state-changing dispatch boundary.
@@ -236,7 +236,7 @@ async function dispatchOnce(
   if (targetStillAllowed?.() === false) return targetChanged()
   const response = await sendAction(tabId, call, frame, budget)
   if (isCancelled(call, signal)) return cancelled()
-  if (!isToolAnswer(response)) return unavailable('页面内容脚本返回了无效响应')
+  if (!isToolAnswer(response)) return unavailable('The page content script returned an invalid response.')
   if (call.name !== 'browser_get_text') return response
   const text = answerText(response)
   return text === undefined
@@ -268,12 +268,12 @@ export async function dispatchToolCall(
   if (isCancelled(call, signal)) return cancelled()
   // Privacy boundary: with sharing off, no page content may leave the page.
   if (sharePageContent === 'off' && (call.name === 'browser_snapshot' || call.name === 'browser_get_text')) {
-    return { ok: false, error: { code: 'action-failed', message: '页面内容共享已关闭（设置 → 页面内容共享）' } }
+    return { ok: false, error: { code: 'action-failed', message: 'Page content sharing is disabled in Settings > Page content sharing.' } }
   }
   const tab = targetTab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
   if (isCancelled(call, signal)) return cancelled()
   if (tab?.id === undefined) {
-    return { ok: false, error: { code: 'no-active-tab', message: '没有活动的标签页可操作' } }
+    return { ok: false, error: { code: 'no-active-tab', message: 'No active tab is available for browser operations.' } }
   }
   if (targetStillAllowed?.() === false) return targetChanged()
   const effectiveBudget = budget ?? { maxItems: 60, maxChars: 12_000 }
@@ -302,7 +302,7 @@ export async function dispatchToolCall(
     if (refreshedApproval === undefined
       || !sameApprovalBoundary(approval, refreshedApproval)
       || (approval.kind === 'action' && !sameTargetDocument(call, frames, executionFrames))) {
-      return unavailable('页面在确认期间发生变化；为避免操作错误页面，请重新 browser_snapshot 后再试')
+      return unavailable('The page changed while approval was pending. Call browser_snapshot again before retrying.')
     }
     const refreshedTargetError = validateElementTarget(call, tab.id, executionFrames)
     if (refreshedTargetError !== undefined) return refreshedTargetError
@@ -315,7 +315,7 @@ export async function dispatchToolCall(
     // already open when an unpacked extension was installed or reloaded.
     // Recover in place so the user never has to refresh and lose page state.
     if (!isInjectablePage(tab.url)) {
-      return unavailable('当前页面不支持浏览器操作；请切换到普通的 http/https 页面')
+      return unavailable('The current page does not support browser operations. Switch to a standard http or https page.')
     }
     try {
       await injectContentScript(tab.id)
@@ -331,12 +331,12 @@ export async function dispatchToolCall(
         if (refreshedApproval === undefined
           || !sameApprovalBoundary(approval, refreshedApproval)
           || (approval.kind === 'action' && !sameTargetDocument(call, executionFrames, refreshedFrames))) {
-          return unavailable('页面在加载内容脚本期间发生变化；请重新 browser_snapshot 后再试')
+          return unavailable('The page changed while the content script was loading. Call browser_snapshot again before retrying.')
         }
       }
       return await dispatchOnce(tab.id, refreshedFrames, call, effectiveBudget, signal, targetStillAllowed)
     } catch {
-      return unavailable('无法在当前页面加载内容脚本；Chrome 内置页和受保护页面不支持操作')
+      return unavailable('The content script could not be loaded on this page. Chrome internal and protected pages do not support browser operations.')
     }
   }
 }
@@ -344,9 +344,9 @@ export async function dispatchToolCall(
 function validateFrameTarget(call: ToolCall, frames: TabFrame[]): ToolAnswer | undefined {
   if (call.name === 'browser_snapshot') return undefined
   const frameId = requestedFrame(call.args)
-  if (frameId < 0) return { ok: false, error: { code: 'action-failed', message: 'frame 必须是非负整数' } }
+  if (frameId < 0) return { ok: false, error: { code: 'action-failed', message: 'frame must be a non-negative integer.' } }
   if (!frames.some((frame) => frame.frameId === frameId)) {
-    return unavailable(`frame ${frameId} 不存在或已经导航，请重新 browser_snapshot`)
+    return unavailable(`Frame ${frameId} does not exist or has navigated. Call browser_snapshot again.`)
   }
   return undefined
 }
@@ -357,7 +357,7 @@ function validateElementTarget(call: ToolCall, tabId: number, frames: TabFrame[]
   const frame = frames.find((candidate) => candidate.frameId === frameId)
   const snapshotted = snapshotDocumentsByTab.get(tabId)?.get(frameId)
   if (frame === undefined || snapshotted === undefined || snapshotted !== frameDocumentKey(frame)) {
-    return unavailable('元素引用不属于当前文档；请重新 browser_snapshot 获取最新的 frame 与 index')
+    return unavailable('The element reference does not belong to the current document. Call browser_snapshot again for current frame and index values.')
   }
   return undefined
 }

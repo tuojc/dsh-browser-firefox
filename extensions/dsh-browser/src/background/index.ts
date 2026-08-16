@@ -364,16 +364,16 @@ function affinityFailure(kind: 'handoff' | 'lost' | 'missing'): ToolAnswer {
   if (kind === 'handoff') {
     return {
       ok: false,
-      error: { code: 'action-failed', message: '用户切换了标签页；浏览器操作已暂停，请先在侧栏选择继续原页面或跟随当前页面' },
+      error: { code: 'action-failed', message: 'The user switched tabs, so browser operations are paused. In the side panel, choose whether to keep the previous page or follow the current page.' },
     }
   }
   if (kind === 'lost') {
     return {
       ok: false,
-      error: { code: 'content-unavailable', message: '受控标签页已关闭；请先在侧栏选择当前页面后再试' },
+      error: { code: 'content-unavailable', message: 'The controlled tab was closed. Select the current page in the side panel before retrying.' },
     }
   }
-  return { ok: false, error: { code: 'no-active-tab', message: '没有活动的标签页可操作' } }
+  return { ok: false, error: { code: 'no-active-tab', message: 'No active tab is available for browser operations.' } }
 }
 
 /** Resolve one stable tab target without allowing a manual switch to drift it. */

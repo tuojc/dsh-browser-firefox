@@ -92,7 +92,7 @@ describe('dispatchToolCall', () => {
 
     await expect(dispatchToolCall(CALL, 'auto')).resolves.toMatchObject({
       ok: false,
-      error: { code: 'content-unavailable', message: expect.stringContaining('http/https') },
+      error: { code: 'content-unavailable', message: expect.stringContaining('http or https') },
     })
     expect(chromeMock.executeScript).not.toHaveBeenCalled()
   })
@@ -106,7 +106,7 @@ describe('dispatchToolCall', () => {
 
     await expect(dispatchToolCall(CALL, 'auto')).resolves.toMatchObject({
       ok: false,
-      error: { code: 'content-unavailable', message: expect.stringContaining('受保护页面') },
+      error: { code: 'content-unavailable', message: expect.stringContaining('protected pages') },
     })
   })
 
@@ -293,7 +293,7 @@ describe('dispatchToolCall', () => {
       () => targetAllowed,
     )
 
-    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('受控标签页') } })
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('controlled tab') } })
     expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 
@@ -318,7 +318,7 @@ describe('dispatchToolCall', () => {
       async () => 'approved',
     )
 
-    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('重新 browser_snapshot') } })
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('Call browser_snapshot again') } })
     expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 
@@ -339,7 +339,7 @@ describe('dispatchToolCall', () => {
       authorize,
     )
 
-    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('确认期间发生变化') } })
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('page changed while approval was pending') } })
     expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 
@@ -360,7 +360,7 @@ describe('dispatchToolCall', () => {
       authorize,
     )
 
-    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('确认期间发生变化') } })
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('page changed while approval was pending') } })
     expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 

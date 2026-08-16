@@ -437,6 +437,11 @@ describe('extension ↔ bridge e2e', () => {
       signal: new AbortController().signal,
     })
     expect(blockedSnapshot.isError).toBe(true)
+    if (blockedSnapshot.isError) {
+      expect(blockedSnapshot.error.message).toBe(
+        'The user switched tabs, so browser operations are paused. In the side panel, choose whether to keep the previous page or follow the current page.',
+      )
+    }
 
     await handoff.locator('button.keep').click()
     const backgroundAffinity = panel.locator('.tab-affinity.background')
@@ -491,6 +496,18 @@ describe('extension ↔ bridge e2e', () => {
     const lostAffinity = panel.locator('.tab-affinity.lost')
     await lostAffinity.waitFor({ state: 'visible', timeout: 15_000 })
     expect(await lostAffinity.textContent()).toContain('受控标签页已关闭')
+    const lostSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-blocked-by-lost-tab' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(lostSnapshot.isError).toBe(true)
+    if (lostSnapshot.isError) {
+      expect(lostSnapshot.error.message).toBe(
+        'The controlled tab was closed. Select the current page in the side panel before retrying.',
+      )
+    }
     await lostAffinity.locator('button.follow').click()
     await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
 
