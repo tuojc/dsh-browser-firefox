@@ -779,6 +779,31 @@ chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
   })
 })
 
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  void affinityReady.then(() => {
+    // onReplaced is an identity swap (for example prerender activation), not
+    // a close or user-visible switch. Transfer IDs synchronously before any
+    // metadata lookup so tool resolution never observes the removed target.
+    const controlledReplaced = tabAffinity.snapshot().controlled?.tabId === removedTabId
+    if (!tabAffinity.replaceTab(removedTabId, addedTabId)) return
+    // Only work targeting the replaced controlled page is stale. Replacing a
+    // merely visible background-affinity tab must not cancel work on the
+    // separately controlled page.
+    if (controlledReplaced) {
+      activeFollowRefresh?.abort()
+      denyPendingApprovals()
+    }
+    resetTabSnapshot(removedTabId)
+    resetTabSnapshot(addedTabId)
+    persistTabAffinity()
+    broadcastTabAffinity()
+    return chrome.tabs.get(addedTabId).then((tab) => {
+      const summary = summarizeTab(tab)
+      if (summary !== null && tabAffinity.observeTab(summary)) broadcastTabAffinity()
+    }).catch(() => {})
+  })
+})
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   void affinityReady.then(() => {
     if (!tabAffinity.removeTab(tabId)) return
