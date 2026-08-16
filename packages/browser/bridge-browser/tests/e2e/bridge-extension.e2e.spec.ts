@@ -406,7 +406,7 @@ describe('extension ↔ bridge e2e', () => {
     await other.bringToFront()
     const handoff = panel.locator('.tab-affinity.handoff')
     await handoff.waitFor({ state: 'visible', timeout: 15_000 })
-    expect(await handoff.textContent()).toContain('要让助手跟着切换吗？')
+    expect(await handoff.textContent()).toContain('助手要跟随当前页面吗？')
     expect(await handoff.locator('.tab-affinity-node').count()).toBe(2)
 
     const blockedSnapshot = await context.tools.execute({
