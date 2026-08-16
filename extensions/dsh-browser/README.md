@@ -15,7 +15,7 @@ The **browser-operation end** of dsh: the model reads and operates the browser p
 | Fill forms | `browser_type` | Type text; `replace` clears first |
 | Keys | `browser_press` | Enter/Tab/Escape/arrows etc. |
 | Scroll | `browser_scroll` | Viewport scrolling (up/down/top/bottom) |
-| Navigate | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | In-tab navigation, login state preserved |
+| Navigate | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | Navigation inside the controlled tab, login state preserved |
 | Read region | `browser_get_text` | Lazy-loaded content / partial text |
 | Wait | `browser_wait` | Page load and render-settle detection |
 
@@ -29,9 +29,9 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
                         content script (snapshot/actions/privacy)
 ```
 
-- **background** (`src/background/`): bridge connection (token auth + exponential-backoff reconnect + keepalive), gateway RPC client, **tool dispatch to the active tab**.
+- **background** (`src/background/`): bridge connection (token auth + exponential-backoff reconnect + keepalive), gateway RPC client, and **fail-closed tool dispatch to a user-controlled tab**.
 - **content script** (`src/content/`): text-only snapshot (readability main text + numbered interactive inventory + form fields), **stable element numbers** (`data-dsh-el`), delta changes, click/type/press/scroll/navigate actions, sensitive-field masking.
-- **panel** (`src/panel/`): React conversation UI (isolated session/history/live events/settings); messages render as sanitized Markdown, `ask_user_question` requests render as answerable cards, and an active turn exposes a standard stop control.
+- **panel** (`src/panel/`): React conversation UI (isolated session/history/live events/settings); messages render as sanitized Markdown, `ask_user_question` requests render as answerable cards, manual tab switches render a control-handoff strip, and an active turn exposes a standard stop control.
 - **Protocol**: `protocol.ts` in the `@deepseek-ai/dsh-bridge-browser` workspace package is the single source of truth, shared by both ends through the package's source export.
 
 ## Build
@@ -95,15 +95,17 @@ For extension-only development, clone the repository, run `pnpm --filter dsh-bro
 - **Stable numbering**: element numbers persist across snapshots (WeakMap + `data-dsh-el`), so the model can say "click 7"; a large page change explicitly reports "numbers reindexed".
 - **Delta mode**: `browser_snapshot({delta:true})` returns only changed element numbers, saving tokens.
 - **Privacy**: password/credit-card values always render as `••••` and never leave the page; accessible names never use a sensitive field's current value.
-- **Proportional approval**: the default `auto` mode lets the model read the active tab without an extra prompt; `ask` restores per-read confirmation and `off` blocks reads. In `ask` mode, the read dialog can allow one read or persistently switch back to `auto`, which remains reversible in Settings. State-changing tools still fail closed and show their exact origin plus a redacted action summary. The user may deny, allow once, or trust one origin for the current side-panel session; temporary trust clears when the last panel closes or the service worker restarts. Permanent trust is managed explicitly in Settings. Explicit cross-origin `browser_navigate` calls and unknown history destinations cannot inherit trust, and a closed panel means denial. Caller cancellation or bridge timeout withdraws any open approval before an action can run.
+- **Tab affinity**: prompt submission binds the active tab before the model starts working; a direct browser-tool call also performs the initial bind when needed. A manual tab/window switch pauses later tools and asks whether the assistant should stay on the original tab or follow the newly visible one. Staying permits explicit background operation without changing the user's visible tab; following resets page-reference state. A closed controlled tab fails closed until the user selects the current page, and a switch withdraws any open action approval.
+- **Proportional approval**: the default `auto` mode lets the model read the controlled tab without an extra prompt; `ask` restores per-read confirmation and `off` blocks reads. In `ask` mode, the read dialog can allow one read or persistently switch back to `auto`, which remains reversible in Settings. State-changing tools still fail closed and show their exact origin plus a redacted action summary. The user may deny, allow once, or trust one origin for the current side-panel session; temporary trust clears when the last panel closes or the service worker restarts. Permanent trust is managed explicitly in Settings. Explicit cross-origin `browser_navigate` calls and unknown history destinations cannot inherit trust, and a closed panel means denial. Caller cancellation or bridge timeout withdraws any open approval before an action can run.
 
 ## Permissions
 
-`sidePanel` (sidebar), `storage` (settings), `tabs` + `activeTab` + `scripting` (inject/message the active tab, including lazy recovery for pages opened before install), `webNavigation` (enumerate and bind messages to the active tab's frame documents), `alarms` (SW keepalive), and `http/https` (content-script injection on normal pages). Only the **active tab** of the last-focused window is ever operated; the extension never switches tabs silently.
+`sidePanel` (sidebar), `storage` (settings), `tabs` + `activeTab` + `scripting` (observe tab changes and inject/message the explicitly controlled tab, including lazy recovery for pages opened before install), `webNavigation` (enumerate and bind messages to that tab's frame documents), `alarms` (SW keepalive), and `http/https` (content-script injection on normal pages). The extension never changes the visible tab or silently follows a manual switch; background operation happens only after the user chooses to stay on the original tab.
 
 ## Known limitations
 
 - Only one extension connection at a time (a second window replaces the first).
+- Tab affinity is global to that extension connection rather than per chat session.
 - Accessible cross-origin iframes are snapshotted and operated with stable `(frame, index)` addresses. Restricted or short-lived frames are reported as unavailable without failing the whole page snapshot.
 - Captcha/image-only controls cannot be handled — the tool result reports "elements with no accessible name" and asks the user to complete that step manually.
 - No automatic token rotation.

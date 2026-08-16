@@ -8,7 +8,7 @@
  * from the extension are dispatched through the same fetch-shaped handler the
  * /api carrier uses, and session events are pumped per connection. Tools
  * execute by dispatching `tool.call` frames to the connected extension, which
- * performs the action in the user's active tab.
+ * performs the action in the tab explicitly controlled by the user.
  *
  * Opt-in by design: nothing is registered unless this plugin appears in the
  * composition. No dsh core code is touched.
@@ -18,6 +18,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-host-apiproxy'
@@ -27,6 +28,7 @@ import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
+import { BrowserContextInjector } from './browser-context.ts'
 import { registerBrowserTools } from './tools.ts'
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from './protocol.ts'
 import { withSessionDeferral } from './session-deferral.ts'
@@ -37,7 +39,7 @@ import { resolveToken } from './token.ts'
 export const name = 'bridge-browser'
 
 /** Services required by this plugin. */
-export const inject = ['webServer', 'apiProxy', 'tools']
+export const inject = ['webServer', 'apiProxy', 'tools', 'agents']
 
 /** Default per-tool-call budget (ms). */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
@@ -130,6 +132,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     ),
     resolved.deferSessionCreate,
   )
+  const browserContext = new BrowserContextInjector(ctx.agents)
+  ctx.on('agent/session-start', ({ agent }) => { browserContext.activate(agent) })
   const server = new BridgeServer({
     token: tokenRes.token,
     apiHandler: toFetchHandler(api),
@@ -140,6 +144,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       snapshotMaxChars: resolved.snapshotMaxChars,
       maxInteractiveItems: resolved.maxInteractiveItems,
     },
+    injectBrowserSnapshot: (sessionId, snapshot) => { browserContext.inject(sessionId, snapshot) },
   })
 
   const route: WebUpgradeRoute = {

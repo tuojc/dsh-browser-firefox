@@ -13,7 +13,9 @@ function stubContext(): Context {
     apiProxy: { sessions: {} } as ApiProxy,
     webServer: { port: 0, registerUpgrade: () => () => {}, register: () => () => {} },
     tools: { register: () => () => {} },
+    agents: { get: () => undefined },
     get: () => undefined,
+    on: () => () => {},
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     effect: (fn: () => unknown, label?: string) => {
       void label

@@ -15,7 +15,7 @@ dsh 的**浏览器操作端**：让模型直接读取并操作你在浏览器里
 | 填写表单 | `browser_type` | 输入文本，`replace` 清空重填 |
 | 按键 | `browser_press` | Enter/Tab/Escape/方向键等 |
 | 滚动 | `browser_scroll` | 视口滚动（up/down/top/bottom） |
-| 导航 | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | 当前标签页内跳转，登录态保留 |
+| 导航 | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | 受控标签页内跳转，登录态保留 |
 | 读区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
 | 等待 | `browser_wait` | 页面加载与渲染稳定检测 |
 
@@ -29,9 +29,9 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
                         content script (snapshot/actions/privacy)
 ```
 
-- **background**（`src/background/`）：桥连接（token 认证 + 指数退避重连 + 保活）、网关 RPC 客户端、**工具分发到活动标签页**。
+- **background**（`src/background/`）：桥连接（token 认证 + 指数退避重连 + 保活）、网关 RPC 客户端，以及**失败关闭地分发工具到用户受控标签页**。
 - **content script**（`src/content/`）：纯文本快照（可读性主文 + 编号交互清单 + 表单字段）、**稳定编号**（`data-dsh-el`）、delta 变化、点击/输入/按键/滚动/导航动作、敏感字段掩码。
-- **panel**（`src/panel/`）：React 对话界面（独立会话/历史/实时事件/设置），消息以已消毒的 Markdown 渲染；`ask_user_question` 请求会显示成可直接作答的卡片，运行中的回合提供标准停止按钮。
+- **panel**（`src/panel/`）：React 对话界面（独立会话/历史/实时事件/设置），消息以已消毒的 Markdown 渲染；`ask_user_question` 请求会显示成可直接作答的卡片，手动切页时显示控制权交接条，运行中的回合提供标准停止按钮。
 - **协议**：`@deepseek-ai/dsh-bridge-browser` workspace 包中的 `protocol.ts` 是两端共享的真源，具体通过该包的源码 export 共享。
 
 ## 构建
@@ -95,15 +95,17 @@ pnpm --filter dsh-browser-extension run test
 - **稳定编号**：元素编号跨快照保持（WeakMap + `data-dsh-el`），模型可以说"点 7 号"；页面大改时显式提示"编号已重排"。
 - **delta 模式**：`browser_snapshot({delta:true})` 只返回变化元素的编号，省 token。
 - **隐私**：密码/卡号字段的值永远以 `••••` 呈现，绝不回传；可访问名称从不使用敏感字段的当前值。
-- **分级审批**：默认「自动共享」允许模型按需读取活动标签页而不额外弹窗；「每次询问」可恢复逐次读取确认，「关闭」会阻断读取。在「每次询问」模式下，读取弹窗可以仅允许一次，也可以持久切回自动读取，之后仍可在设置中关闭。状态变更工具仍然失败关闭，并显示实际 origin 和脱敏动作摘要；用户可拒绝、仅允许一次，或只在当前侧栏会话中信任单个 origin。最后一个侧栏关闭或 Service Worker 重启会清空临时信任；永久信任需在设置中显式管理。显式跨域 `browser_navigate` / 未知目标的历史跳转不继承信任，侧边栏关闭时一律拒绝。调用方取消或桥接超时时，会先撤销尚未完成的审批，过期动作不会继续执行。
+- **标签页绑定**：提交提示时会在模型开始工作前绑定活动标签页；如果直接调用浏览器工具，也会在需要时完成首次绑定。手动切换标签页或窗口后，后续工具会暂停，并询问助手继续原页面还是跟随当前页。选择原页面后允许后台操作，但不会改变用户正在看的页面；选择跟随后会重置页面引用状态。受控页关闭后失败关闭，直到用户选择当前页；切页还会撤销尚未完成的操作审批。
+- **分级审批**：默认「自动共享」允许模型按需读取受控标签页而不额外弹窗；「每次询问」可恢复逐次读取确认，「关闭」会阻断读取。在「每次询问」模式下，读取弹窗可以仅允许一次，也可以持久切回自动读取，之后仍可在设置中关闭。状态变更工具仍然失败关闭，并显示实际 origin 和脱敏动作摘要；用户可拒绝、仅允许一次，或只在当前侧栏会话中信任单个 origin。最后一个侧栏关闭或 Service Worker 重启会清空临时信任；永久信任需在设置中显式管理。显式跨域 `browser_navigate` / 未知目标的历史跳转不继承信任，侧边栏关闭时一律拒绝。调用方取消或桥接超时时，会先撤销尚未完成的审批，过期动作不会继续执行。
 
 ## 权限说明
 
-`sidePanel`（侧边栏）、`storage`（设置）、`tabs` + `activeTab` + `scripting`（向活动标签页注入/发消息，并为安装前已打开的页面按需补注入）、`webNavigation`（枚举活动标签页中的 frame，并把消息绑定到具体文档）、`alarms`（SW 保活）、`http/https`（内容脚本注入普通网页）。只操作**活动标签页**，绝不静默切页。
+`sidePanel`（侧边栏）、`storage`（设置）、`tabs` + `activeTab` + `scripting`（观察切页，并向用户显式选择的受控标签页注入/发消息；安装前已打开的页面也会按需补注入）、`webNavigation`（枚举该标签页中的 frame，并把消息绑定到具体文档）、`alarms`（SW 保活）、`http/https`（内容脚本注入普通网页）。扩展绝不改变用户正在看的标签页，也不会静默跟随手动切页；只有用户选择继续原页面后，助手才会在后台操作。
 
 ## 已知限制
 
 - 同时只有一个扩展连接桥（后连顶替先连）。
+- 标签页绑定属于整个扩展连接，而不是单个对话会话。
 - 可访问的跨源 iframe 会进入快照，并通过稳定的 `(frame, index)` 地址执行操作；受保护或已销毁的 frame 会标记为不可访问，不影响整页快照。
 - 验证码/纯图片按钮无法处理——工具结果会标注"存在无文本可访问名的元素"，提示用户手动完成该步。
 - 令牌无自动轮换。

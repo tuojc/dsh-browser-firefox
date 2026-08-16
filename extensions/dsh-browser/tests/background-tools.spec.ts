@@ -120,6 +120,26 @@ describe('dispatchToolCall', () => {
     expect(chromeMock.query).not.toHaveBeenCalled()
   })
 
+  it('dispatches to an explicitly bound background tab without querying the active tab', async () => {
+    const chromeMock = mockChrome({
+      tab: { id: 7, url: 'https://active.example/' },
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: 'bound-doc', url: 'https://bound.example/' }],
+    })
+
+    const answer = await dispatchToolCall(
+      CALL,
+      'auto',
+      undefined,
+      undefined,
+      undefined,
+      { id: 88, url: 'https://bound.example/' },
+    )
+
+    expect(answer.ok).toBe(true)
+    expect(chromeMock.query).not.toHaveBeenCalled()
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith(88, expect.any(Object), { documentId: 'bound-doc' })
+  })
+
   it('aggregates top-level and cross-origin iframe snapshots', async () => {
     const chromeMock = mockChrome({
       tab: { id: 21, url: 'https://app.example/' },
@@ -223,6 +243,29 @@ describe('dispatchToolCall', () => {
     const answer = await dispatchToolCall(call, 'auto', undefined, authorize, controller.signal)
 
     expect(answer).toMatchObject({ ok: false, error: { code: 'bridge-closed' } })
+    expect(chromeMock.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not dispatch an approved action after tab affinity changes', async () => {
+    const call: ToolCall = { id: 'tool-switched', name: 'browser_press', args: { key: 'Enter' } }
+    let targetAllowed = true
+    const chromeMock = mockChrome({ tab: { id: 28, url: 'https://app.example/' } })
+    const authorize = vi.fn(async () => {
+      targetAllowed = false
+      return true
+    })
+
+    const answer = await dispatchToolCall(
+      call,
+      'auto',
+      undefined,
+      authorize,
+      undefined,
+      { id: 28, url: 'https://app.example/' },
+      () => targetAllowed,
+    )
+
+    expect(answer).toMatchObject({ ok: false, error: { message: expect.stringContaining('受控标签页') } })
     expect(chromeMock.sendMessage).not.toHaveBeenCalled()
   })
 

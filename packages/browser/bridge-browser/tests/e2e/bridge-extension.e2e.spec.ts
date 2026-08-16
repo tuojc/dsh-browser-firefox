@@ -31,7 +31,7 @@ import SessionStore from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
-import LlmService from '@deepseek-ai/dsh-llm'
+import LlmService, { type UserMessage } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
@@ -208,6 +208,10 @@ describe('extension ↔ bridge e2e', () => {
     }
 
     const ctx = browser
+    const inboxInsertions: Array<{ agentId: string; message: UserMessage }> = []
+    context.on('agent/inbox/inserted', ({ agent, message }) => {
+      inboxInsertions.push({ agentId: String(agent.id), message })
+    })
     // The service worker may already be registered when launchPersistentContext
     // returns — waitForEvent would then miss it and time out; check first.
     let sw = ctx.serviceWorkers()[0]
@@ -283,6 +287,17 @@ describe('extension ↔ bridge e2e', () => {
     const target = await ctx.newPage()
     await target.goto(`http://127.0.0.1:${port}/e2e-approval-page`)
     await target.setContent('<main><h1>Approval target</h1><button>Continue</button></main>')
+    // Prepare the extra window before binding a controlled tab. Headless
+    // Chromium may briefly focus a newly created window despite
+    // `focused: false`; bringing `target` forward afterwards establishes the
+    // intended foreground window before any browser tool runs.
+    const backgroundTarget = await sw.evaluate(async (url) => {
+      const backgroundWindow = await chrome.windows.create({ url, focused: false })
+      if (backgroundWindow?.id === undefined) throw new Error('failed to create background window')
+      const alternate = await chrome.tabs.create({ windowId: backgroundWindow.id, url, active: false })
+      if (alternate.id === undefined) throw new Error('failed to create background tab')
+      return { tabId: alternate.id, windowId: backgroundWindow.id }
+    }, `http://127.0.0.1:${port}/e2e-approval-page`)
     await target.bringToFront()
     const snapshot = context.tools.execute({
       callId: 'e2e-browser-snapshot' as never,
@@ -364,26 +379,103 @@ describe('extension ↔ bridge e2e', () => {
     })
     expect(repeatedPress.isError).toBe(false)
     expect(await approval.isVisible()).toBe(false)
-    await target.close()
 
-    // Session deferral: opening the panel alone must NOT create a session.
-    // Give the panel's ensureSession + history round trip a moment, then the
-    // store must still equal the pre-save baseline (zero trace).
+    // An active-tab change inside an unfocused Chrome window is not a user
+    // handoff. It must leave the focused target bound and keep tools running.
+    await sw.evaluate(async ({ tabId, windowId }) => {
+      const backgroundWindow = await chrome.windows.get(windowId)
+      if (backgroundWindow.focused) throw new Error('background test window unexpectedly has focus')
+      await chrome.tabs.update(tabId, { active: true })
+    }, backgroundTarget)
+    await panel.waitForTimeout(250)
+    expect(await panel.locator('.tab-affinity').count()).toBe(0)
+    const afterBackgroundActivation = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-after-background-activation' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    if (afterBackgroundActivation.isError) {
+      throw new Error(`background activation interrupted the controlled tab: ${JSON.stringify(afterBackgroundActivation)}`)
+    }
+    expect(afterBackgroundActivation.value).toMatchObject({ text: expect.stringContaining('Approval target') })
+    await sw.evaluate((windowId) => chrome.windows.remove(windowId), backgroundTarget.windowId)
+
+    // A manual tab switch must never silently retarget browser tools. The
+    // side panel exposes the A → B relationship, blocks tools until a choice,
+    // and can explicitly keep operating A in the background.
+    const other = await ctx.newPage()
+    await other.goto(`http://127.0.0.1:${port}/e2e-approval-page`)
+    await other.setContent('<main><h1>Other target</h1><button>Continue elsewhere</button></main>')
+    await other.bringToFront()
+    const handoff = panel.locator('.tab-affinity.handoff')
+    await handoff.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await handoff.textContent()).toContain('助手要跟随当前页面吗？')
+    expect(await handoff.locator('.tab-affinity-node').count()).toBe(2)
+
+    const blockedSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-blocked-by-handoff' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(blockedSnapshot.isError).toBe(true)
+
+    await handoff.locator('button.keep').click()
+    const backgroundAffinity = panel.locator('.tab-affinity.background')
+    await backgroundAffinity.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await backgroundAffinity.textContent()).toContain('后续浏览器操作仍会在原页面执行')
+    const originalSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-original-tab' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(originalSnapshot.isError).toBe(false)
+    if (!originalSnapshot.isError) expect(originalSnapshot.value).toMatchObject({ text: expect.stringContaining('Approval target') })
+
+    await backgroundAffinity.locator('button.follow').click()
+    await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
+
+    // Session deferral: opening the panel and using browser tools alone must
+    // leave no session trace. The first prompt materializes the provisional
+    // session, but it may not overtake the followed-page refresh.
     await panel.waitForSelector('.messages', { timeout: 30_000 })
     await panel.waitForTimeout(1_200)
     expect(sessions.list().length).toBe(initialSessions.length)
-
-    // The first message materializes the session through the real bridge.
-    await panel.fill('textarea', '你好')
+    await panel.fill('textarea', '这个页面的标题是什么？')
     await panel.press('textarea', 'Enter')
     await expect.poll(() => sessions.list().length, { timeout: 30_000 }).toBeGreaterThan(initialSessions.length)
 
     const createdSession = sessions.list().find(session => !initialIds.has(session.id))
     if (createdSession === undefined) throw new Error('the panel did not materialize its deferred session')
+    await expect.poll(
+      () => inboxInsertions.filter(entry => entry.agentId === createdSession.id).length,
+      { timeout: 15_000 },
+    ).toBeGreaterThanOrEqual(1)
+    const sessionInbox = inboxInsertions.filter(entry => entry.agentId === createdSession.id)
+    const browserContextIndex = sessionInbox.findIndex(({ message }) => {
+      return message.source.kind === 'plugin'
+        && message.source.plugin === BRIDGE
+        && message.source.form === 'snapshot'
+    })
+    expect(browserContextIndex).toBeGreaterThanOrEqual(0)
+    expect(JSON.stringify(sessionInbox[browserContextIndex]!.message.content)).toContain('Other target')
+
     const workspace = (context.get('workspaceRegistry') as WorkspaceRegistry).list()[0]
     expect(workspace?.path).toBe(await realpath(join(root as string, 'browser-sessions')))
     expect(workspace?.sessionIds).toContain(createdSession.id)
     expect(createdSession.header.cwd).toBe(workspace?.path)
+
+    // Closing the controlled tab is a distinct fail-closed state; the current
+    // page must be selected explicitly before tools can resume.
+    await other.close()
+    await target.bringToFront()
+    const lostAffinity = panel.locator('.tab-affinity.lost')
+    await lostAffinity.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await lostAffinity.textContent()).toContain('受控标签页已关闭')
+    await lostAffinity.locator('button.follow').click()
+    await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
 
     // A host-side ask_user_question request for this exact live agent must be
     // rendered and answered by the sidebar. Keep both the short header and the
