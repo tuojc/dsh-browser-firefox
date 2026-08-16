@@ -30,7 +30,12 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
 import { BrowserContextInjector } from './browser-context.ts'
 import { registerBrowserTools } from './tools.ts'
-import { BRIDGE_CONFIG_PATH, BRIDGE_PATH, MIN_SNAPSHOT_MAX_CHARS } from './protocol.ts'
+import {
+  BRIDGE_CONFIG_PATH,
+  BRIDGE_PATH,
+  DEFAULT_SNAPSHOT_MAX_CHARS,
+  MIN_SNAPSHOT_MAX_CHARS,
+} from './protocol.ts'
 import { withSessionDeferral } from './session-deferral.ts'
 import { withSessionWorkspace } from './session-workspace.ts'
 import { resolveToken } from './token.ts'
@@ -43,9 +48,6 @@ export const inject = ['webServer', 'apiProxy', 'tools', 'agents']
 
 /** Default per-tool-call budget (ms). */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
-
-/** Default rendered-snapshot character budget (protects model context). */
-const DEFAULT_SNAPSHOT_MAX_CHARS = 32_000
 
 /** Default cap on interactive inventory items per snapshot. */
 const DEFAULT_MAX_INTERACTIVE_ITEMS = 60

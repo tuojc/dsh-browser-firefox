@@ -8,6 +8,7 @@
  * @module
  */
 
+import { DEFAULT_SNAPSHOT_MAX_CHARS } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { ToolError } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import {
   allocateFrameBudgets,
@@ -276,7 +277,7 @@ export async function dispatchToolCall(
     return { ok: false, error: { code: 'no-active-tab', message: 'No active tab is available for browser operations.' } }
   }
   if (targetStillAllowed?.() === false) return targetChanged()
-  const effectiveBudget = budget ?? { maxItems: 60, maxChars: 12_000 }
+  const effectiveBudget = budget ?? { maxItems: 60, maxChars: DEFAULT_SNAPSHOT_MAX_CHARS }
   const frames = await listTabFrames(tab.id, tab.url)
   if (isCancelled(call, signal)) return cancelled()
   if (targetStillAllowed?.() === false) return targetChanged()

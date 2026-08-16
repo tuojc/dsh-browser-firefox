@@ -9,12 +9,13 @@
  * @module
  */
 
+import { DEFAULT_SNAPSHOT_MAX_CHARS } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { runAction, ActionError } from './actions.ts'
 import { ElementIds } from './ids.ts'
 import type { SnapshotBudget } from './snapshot.ts'
 
 /** Negotiated snapshot budgets, patched in from the background via message. */
-let budget: SnapshotBudget = { maxItems: 60, maxForms: 30, maxChars: 12_000 }
+let budget: SnapshotBudget = { maxItems: 60, maxForms: 30, maxChars: DEFAULT_SNAPSHOT_MAX_CHARS }
 
 const ids = new ElementIds()
 
