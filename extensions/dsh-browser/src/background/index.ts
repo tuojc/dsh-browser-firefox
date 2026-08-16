@@ -1,6 +1,6 @@
 /**
  * Background service worker entry: owns the bridge connection, the gateway
- * RPC client, tool dispatch to the active tab, and the panel port service.
+ * RPC client, controlled-tab tool dispatch, and the panel port service.
  *
  * MV3 survival: the service worker is kept alive by the panel's open port
  * plus a half-minute `alarms` keepalive that re-arms the reconnect loop.
@@ -10,6 +10,7 @@
  *   panel → bg: { type: 'respond', id, rpcId, result }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
  *   panel → bg: { type: 'approval.response', id, decision }
+ *   panel → bg: { type: 'tab-affinity.response', revision, decision }
  *   panel → bg: { type: 'request-status' }
  *   bg → panel: { type: 'rpc.result', id, ok, result? | error? }
  *   bg → panel: { type: 'respond.result', id, ok, result? | error? }
@@ -17,6 +18,7 @@
  *   bg → panel: { type: 'event', frame: ServerFrame }
  *   bg → panel: { type: 'approval.request', request }
  *   bg → panel: { type: 'approval.resolved', id }
+ *   bg → panel: { type: 'tab-affinity', state }
  *
  * @module
  */
@@ -26,7 +28,7 @@ import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.t
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
 import { createRpc } from './rpc.ts'
-import { dispatchToolCall, type ToolCall } from './tools.ts'
+import { dispatchToolCall, resetTabSnapshot, type ToolAnswer, type ToolCall } from './tools.ts'
 import {
   isApprovalDecision,
   type ApprovalDecision,
@@ -40,6 +42,11 @@ import {
   normalizeTrustedOrigin,
 } from '../security/trusted-origins.ts'
 import { TransientEventCache } from './transient-events.ts'
+import {
+  TabAffinityController,
+  type AffinityTab,
+  type TabAffinityDecision,
+} from './tab-affinity.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -98,6 +105,11 @@ async function probeBridge(url: string): Promise<boolean> {
 }
 
 const STORAGE_KEY = 'dshSettings'
+const TAB_AFFINITY_STORAGE_KEY = 'dshTabAffinity'
+
+type StoredTabAffinity =
+  | { controlledTabId: number; keptActiveTabId?: number }
+  | { lost: true }
 
 let settings: Settings = { ...SETTINGS_DEFAULTS }
 let caps: BridgeCaps | null = null
@@ -106,6 +118,7 @@ let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
 const interactionResponses = new InteractionResponseRouter()
 const transientEvents = new TransientEventCache()
+const tabAffinity = new TabAffinityController()
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
@@ -115,6 +128,8 @@ const pendingApprovals = new Map<string, {
   timer: ReturnType<typeof setTimeout>
 }>()
 const APPROVAL_TIMEOUT_MS = 30_000
+let lastPersistedAffinity: string | undefined
+let affinityPersistence = Promise.resolve()
 
 async function loadSettings(): Promise<Settings> {
   const stored = await chrome.storage.local.get(STORAGE_KEY)
@@ -143,6 +158,13 @@ function normalizeSettings(candidate: Settings): Settings {
 
 function broadcastStatus(): void {
   const payload = { type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps }
+  for (const port of panelPorts) {
+    try { port.postMessage(payload) } catch { /* port already closed */ }
+  }
+}
+
+function broadcastTabAffinity(): void {
+  const payload = { type: 'tab-affinity', state: tabAffinity.snapshot() }
   for (const port of panelPorts) {
     try { port.postMessage(payload) } catch { /* port already closed */ }
   }
@@ -183,6 +205,187 @@ function settleApproval(id: string, decision: ApprovalDecision): void {
   clearTimeout(pending.timer)
   pending.resolve(decision)
   broadcastApprovalResolved(id)
+}
+
+function denyPendingApprovals(): void {
+  for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
+}
+
+function summarizeTab(tab: chrome.tabs.Tab): AffinityTab | null {
+  if (tab.id === undefined) return null
+  return {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    title: tab.title ?? '',
+    url: tab.url ?? '',
+  }
+}
+
+function storedAffinity(): StoredTabAffinity | null {
+  const state = tabAffinity.snapshot()
+  if (state.controlled !== null) {
+    return {
+      controlledTabId: state.controlled.tabId,
+      ...(state.status === 'background' && state.active !== null
+        ? { keptActiveTabId: state.active.tabId }
+        : {}),
+    }
+  }
+  return state.status === 'lost' ? { lost: true } : null
+}
+
+function persistTabAffinity(): void {
+  const record = storedAffinity()
+  const serialized = JSON.stringify(record)
+  if (serialized === lastPersistedAffinity) return
+  lastPersistedAffinity = serialized
+  affinityPersistence = affinityPersistence.catch(() => {}).then(async () => {
+    if (record === null) await chrome.storage.session.remove(TAB_AFFINITY_STORAGE_KEY)
+    else await chrome.storage.session.set({ [TAB_AFFINITY_STORAGE_KEY]: record })
+  }).catch(() => {
+    if (lastPersistedAffinity === serialized) lastPersistedAffinity = undefined
+  })
+}
+
+function observeActiveSummary(summary: AffinityTab): void {
+  const previousStatus = tabAffinity.snapshot().status
+  if (!tabAffinity.observeActive(summary)) return
+  if (previousStatus !== 'handoff' && tabAffinity.snapshot().status === 'handoff') denyPendingApprovals()
+  persistTabAffinity()
+  broadcastTabAffinity()
+}
+
+function observeActiveTab(tab: chrome.tabs.Tab): void {
+  const summary = summarizeTab(tab)
+  if (summary !== null) observeActiveSummary(summary)
+}
+
+async function syncActiveTab(windowId?: number): Promise<chrome.tabs.Tab | undefined> {
+  const query = windowId === undefined
+    ? { active: true, lastFocusedWindow: true }
+    : { active: true, windowId }
+  try {
+    const [tab] = await chrome.tabs.query(query)
+    if (tab !== undefined) observeActiveTab(tab)
+    return tab
+  } catch {
+    return undefined
+  }
+}
+
+async function restoreTabAffinity(): Promise<void> {
+  let record: StoredTabAffinity | null = null
+  try {
+    const stored = await chrome.storage.session.get(TAB_AFFINITY_STORAGE_KEY)
+    const candidate = stored[TAB_AFFINITY_STORAGE_KEY] as Partial<StoredTabAffinity> | undefined
+    const controlledTabId = (candidate as { controlledTabId?: unknown } | undefined)?.controlledTabId
+    if (typeof controlledTabId === 'number' && Number.isInteger(controlledTabId) && controlledTabId >= 0) {
+      const keptActiveTabId = (candidate as { keptActiveTabId?: unknown }).keptActiveTabId
+      record = {
+        controlledTabId,
+        ...(typeof keptActiveTabId === 'number' && Number.isInteger(keptActiveTabId) && keptActiveTabId >= 0
+          ? { keptActiveTabId }
+          : {}),
+      }
+    } else if ((candidate as { lost?: unknown } | undefined)?.lost === true) {
+      record = { lost: true }
+    }
+    lastPersistedAffinity = candidate === undefined || record !== null
+      ? JSON.stringify(record)
+      : undefined
+  } catch {
+    // Session storage is a survival aid, not a reason to disable the bridge.
+  }
+
+  if (record !== null && 'controlledTabId' in record) {
+    try {
+      const controlled = summarizeTab(await chrome.tabs.get(record.controlledTabId))
+      if (controlled === null) tabAffinity.restoreLost()
+      else tabAffinity.restoreControlled(controlled)
+    } catch {
+      tabAffinity.restoreLost()
+    }
+  } else if (record?.lost === true) {
+    tabAffinity.restoreLost()
+  }
+
+  await syncActiveTab()
+  if (record !== null && 'keptActiveTabId' in record) {
+    const state = tabAffinity.snapshot()
+    if (state.status === 'handoff' && state.active?.tabId === record.keptActiveTabId) {
+      tabAffinity.decide('keep', state.revision)
+    }
+  }
+  persistTabAffinity()
+  broadcastTabAffinity()
+}
+
+const affinityReady = restoreTabAffinity()
+
+/** Bind at prompt submission so a switch while the model is thinking is visible. */
+async function ensureInitialTabBinding(): Promise<boolean> {
+  await affinityReady
+  if (tabAffinity.resolveTarget().kind !== 'initial') return true
+  try {
+    const tab = await syncActiveTab()
+    const summary = tab === undefined ? null : summarizeTab(tab)
+    if (summary === null) return false
+    if (tabAffinity.bindInitial(summary)) {
+      persistTabAffinity()
+      broadcastTabAffinity()
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function affinityFailure(kind: 'handoff' | 'lost' | 'missing'): ToolAnswer {
+  if (kind === 'handoff') {
+    return {
+      ok: false,
+      error: { code: 'action-failed', message: '用户切换了标签页；浏览器操作已暂停，请先在侧栏选择继续原页面或跟随当前页面' },
+    }
+  }
+  if (kind === 'lost') {
+    return {
+      ok: false,
+      error: { code: 'content-unavailable', message: '受控标签页已关闭；请先在侧栏选择当前页面后再试' },
+    }
+  }
+  return { ok: false, error: { code: 'no-active-tab', message: '没有活动的标签页可操作' } }
+}
+
+/** Resolve one stable tab target without allowing a manual switch to drift it. */
+async function resolveToolTab(): Promise<Pick<chrome.tabs.Tab, 'id' | 'url'> | ToolAnswer> {
+  await affinityReady
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const resolution = tabAffinity.resolveTarget()
+    if (resolution.kind === 'handoff') return affinityFailure('handoff')
+    if (resolution.kind === 'lost') return affinityFailure('lost')
+    if (resolution.kind === 'initial') {
+      if (!await ensureInitialTabBinding()) return affinityFailure('missing')
+      continue
+    }
+    try {
+      const tab = await chrome.tabs.get(resolution.tab.tabId)
+      const summary = summarizeTab(tab)
+      if (summary === null) return affinityFailure('missing')
+      if (tabAffinity.observeTab(summary)) broadcastTabAffinity()
+      const current = tabAffinity.resolveTarget()
+      if (current.kind === 'handoff') return affinityFailure('handoff')
+      if (current.kind === 'lost') return affinityFailure('lost')
+      if (current.kind === 'target' && current.tab.tabId === summary.tabId) return tab
+    } catch {
+      if (tabAffinity.removeTab(resolution.tab.tabId)) {
+        denyPendingApprovals()
+        persistTabAffinity()
+        broadcastTabAffinity()
+      }
+      return affinityFailure('lost')
+    }
+  }
+  return affinityFailure('handoff')
 }
 
 function requestApproval(prompt: ApprovalPrompt, signal: AbortSignal): Promise<ApprovalDecision> {
@@ -242,12 +445,18 @@ async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): P
   return decision === 'allow-once'
 }
 
-/** 把协商的快照预算下发到活动标签页的 content script（配置生效）。 */
-async function pushBudgetToActiveTab(negotiated: BridgeCaps): Promise<void> {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-  if (tab?.id === undefined) return
+/** 把协商的快照预算下发到受控页（尚未绑定时使用活动页）。 */
+async function pushBudgetToControlledTab(negotiated: BridgeCaps): Promise<void> {
+  await affinityReady
+  const resolution = tabAffinity.resolveTarget()
+  const tabId = resolution.kind === 'target'
+    ? resolution.tab.tabId
+    : resolution.kind === 'initial'
+      ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id
+      : undefined
+  if (tabId === undefined) return
   try {
-    await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tabId, {
       type: 'DSH_BUDGET',
       budget: { maxItems: negotiated.maxInteractiveItems, maxChars: negotiated.snapshotMaxChars },
     })
@@ -256,7 +465,7 @@ async function pushBudgetToActiveTab(negotiated: BridgeCaps): Promise<void> {
   }
 }
 
-/** Route one tool.call frame to the active tab and answer over the bridge. */
+/** Route one tool.call frame to the user-approved controlled tab. */
 function routeToolCall(call: ToolCall): void {
   if (bridge === null) return
   activeToolCalls.get(call.id)?.abort()
@@ -268,13 +477,17 @@ function routeToolCall(call: ToolCall): void {
   const budget = caps === null
     ? undefined
     : { maxItems: caps.maxInteractiveItems, maxChars: caps.snapshotMaxChars }
-  void dispatchToolCall(
-    call,
-    settings.sharePageContent,
-    budget,
-    (prompt) => authorizeToolCall(prompt, controller.signal),
-    controller.signal,
-  ).then(
+  void resolveToolTab().then((target) => 'ok' in target
+    ? target
+    : dispatchToolCall(
+        call,
+        settings.sharePageContent,
+        budget,
+        (prompt) => authorizeToolCall(prompt, controller.signal),
+        controller.signal,
+        target,
+        () => target.id !== undefined && tabAffinity.allowsTarget(target.id),
+      )).then(
     (answer) => {
       if (controller.signal.aborted) return
       const socket = bridge
@@ -354,7 +567,7 @@ async function startBridge(): Promise<void> {
       onHelloOk: (negotiated) => {
         caps = negotiated
         broadcastStatus()
-        void pushBudgetToActiveTab(negotiated)
+        void pushBudgetToControlledTab(negotiated)
       },
     }, probeBridge)
     bridge = client
@@ -380,13 +593,20 @@ chrome.runtime.onConnect.addListener((port) => {
   panelPorts.add(port)
   if (bridge === null) void startBridge()
   try { port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps }) } catch { /* port closed */ }
+  void affinityReady.then(async () => {
+    await syncActiveTab()
+    try { port.postMessage({ type: 'tab-affinity', state: tabAffinity.snapshot() }) } catch { /* port closed */ }
+  })
   port.onMessage.addListener((message: unknown) => {
     if (typeof message !== 'object' || message === null) return
     const msg = message as { type?: string }
     switch (msg.type) {
       case 'rpc': {
         const rpcMsg = message as { id: string; method: string; payload?: unknown }
-        void gatewayRpc(rpcMsg.method, rpcMsg.payload).then(
+        const prepare = rpcMsg.method === 'session.prompt'
+          ? ensureInitialTabBinding()
+          : Promise.resolve(true)
+        void prepare.then(() => gatewayRpc(rpcMsg.method, rpcMsg.payload)).then(
           (result) => {
             try { port.postMessage({ type: 'rpc.result', id: rpcMsg.id, ok: true, result }) } catch { /* port closed */ }
           },
@@ -435,9 +655,28 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         break
       }
+      case 'tab-affinity.response': {
+        const response = message as { revision?: unknown; decision?: unknown }
+        if (typeof response.revision !== 'number'
+          || (response.decision !== 'keep' && response.decision !== 'follow')) break
+        void affinityReady.then(() => syncActiveTab()).then(() => {
+          const accepted = tabAffinity.decide(
+            response.decision as TabAffinityDecision,
+            response.revision as number,
+          )
+          if (accepted && response.decision === 'follow') {
+            const controlled = tabAffinity.snapshot().controlled
+            if (controlled !== null) resetTabSnapshot(controlled.tabId)
+          }
+          if (accepted) persistTabAffinity()
+          broadcastTabAffinity()
+        })
+        break
+      }
       case 'request-status':
         try {
           port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps })
+          port.postMessage({ type: 'tab-affinity', state: tabAffinity.snapshot() })
           for (const frame of transientEvents.replay()) port.postMessage({ type: 'event', frame })
         } catch { /* port closed */ }
         break
@@ -451,6 +690,39 @@ chrome.runtime.onConnect.addListener((port) => {
       for (const id of [...pendingApprovals.keys()]) settleApproval(id, 'deny')
     }
   })
+})
+
+// ---- Tab affinity ----
+
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  void affinityReady.then(() => {
+    // Mark the switch before awaiting metadata so an already-running trusted
+    // action cannot slip through the handoff boundary.
+    observeActiveSummary({ tabId, windowId, title: '', url: '' })
+    return chrome.tabs.get(tabId).then(observeActiveTab).catch(() => {})
+  })
+})
+
+chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
+  void affinityReady.then(() => {
+    if (!tabAffinity.tracks(tabId)) return
+    const summary = summarizeTab(tab)
+    if (summary !== null && tabAffinity.observeTab(summary)) broadcastTabAffinity()
+  })
+})
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void affinityReady.then(() => {
+    if (!tabAffinity.removeTab(tabId)) return
+    denyPendingApprovals()
+    persistTabAffinity()
+    broadcastTabAffinity()
+  })
+})
+
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return
+  void affinityReady.then(() => syncActiveTab(windowId))
 })
 
 // ---- Keepalive ----

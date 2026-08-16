@@ -1,9 +1,9 @@
 /**
- * Tool dispatch: executes `tool.call` frames in the user's active tab via the
- * content script and answers with the text-only result.
+ * Tool dispatch: executes `tool.call` frames in an explicitly selected tab via
+ * the content script and answers with the text-only result.
  *
- * Only the active, last-focused window's tab is ever targeted — the bridge
- * never switches tabs or acts in the background.
+ * The background service owns tab-affinity policy. Direct callers may omit a
+ * target for backward-compatible active-tab dispatch in isolated tests.
  *
  * @module
  */
@@ -45,6 +45,11 @@ export interface ContentBudget {
 const CONTENT_SCRIPT_FILE = 'content.js'
 const pendingInjections = new Map<number, Promise<void>>()
 const snapshotDocumentsByTab = new Map<number, Map<number, string>>()
+
+/** Forget delta/element state whenever the user explicitly follows a new tab. */
+export function resetTabSnapshot(tabId: number): void {
+  snapshotDocumentsByTab.delete(tabId)
+}
 
 function isToolAnswer(value: unknown): value is ToolAnswer {
   return typeof value === 'object'
@@ -88,6 +93,10 @@ function unavailable(message: string): ToolAnswer {
 
 function cancelled(): ToolAnswer {
   return { ok: false, error: { code: 'bridge-closed', message: '浏览器工具调用已取消' } }
+}
+
+function targetChanged(): ToolAnswer {
+  return unavailable('受控标签页在操作期间发生变化；请在侧栏确认页面后重试')
 }
 
 function isCancelled(call: ToolCall, signal: AbortSignal | undefined): boolean {
@@ -180,8 +189,10 @@ async function dispatchOnce(
   call: ToolCall,
   budget: ContentBudget,
   signal?: AbortSignal,
+  targetStillAllowed?: () => boolean,
 ): Promise<ToolAnswer> {
   if (isCancelled(call, signal)) return cancelled()
+  if (targetStillAllowed?.() === false) return targetChanged()
   if (call.name === 'browser_snapshot') return snapshotAllFrames(tabId, frames, call, budget)
 
   const frameId = requestedFrame(call.args)
@@ -193,6 +204,7 @@ async function dispatchOnce(
   // No await occurs between this guard and tabs.sendMessage, so an expired
   // approval cannot cross the final state-changing dispatch boundary.
   if (isCancelled(call, signal)) return cancelled()
+  if (targetStillAllowed?.() === false) return targetChanged()
   const response = await sendAction(tabId, call, frame, budget)
   if (isCancelled(call, signal)) return cancelled()
   if (!isToolAnswer(response)) return unavailable('页面内容脚本返回了无效响应')
@@ -204,12 +216,14 @@ async function dispatchOnce(
 }
 
 /**
- * Dispatch one tool call to the active tab's content script.
+ * Dispatch one tool call to the selected tab's content script.
  * @param call - the tool call to execute.
  * @param sharePageContent - the user's page-sharing preference ('off' blocks
  *   every page-content read).
  * @param budget - snapshot limits to restore after on-demand content-script injection.
  * @param signal - bridge lifetime; cancellation prevents any not-yet-sent page action.
+ * @param targetTab - tab selected by the background affinity controller.
+ * @param targetStillAllowed - final fail-closed guard after asynchronous approval/navigation checks.
  * @returns the content script's answer, or a stable error when no tab or
  *   content script is available.
  */
@@ -219,20 +233,24 @@ export async function dispatchToolCall(
   budget?: ContentBudget,
   authorize?: (prompt: ApprovalPrompt) => Promise<boolean>,
   signal?: AbortSignal,
+  targetTab?: Pick<chrome.tabs.Tab, 'id' | 'url'>,
+  targetStillAllowed?: () => boolean,
 ): Promise<ToolAnswer> {
   if (isCancelled(call, signal)) return cancelled()
   // Privacy boundary: with sharing off, no page content may leave the page.
   if (sharePageContent === 'off' && (call.name === 'browser_snapshot' || call.name === 'browser_get_text')) {
     return { ok: false, error: { code: 'action-failed', message: '页面内容共享已关闭（设置 → 页面内容共享）' } }
   }
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+  const tab = targetTab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
   if (isCancelled(call, signal)) return cancelled()
   if (tab?.id === undefined) {
     return { ok: false, error: { code: 'no-active-tab', message: '没有活动的标签页可操作' } }
   }
+  if (targetStillAllowed?.() === false) return targetChanged()
   const effectiveBudget = budget ?? { maxItems: 60, maxChars: 12_000 }
   const frames = await listTabFrames(tab.id, tab.url)
   if (isCancelled(call, signal)) return cancelled()
+  if (targetStillAllowed?.() === false) return targetChanged()
   const frameError = validateFrameTarget(call, frames)
   if (frameError !== undefined) return frameError
   const targetError = validateElementTarget(call, tab.id, frames)
@@ -241,6 +259,7 @@ export async function dispatchToolCall(
   if (approval !== undefined) {
     const allowed = authorize === undefined ? false : await authorize(approval)
     if (isCancelled(call, signal)) return cancelled()
+    if (targetStillAllowed?.() === false) return targetChanged()
     if (!allowed) {
       return { ok: false, error: { code: 'action-failed', message: '用户未批准读取或页面操作' } }
     }
@@ -249,6 +268,7 @@ export async function dispatchToolCall(
   if (approval !== undefined) {
     executionFrames = await listTabFrames(tab.id, tab.url)
     if (isCancelled(call, signal)) return cancelled()
+    if (targetStillAllowed?.() === false) return targetChanged()
     const refreshedApproval = approvalPromptForCall(call, sharePageContent, executionFrames)
     if (refreshedApproval === undefined
       || !sameApprovalBoundary(approval, refreshedApproval)
@@ -259,7 +279,7 @@ export async function dispatchToolCall(
     if (refreshedTargetError !== undefined) return refreshedTargetError
   }
   try {
-    return await dispatchOnce(tab.id, executionFrames, call, effectiveBudget, signal)
+    return await dispatchOnce(tab.id, executionFrames, call, effectiveBudget, signal, targetStillAllowed)
   } catch {
     if (isCancelled(call, signal)) return cancelled()
     // Manifest content scripts do not run retroactively in tabs that were
@@ -271,8 +291,10 @@ export async function dispatchToolCall(
     try {
       await injectContentScript(tab.id)
       if (isCancelled(call, signal)) return cancelled()
+      if (targetStillAllowed?.() === false) return targetChanged()
       const refreshedFrames = await listTabFrames(tab.id, tab.url)
       if (isCancelled(call, signal)) return cancelled()
+      if (targetStillAllowed?.() === false) return targetChanged()
       const refreshedTargetError = validateElementTarget(call, tab.id, refreshedFrames)
       if (refreshedTargetError !== undefined) return refreshedTargetError
       if (approval !== undefined) {
@@ -283,7 +305,7 @@ export async function dispatchToolCall(
           return unavailable('页面在加载内容脚本期间发生变化；请重新 browser_snapshot 后再试')
         }
       }
-      return await dispatchOnce(tab.id, refreshedFrames, call, effectiveBudget, signal)
+      return await dispatchOnce(tab.id, refreshedFrames, call, effectiveBudget, signal, targetStillAllowed)
     } catch {
       return unavailable('无法在当前页面加载内容脚本；Chrome 内置页和受保护页面不支持操作')
     }
