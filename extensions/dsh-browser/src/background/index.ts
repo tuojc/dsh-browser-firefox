@@ -47,6 +47,7 @@ import {
   type AffinityTab,
   type TabAffinityDecision,
 } from './tab-affinity.ts'
+import { FocusedWindowTracker } from './focused-window.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -119,6 +120,7 @@ const panelPorts = new Set<chrome.runtime.Port>()
 const interactionResponses = new InteractionResponseRouter()
 const transientEvents = new TransientEventCache()
 const tabAffinity = new TabAffinityController()
+const focusedWindow = new FocusedWindowTracker()
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
@@ -261,12 +263,15 @@ function observeActiveTab(tab: chrome.tabs.Tab): void {
 }
 
 async function syncActiveTab(windowId?: number): Promise<chrome.tabs.Tab | undefined> {
+  const queryRevision = focusedWindow.beginQuery()
   const query = windowId === undefined
     ? { active: true, lastFocusedWindow: true }
     : { active: true, windowId }
   try {
     const [tab] = await chrome.tabs.query(query)
-    if (tab !== undefined) observeActiveTab(tab)
+    if (tab === undefined) return undefined
+    if (!focusedWindow.commitQuery(tab.windowId, queryRevision)) return undefined
+    observeActiveTab(tab)
     return tab
   } catch {
     return undefined
@@ -696,10 +701,14 @@ chrome.runtime.onConnect.addListener((port) => {
 
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   void affinityReady.then(() => {
+    const activationRevision = focusedWindow.acceptActivation(windowId)
+    if (activationRevision === null) return
     // Mark the switch before awaiting metadata so an already-running trusted
     // action cannot slip through the handoff boundary.
     observeActiveSummary({ tabId, windowId, title: '', url: '' })
-    return chrome.tabs.get(tabId).then(observeActiveTab).catch(() => {})
+    return chrome.tabs.get(tabId).then((tab) => {
+      if (focusedWindow.isCurrent(activationRevision)) observeActiveTab(tab)
+    }).catch(() => {})
   })
 })
 
@@ -722,6 +731,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return
+  focusedWindow.markFocused(windowId)
   void affinityReady.then(() => syncActiveTab(windowId))
 })
 
