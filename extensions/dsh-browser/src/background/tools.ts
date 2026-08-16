@@ -18,7 +18,7 @@ import {
 } from './frames.ts'
 import { wrapUntrustedContent } from './untrusted.ts'
 import { approvalPromptForCall } from './authorization.ts'
-import type { ApprovalPrompt } from '../security/approval.ts'
+import type { ApprovalAuthorization, ApprovalPrompt } from '../security/approval.ts'
 
 /** A tool call from the bridge. */
 export interface ToolCall {
@@ -93,6 +93,35 @@ function unavailable(message: string): ToolAnswer {
 
 function cancelled(): ToolAnswer {
   return { ok: false, error: { code: 'bridge-closed', message: '浏览器工具调用已取消' } }
+}
+
+/** Preserve the factual approval outcome for the model without prescribing a response. */
+function approvalFailure(approval: ApprovalPrompt, authorization: Exclude<ApprovalAuthorization, 'approved'>): ToolAnswer {
+  switch (authorization) {
+    case 'denied':
+      return {
+        ok: false,
+        error: { code: 'action-failed', message: `The user denied the browser approval request for "${approval.action}".` },
+      }
+    case 'unavailable':
+      return {
+        ok: false,
+        error: {
+          code: 'action-failed',
+          message: `No browser side panel was available to receive or complete the approval request for "${approval.action}".`,
+        },
+      }
+    case 'timed-out':
+      return {
+        ok: false,
+        error: { code: 'timeout', message: `The browser approval request for "${approval.action}" timed out before the user responded.` },
+      }
+    case 'cancelled':
+      return {
+        ok: false,
+        error: { code: 'bridge-closed', message: `The browser approval request for "${approval.action}" was cancelled.` },
+      }
+  }
 }
 
 function targetChanged(): ToolAnswer {
@@ -231,7 +260,7 @@ export async function dispatchToolCall(
   call: ToolCall,
   sharePageContent: 'ask' | 'auto' | 'off',
   budget?: ContentBudget,
-  authorize?: (prompt: ApprovalPrompt) => Promise<boolean>,
+  authorize?: (prompt: ApprovalPrompt) => Promise<ApprovalAuthorization>,
   signal?: AbortSignal,
   targetTab?: Pick<chrome.tabs.Tab, 'id' | 'url'>,
   targetStillAllowed?: () => boolean,
@@ -257,11 +286,11 @@ export async function dispatchToolCall(
   if (targetError !== undefined) return targetError
   const approval = approvalPromptForCall(call, sharePageContent, frames)
   if (approval !== undefined) {
-    const allowed = authorize === undefined ? false : await authorize(approval)
+    const authorization = authorize === undefined ? 'unavailable' : await authorize(approval)
     if (isCancelled(call, signal)) return cancelled()
     if (targetStillAllowed?.() === false) return targetChanged()
-    if (!allowed) {
-      return { ok: false, error: { code: 'action-failed', message: '用户未批准读取或页面操作' } }
+    if (authorization !== 'approved') {
+      return approvalFailure(approval, authorization)
     }
   }
   let executionFrames = frames
