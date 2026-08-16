@@ -10,6 +10,7 @@ interface RecentSessionStorage {
 /** Persist the latest browser conversation across panel and worker lifetimes. */
 export class RecentSessionTracker {
   private sessionId: string | null = null
+  private readonly browserSessionIds = new Set<string>()
   private revision = 0
   private persistence = Promise.resolve()
   readonly ready: Promise<void>
@@ -20,7 +21,20 @@ export class RecentSessionTracker {
 
   remember(value: unknown): boolean {
     const sessionId = normalizeSessionId(value)
-    if (sessionId === undefined || sessionId === this.sessionId) return false
+    if (sessionId === undefined) return false
+    this.browserSessionIds.add(sessionId)
+    return this.setCurrent(sessionId)
+  }
+
+  /** Record activity only when the session was already claimed by this browser. */
+  noteActivity(value: unknown): boolean {
+    const sessionId = normalizeSessionId(value)
+    if (sessionId === undefined || !this.browserSessionIds.has(sessionId)) return false
+    return this.setCurrent(sessionId)
+  }
+
+  private setCurrent(sessionId: string): boolean {
+    if (sessionId === this.sessionId) return false
     this.revision += 1
     this.sessionId = sessionId
     this.persistence = this.persistence.catch(() => {}).then(async () => {
@@ -37,14 +51,17 @@ export class RecentSessionTracker {
     const revision = this.revision
     try {
       const sessionId = normalizeSessionId(await this.storage.read())
-      if (this.revision === revision && sessionId !== undefined) this.sessionId = sessionId
+      if (this.revision === revision && sessionId !== undefined) {
+        this.browserSessionIds.add(sessionId)
+        this.sessionId = sessionId
+      }
     } catch {
       // Session continuity is best effort; a storage failure still permits a new chat.
     }
   }
 }
 
-/** Read session ownership only from live session-scoped event frames. */
+/** Read a session activity candidate from a live session-scoped event frame. */
 export function sessionIdFromFrame(frame: ServerFrame): string | undefined {
   if (frame.t !== 'event'
     || (frame.frame.method !== 'session/event' && frame.frame.method !== 'question/requested')

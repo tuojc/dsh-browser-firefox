@@ -26,6 +26,28 @@ describe('RecentSessionTracker', () => {
     await tracker.ready
     expect(tracker.current()).toBe('session-live')
   })
+
+  it('ignores global activity from sessions not claimed by the browser', async () => {
+    const write = vi.fn(async () => {})
+    const tracker = new RecentSessionTracker({ read: async () => 'session-browser', write })
+    await tracker.ready
+
+    expect(tracker.noteActivity('session-other-client')).toBe(false)
+    expect(tracker.current()).toBe('session-browser')
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('tracks activity among sessions claimed by the browser', async () => {
+    const write = vi.fn(async () => {})
+    const tracker = new RecentSessionTracker({ read: async () => undefined, write })
+    await tracker.ready
+    tracker.remember('session-first')
+    tracker.remember('session-second')
+
+    expect(tracker.noteActivity('session-first')).toBe(true)
+    expect(tracker.current()).toBe('session-first')
+    await vi.waitFor(() => { expect(write).toHaveBeenLastCalledWith('session-first') })
+  })
 })
 
 describe('sessionIdFromFrame', () => {

@@ -661,7 +661,7 @@ async function startBridge(): Promise<void> {
       },
       onFrame: (frame) => {
         if (frame.t === 'event') {
-          recentSession.remember(sessionIdFromFrame(frame))
+          recentSession.noteActivity(sessionIdFromFrame(frame))
           transientEvents.ingest(frame)
           broadcastEvent(frame)
         }
