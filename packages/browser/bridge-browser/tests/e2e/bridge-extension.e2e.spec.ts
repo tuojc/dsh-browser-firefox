@@ -364,7 +364,60 @@ describe('extension ↔ bridge e2e', () => {
     })
     expect(repeatedPress.isError).toBe(false)
     expect(await approval.isVisible()).toBe(false)
-    await target.close()
+
+    // A manual tab switch must never silently retarget browser tools. The
+    // side panel exposes the A → B relationship, blocks tools until a choice,
+    // and can explicitly keep operating A in the background.
+    const other = await ctx.newPage()
+    await other.goto(`http://127.0.0.1:${port}/e2e-approval-page`)
+    await other.setContent('<main><h1>Other target</h1><button>Continue elsewhere</button></main>')
+    await other.bringToFront()
+    const handoff = panel.locator('.tab-affinity.handoff')
+    await handoff.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await handoff.textContent()).toContain('要让助手跟着切换吗？')
+    expect(await handoff.locator('.tab-affinity-node').count()).toBe(2)
+
+    const blockedSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-blocked-by-handoff' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(blockedSnapshot.isError).toBe(true)
+
+    await handoff.locator('button.keep').click()
+    const backgroundAffinity = panel.locator('.tab-affinity.background')
+    await backgroundAffinity.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await backgroundAffinity.textContent()).toContain('后续浏览器操作仍会在原页面执行')
+    const originalSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-original-tab' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(originalSnapshot.isError).toBe(false)
+    if (!originalSnapshot.isError) expect(originalSnapshot.value).toMatchObject({ text: expect.stringContaining('Approval target') })
+
+    await backgroundAffinity.locator('button.follow').click()
+    await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
+    const followedSnapshot = await context.tools.execute({
+      callId: 'e2e-browser-snapshot-followed-tab' as never,
+      name: 'browser_snapshot',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(followedSnapshot.isError).toBe(false)
+    if (!followedSnapshot.isError) expect(followedSnapshot.value).toMatchObject({ text: expect.stringContaining('Other target') })
+
+    // Closing the controlled tab is a distinct fail-closed state; the current
+    // page must be selected explicitly before tools can resume.
+    await other.close()
+    await target.bringToFront()
+    const lostAffinity = panel.locator('.tab-affinity.lost')
+    await lostAffinity.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await lostAffinity.textContent()).toContain('受控标签页已关闭')
+    await lostAffinity.locator('button.follow').click()
+    await panel.locator('.tab-affinity').waitFor({ state: 'hidden', timeout: 15_000 })
 
     // Session deferral: opening the panel alone must NOT create a session.
     // Give the panel's ensureSession + history round trip a moment, then the
