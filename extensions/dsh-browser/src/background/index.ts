@@ -9,6 +9,7 @@
  *   panel → bg: { type: 'rpc', id, method, payload }
  *   panel → bg: { type: 'respond', id, rpcId, result }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
+ *   panel → bg: { type: 'session.active', sessionId }
  *   panel → bg: { type: 'approval.response', id, decision }
  *   panel → bg: { type: 'tab-affinity.response', revision, decision, sessionId }
  *   panel → bg: { type: 'request-status' }
@@ -18,6 +19,7 @@
  *   bg → panel: { type: 'event', frame: ServerFrame }
  *   bg → panel: { type: 'approval.request', request }
  *   bg → panel: { type: 'approval.resolved', id }
+ *   bg → panel: { type: 'session.resume-hint', sessionId }
  *   bg → panel: { type: 'tab-affinity', state }
  *
  * @module
@@ -54,6 +56,11 @@ import {
 } from './tab-affinity.ts'
 import { FocusedWindowTracker } from './focused-window.ts'
 import { ApprovalCoordinator, type ApprovalRequestResult } from './approval-coordinator.ts'
+import {
+  RECENT_SESSION_STORAGE_KEY,
+  RecentSessionTracker,
+  sessionIdFromFrame,
+} from './session-continuity.ts'
 
 /** User settings persisted in chrome.storage.local. */
 export interface Settings {
@@ -64,6 +71,8 @@ export interface Settings {
   trustedActionOrigins: string[]
   /** Show an OS notification when no side panel can display an approval. */
   approvalNotifications: boolean
+  /** Restore the last active browser conversation when the panel reopens. */
+  autoResumeSession: boolean
 }
 
 const SETTINGS_DEFAULTS: Settings = {
@@ -73,6 +82,7 @@ const SETTINGS_DEFAULTS: Settings = {
   sharePageContent: 'auto',
   trustedActionOrigins: [],
   approvalNotifications: true,
+  autoResumeSession: true,
 }
 
 /** 自动探测的候选端口（dsh web 默认 3080；--port 覆盖的常见值）。 */
@@ -130,6 +140,12 @@ const interactionResponses = new InteractionResponseRouter()
 const transientEvents = new TransientEventCache()
 const tabAffinity = new TabAffinityController()
 const focusedWindow = new FocusedWindowTracker()
+const recentSession = new RecentSessionTracker({
+  read: async () => (await chrome.storage.session.get(RECENT_SESSION_STORAGE_KEY))[RECENT_SESSION_STORAGE_KEY],
+  write: async (sessionId) => {
+    await chrome.storage.session.set({ [RECENT_SESSION_STORAGE_KEY]: sessionId })
+  },
+})
 /** Ephemeral allowlist: cleared when the last side panel closes or this worker restarts. */
 const sessionTrustedActionOrigins = new Set<string>()
 /** Tool calls that can still be withdrawn by a bridge `tool.cancel` frame. */
@@ -167,6 +183,7 @@ function normalizeSettings(candidate: Settings): Settings {
     sharePageContent,
     trustedActionOrigins: trusted,
     approvalNotifications: candidate.approvalNotifications !== false,
+    autoResumeSession: candidate.autoResumeSession !== false,
   }
 }
 
@@ -555,6 +572,7 @@ async function pushBudgetToControlledTab(negotiated: BridgeCaps): Promise<void> 
 /** Route one tool.call frame to the user-approved controlled tab. */
 function routeToolCall(call: ToolCall): void {
   if (bridge === null) return
+  recentSession.remember(call.sessionId)
   activeToolCalls.get(call.id)?.abort()
   const controller = new AbortController()
   activeToolCalls.set(call.id, controller)
@@ -643,6 +661,7 @@ async function startBridge(): Promise<void> {
       },
       onFrame: (frame) => {
         if (frame.t === 'event') {
+          recentSession.remember(sessionIdFromFrame(frame))
           transientEvents.ingest(frame)
           broadcastEvent(frame)
         }
@@ -739,6 +758,11 @@ chrome.runtime.onConnect.addListener((port) => {
         })
         break
       }
+      case 'session.active': {
+        const session = message as { sessionId?: unknown }
+        recentSession.remember(session.sessionId)
+        break
+      }
       case 'approval.response': {
         const approval = message as { id?: unknown; decision?: unknown }
         if (typeof approval.id === 'string' && isApprovalDecision(approval.decision)) {
@@ -767,6 +791,11 @@ chrome.runtime.onConnect.addListener((port) => {
           approvals.replay((request) => {
             port.postMessage({ type: 'approval.request', request })
             return true
+          })
+          void recentSession.ready.then(() => {
+            try {
+              port.postMessage({ type: 'session.resume-hint', sessionId: recentSession.current() })
+            } catch { /* port closed */ }
           })
         } catch { /* port closed */ }
         break

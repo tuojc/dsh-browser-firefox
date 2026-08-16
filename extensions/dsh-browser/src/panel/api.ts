@@ -58,7 +58,12 @@ interface TabAffinityMessage {
   state: TabAffinityState
 }
 
-type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage | TabAffinityMessage
+interface SessionResumeHintMessage {
+  type: 'session.resume-hint'
+  sessionId: string | null
+}
+
+type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage | TabAffinityMessage | SessionResumeHintMessage
 
 /** The panel API surface. */
 export interface PanelApi {
@@ -69,8 +74,10 @@ export interface PanelApi {
   onApprovalRequest(callback: (request: ApprovalRequest) => void): () => void
   onApprovalResolved(callback: (id: string) => void): () => void
   onTabAffinity(callback: (state: TabAffinityState) => void): () => void
+  onSessionResumeHint(callback: (sessionId: string | null) => void): () => void
   respondToApproval(id: string, decision: ApprovalDecision): void
   resolveTabAffinity(revision: number, decision: TabAffinityDecision, sessionId: string | null): void
+  setActiveSession(sessionId: string): void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -89,6 +96,7 @@ export function connectPanel(): PanelApi {
   const approvalListeners = new Set<(request: ApprovalRequest) => void>()
   const approvalResolvedListeners = new Set<(id: string) => void>()
   const tabAffinityListeners = new Set<(state: TabAffinityState) => void>()
+  const sessionResumeHintListeners = new Set<(sessionId: string | null) => void>()
 
   port.onMessage.addListener((message: unknown) => {
     if (typeof message !== 'object' || message === null) return
@@ -132,6 +140,9 @@ export function connectPanel(): PanelApi {
         break
       case 'tab-affinity':
         for (const listener of tabAffinityListeners) listener(msg.state)
+        break
+      case 'session.resume-hint':
+        for (const listener of sessionResumeHintListeners) listener(msg.sessionId)
         break
     }
   })
@@ -186,11 +197,18 @@ export function connectPanel(): PanelApi {
       tabAffinityListeners.add(callback)
       return () => { tabAffinityListeners.delete(callback) }
     },
+    onSessionResumeHint(callback) {
+      sessionResumeHintListeners.add(callback)
+      return () => { sessionResumeHintListeners.delete(callback) }
+    },
     respondToApproval(id, decision) {
       port.postMessage({ type: 'approval.response', id, decision })
     },
     resolveTabAffinity(revision, decision, sessionId) {
       port.postMessage({ type: 'tab-affinity.response', revision, decision, sessionId })
+    },
+    setActiveSession(sessionId) {
+      port.postMessage({ type: 'session.active', sessionId })
     },
     updateSettings(next) {
       port.postMessage({ type: 'settings', settings: next })

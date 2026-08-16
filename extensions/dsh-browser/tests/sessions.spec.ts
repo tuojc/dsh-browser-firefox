@@ -7,6 +7,7 @@ import {
   resumableSessions,
   sessionAcceptsPrompts,
   sessionDisplayTitle,
+  sessionResumeCandidates,
   sessionTitleFromEvent,
   SessionRuntimeCache,
   type SessionPickerEntry,
@@ -32,6 +33,17 @@ describe('resumableSessions', () => {
       { ...ordinary, sessionId: 'subagent', origin: 'subagent' },
       ordinary,
     ])).toEqual([ordinary])
+  })
+})
+
+describe('sessionResumeCandidates', () => {
+  it('prefers the recent hint and falls back to non-empty durable sessions', () => {
+    expect(sessionResumeCandidates('hinted', [
+      { ...ordinary, sessionId: 'blank', blank: true },
+      ordinary,
+      { ...ordinary, sessionId: 'hinted' },
+    ])).toEqual(['hinted', 'ordinary'])
+    expect(sessionResumeCandidates(null, [ordinary])).toEqual(['ordinary'])
   })
 })
 
