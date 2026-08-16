@@ -28,6 +28,7 @@ import {
   upsertPendingQuestion,
 } from './pending-questions.ts'
 import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
+import { approvalReadyForSession, approvalSessionToFocus } from './approvals.ts'
 import {
   latestSessionTitle,
   projectedSessionTitle,
@@ -400,6 +401,17 @@ export function App(): React.JSX.Element {
     }
   }, [state, sessionEpoch, settings, resumeHint])
 
+  const queuedApproval = approvalQueue[0]
+  useEffect(() => {
+    const sessionId = approvalSessionToFocus(
+      queuedApproval,
+      sessionRef.current,
+      sessionChangingRef.current,
+      state === 'connected',
+    )
+    if (sessionId !== undefined) void focusApprovalSession(sessionId)
+  }, [queuedApproval?.id, queuedApproval?.sessionId, sessionChanging, state])
+
   // Auto-scroll to the newest row.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -651,6 +663,22 @@ export function App(): React.JSX.Element {
     }
   }
 
+  /** Load the session that owns an approval before exposing its decision UI. */
+  async function focusApprovalSession(sessionId: string): Promise<void> {
+    if (sessionChangingRef.current || sessionRef.current === sessionId) return
+    const transition = beginSessionTransition()
+    const runtime = sessionRuntimeRef.current.snapshot(sessionId)
+    prepareSessionSwitch(runtime.running, runtime.questions)
+    sessionRef.current = sessionId
+    api.setActiveSession(sessionId)
+    setSessionTitle(sessionId)
+    try {
+      await refreshHistory(sessionId)
+    } finally {
+      finishSessionTransition(transition)
+    }
+  }
+
   /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
   async function startNewSession(): Promise<void> {
     if (sessionSwitchBlocked || sessionChangingRef.current) return
@@ -774,9 +802,9 @@ export function App(): React.JSX.Element {
   // 状态栏只显示连接状态；快照上限是技术细节，在设置页说明（见 hint）。
   const statusText = copy.status[state]
   const sessionMenuTitle = sessionTitle ?? copy.app.newSession
-  const approvalDialog = approvalQueue[0] === undefined
+  const approvalDialog = !approvalReadyForSession(queuedApproval, sessionRef.current, sessionChanging)
     ? null
-    : <ApprovalDialog request={approvalQueue[0]} onDecision={decideApproval} copy={copy} />
+    : <ApprovalDialog request={queuedApproval!} onDecision={decideApproval} copy={copy} />
 
   if (showSettings) {
     return (
