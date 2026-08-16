@@ -352,6 +352,23 @@ describe('extension ↔ bridge e2e', () => {
     await target.waitForTimeout(200)
     expect(target.url()).toBe(urlBeforeCancellation)
 
+    // An explicit denial must reach the tool caller as that exact event. It
+    // must not be collapsed with a missing panel or an unanswered prompt.
+    const deniedPress = context.tools.execute({
+      callId: 'e2e-browser-press-denied' as never,
+      name: 'browser_press',
+      arguments: { key: 'Escape' },
+      signal: new AbortController().signal,
+    })
+    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    await approval.locator('button.deny').click()
+    const deniedResult = await deniedPress
+    expect(deniedResult.isError).toBe(true)
+    if (deniedResult.isError) {
+      expect(deniedResult.error.message).toBe('The user denied the browser approval request for "browser_press".')
+    }
+    await approval.waitFor({ state: 'hidden', timeout: 15_000 })
+
     // The first state-changing operation can trust this origin only for the
     // current side-panel lifetime. A second operation on the same origin then
     // runs without another prompt; persistent trust is managed in Settings.
