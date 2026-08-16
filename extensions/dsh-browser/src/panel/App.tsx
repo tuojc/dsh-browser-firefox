@@ -342,6 +342,7 @@ export function App(): React.JSX.Element {
         token: raw?.token ?? '',
         sharePageContent: raw?.sharePageContent ?? 'auto',
         trustedActionOrigins: raw?.trustedActionOrigins ?? [],
+        approvalNotifications: raw?.approvalNotifications ?? true,
       })
     })
   }, [])
