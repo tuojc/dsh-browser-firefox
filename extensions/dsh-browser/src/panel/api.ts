@@ -70,7 +70,7 @@ export interface PanelApi {
   onApprovalResolved(callback: (id: string) => void): () => void
   onTabAffinity(callback: (state: TabAffinityState) => void): () => void
   respondToApproval(id: string, decision: ApprovalDecision): void
-  resolveTabAffinity(revision: number, decision: TabAffinityDecision): void
+  resolveTabAffinity(revision: number, decision: TabAffinityDecision, sessionId: string | null): void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -189,8 +189,8 @@ export function connectPanel(): PanelApi {
     respondToApproval(id, decision) {
       port.postMessage({ type: 'approval.response', id, decision })
     },
-    resolveTabAffinity(revision, decision) {
-      port.postMessage({ type: 'tab-affinity.response', revision, decision })
+    resolveTabAffinity(revision, decision, sessionId) {
+      port.postMessage({ type: 'tab-affinity.response', revision, decision, sessionId })
     },
     updateSettings(next) {
       port.postMessage({ type: 'settings', settings: next })

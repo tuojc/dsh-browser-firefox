@@ -73,13 +73,14 @@ describe('panel approval protocol', () => {
     }
 
     receive?.({ type: 'tab-affinity', state })
-    api.resolveTabAffinity(state.revision, 'follow')
+    api.resolveTabAffinity(state.revision, 'follow', 'session-1')
 
     expect(listener).toHaveBeenCalledWith(state)
     expect(postMessage).toHaveBeenCalledWith({
       type: 'tab-affinity.response',
       revision: 4,
       decision: 'follow',
+      sessionId: 'session-1',
     })
   })
 

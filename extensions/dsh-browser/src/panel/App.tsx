@@ -687,7 +687,7 @@ export function App(): React.JSX.Element {
 
   function decideTabAffinity(decision: TabAffinityDecision): void {
     if (tabAffinity === null) return
-    api.resolveTabAffinity(tabAffinity.revision, decision)
+    api.resolveTabAffinity(tabAffinity.revision, decision, sessionRef.current)
   }
 
   function addTrustedOrigin(): void {

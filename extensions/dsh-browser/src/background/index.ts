@@ -10,7 +10,7 @@
  *   panel → bg: { type: 'respond', id, rpcId, result }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
  *   panel → bg: { type: 'approval.response', id, decision }
- *   panel → bg: { type: 'tab-affinity.response', revision, decision }
+ *   panel → bg: { type: 'tab-affinity.response', revision, decision, sessionId }
  *   panel → bg: { type: 'request-status' }
  *   bg → panel: { type: 'rpc.result', id, ok, result? | error? }
  *   bg → panel: { type: 'respond.result', id, ok, result? | error? }
@@ -23,7 +23,12 @@
  * @module
  */
 
-import { isRespondResult, type BridgeCaps, type RespondResult } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import {
+  BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD,
+  isRespondResult,
+  type BridgeCaps,
+  type RespondResult,
+} from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
@@ -132,6 +137,9 @@ const pendingApprovals = new Map<string, {
 const APPROVAL_TIMEOUT_MS = 30_000
 let lastPersistedAffinity: string | undefined
 let affinityPersistence = Promise.resolve()
+/** The next prompt waits until an accepted follow has refreshed dsh context. */
+let followedPageRefresh: Promise<void> = Promise.resolve()
+let activeFollowRefresh: AbortController | null = null
 
 async function loadSettings(): Promise<Settings> {
   const stored = await chrome.storage.local.get(STORAGE_KEY)
@@ -252,7 +260,10 @@ function persistTabAffinity(): void {
 function observeActiveSummary(summary: AffinityTab): void {
   const previousStatus = tabAffinity.snapshot().status
   if (!tabAffinity.observeActive(summary)) return
-  if (previousStatus !== 'handoff' && tabAffinity.snapshot().status === 'handoff') denyPendingApprovals()
+  if (previousStatus !== 'handoff' && tabAffinity.snapshot().status === 'handoff') {
+    activeFollowRefresh?.abort()
+    denyPendingApprovals()
+  }
   persistTabAffinity()
   broadcastTabAffinity()
 }
@@ -450,6 +461,55 @@ async function authorizeToolCall(prompt: ApprovalPrompt, signal: AbortSignal): P
   return decision === 'allow-once'
 }
 
+/** Capture the newly controlled tab and seed it into this session's next Agent step. */
+async function refreshFollowedPage(sessionId: string, tabId: number): Promise<void> {
+  activeFollowRefresh?.abort()
+  const controller = new AbortController()
+  activeFollowRefresh = controller
+  try {
+    const target = await resolveToolTab()
+    if ('ok' in target || target.id !== tabId || controller.signal.aborted) return
+    const budget = caps === null
+      ? undefined
+      : { maxItems: caps.maxInteractiveItems, maxChars: caps.snapshotMaxChars }
+    const answer = await dispatchToolCall(
+      { id: crypto.randomUUID(), name: 'browser_snapshot', args: {} },
+      settings.sharePageContent,
+      budget,
+      (prompt) => authorizeToolCall(prompt, controller.signal),
+      controller.signal,
+      target,
+      () => target.id !== undefined && tabAffinity.allowsTarget(target.id),
+    )
+    if (!answer.ok || controller.signal.aborted || !tabAffinity.allowsTarget(tabId)) return
+    if (typeof answer.result !== 'object' || answer.result === null) return
+    const snapshot = (answer.result as { text?: unknown }).text
+    if (typeof snapshot !== 'string' || snapshot.trim() === '') return
+    await gatewayRpc(BRIDGE_INJECT_BROWSER_SNAPSHOT_METHOD, { sessionId, snapshot })
+  } finally {
+    if (activeFollowRefresh === controller) activeFollowRefresh = null
+  }
+}
+
+async function resolveTabAffinityResponse(response: {
+  revision: number
+  decision: TabAffinityDecision
+  sessionId: unknown
+}): Promise<void> {
+  await affinityReady
+  await syncActiveTab()
+  const accepted = tabAffinity.decide(response.decision, response.revision)
+  const controlled = accepted && response.decision === 'follow'
+    ? tabAffinity.snapshot().controlled
+    : null
+  if (controlled !== null) resetTabSnapshot(controlled.tabId)
+  if (accepted) persistTabAffinity()
+  broadcastTabAffinity()
+  if (controlled !== null && typeof response.sessionId === 'string' && response.sessionId.trim() !== '') {
+    await refreshFollowedPage(response.sessionId, controlled.tabId)
+  }
+}
+
 /** 把协商的快照预算下发到受控页（尚未绑定时使用活动页）。 */
 async function pushBudgetToControlledTab(negotiated: BridgeCaps): Promise<void> {
   await affinityReady
@@ -608,8 +668,12 @@ chrome.runtime.onConnect.addListener((port) => {
     switch (msg.type) {
       case 'rpc': {
         const rpcMsg = message as { id: string; method: string; payload?: unknown }
+        const refresh = followedPageRefresh
         const prepare = rpcMsg.method === 'session.prompt'
-          ? ensureInitialTabBinding()
+          ? ensureInitialTabBinding().then(async (bound) => {
+              await refresh
+              return bound
+            })
           : Promise.resolve(true)
         void prepare.then(() => gatewayRpc(rpcMsg.method, rpcMsg.payload)).then(
           (result) => {
@@ -661,21 +725,16 @@ chrome.runtime.onConnect.addListener((port) => {
         break
       }
       case 'tab-affinity.response': {
-        const response = message as { revision?: unknown; decision?: unknown }
+        const response = message as { revision?: unknown; decision?: unknown; sessionId?: unknown }
         if (typeof response.revision !== 'number'
           || (response.decision !== 'keep' && response.decision !== 'follow')) break
-        void affinityReady.then(() => syncActiveTab()).then(() => {
-          const accepted = tabAffinity.decide(
-            response.decision as TabAffinityDecision,
-            response.revision as number,
-          )
-          if (accepted && response.decision === 'follow') {
-            const controlled = tabAffinity.snapshot().controlled
-            if (controlled !== null) resetTabSnapshot(controlled.tabId)
-          }
-          if (accepted) persistTabAffinity()
-          broadcastTabAffinity()
+        const decision = resolveTabAffinityResponse({
+          revision: response.revision,
+          decision: response.decision,
+          sessionId: response.sessionId,
         })
+        if (response.decision === 'follow') followedPageRefresh = decision.catch(() => {})
+        void decision.catch(() => {})
         break
       }
       case 'request-status':
@@ -723,6 +782,7 @@ chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   void affinityReady.then(() => {
     if (!tabAffinity.removeTab(tabId)) return
+    activeFollowRefresh?.abort()
     denyPendingApprovals()
     persistTabAffinity()
     broadcastTabAffinity()
