@@ -236,6 +236,16 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
       && !el.hasAttribute('download')
       && (href?.protocol === 'http:' || href?.protocol === 'https:')
     if (controlledNavigation && href !== undefined) {
+      // Manual location assignment cannot preserve referrer-suppression
+      // attributes. Keep the browser's native navigation for those links.
+      const hasReferrerPolicy = typeof el.referrerPolicy === 'string' && el.referrerPolicy !== ''
+      if (el.relList.contains('noreferrer') || hasReferrerPolicy) {
+        setTimeout(() => { el.click() }, 0)
+        return {
+          text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.`,
+          navigationPending: true,
+        }
+      }
       // Dispatch the click handlers without its default navigation so a
       // client-side router can cancel synchronously and keep this document.
       const shouldNavigate = el.dispatchEvent(new MouseEvent('click', {

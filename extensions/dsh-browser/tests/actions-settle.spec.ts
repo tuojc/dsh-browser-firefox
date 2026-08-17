@@ -100,4 +100,22 @@ describe('navigation action responses', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(link.click).toHaveBeenCalledOnce()
   })
+
+  it('preserves native referrer policy for same-frame links', async () => {
+    vi.useFakeTimers()
+    const link = document.createElement('a')
+    link.href = 'https://example.com/private'
+    link.rel = 'noreferrer'
+    link.scrollIntoView = vi.fn()
+    link.click = vi.fn()
+    const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
+
+    await expect(runAction('browser_click', { index: 1 }, {
+      ids,
+      budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
+    })).resolves.toMatchObject({ navigationPending: true })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(link.click).toHaveBeenCalledOnce()
+  })
 })
