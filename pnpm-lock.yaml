@@ -30,7 +30,7 @@ importers:
         specifier: ^6.1.86
         version: 6.1.86
     devDependencies:
-      '@deepseek-ai/dsh-bridge-browser':
+      '@yuxianglin/dsh-bridge-browser':
         specifier: workspace:^
         version: link:../../packages/browser/bridge-browser
       '@types/chrome':

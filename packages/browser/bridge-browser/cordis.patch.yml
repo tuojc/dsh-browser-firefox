@@ -20,7 +20,7 @@
 
 - insert:
     - id: bridge-browser
-      name: '@deepseek-ai/dsh-bridge-browser'
+      name: '@yuxianglin/dsh-bridge-browser'
       config:
         token: !!js process.env.DSH_EXT_TOKEN
         sessionWorkspacePath: !!js process.env.DSH_BROWSER_SESSION_WORKSPACE

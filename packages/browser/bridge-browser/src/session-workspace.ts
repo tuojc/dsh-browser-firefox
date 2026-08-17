@@ -2,7 +2,7 @@
  * Best-effort workspace grouping for sessions created through the browser
  * bridge. The wrapper changes only implicit `session.create` requests;
  * explicit workspace choices and every other gateway method pass through.
- * @module @deepseek-ai/dsh-bridge-browser/src/session-workspace
+ * @module @yuxianglin/dsh-bridge-browser/src/session-workspace
  */
 
 import { randomUUID } from 'node:crypto'

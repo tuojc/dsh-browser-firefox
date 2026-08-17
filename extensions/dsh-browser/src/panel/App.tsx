@@ -8,9 +8,9 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { DEFAULT_SNAPSHOT_MAX_CHARS } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import { DEFAULT_SNAPSHOT_MAX_CHARS } from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
+import type { BridgeCaps } from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
+import type { ServerFrame } from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import type { AffinityTab, TabAffinityDecision, TabAffinityState } from '../background/tab-affinity.ts'
 import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'

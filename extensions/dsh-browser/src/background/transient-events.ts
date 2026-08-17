@@ -1,4 +1,4 @@
-import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { ServerFrame } from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
 
 type EventFrame = Extract<ServerFrame, { t: 'event' }>
 

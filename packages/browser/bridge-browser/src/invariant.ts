@@ -1,13 +1,13 @@
 /**
- * Package-owned invariant companion for `@deepseek-ai/dsh-bridge-browser`.
- * @module @deepseek-ai/dsh-bridge-browser/invariant
+ * Package-owned invariant companion for `@yuxianglin/dsh-bridge-browser`.
+ * @module @yuxianglin/dsh-bridge-browser/invariant
  */
 
 /* jscpd:ignore-start */
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@deepseek-ai/dsh-bridge-browser'
+const PACKAGE_NAME = '@yuxianglin/dsh-bridge-browser'
 
 /** Cordis companion plugin name. */
 export const name = 'bridge-browser-invariant'

@@ -3,7 +3,7 @@ import { defineConfig } from 'tsdown'
 /**
  * The bridge package ships THREE runtime entries: the plugin (index), the
  * invariant companion, and the protocol module — the extension imports
- * `@deepseek-ai/dsh-bridge-browser/protocol`, so the protocol bundle is part
+ * `@yuxianglin/dsh-bridge-browser/protocol`, so the protocol bundle is part
  * of the published surface, not an internal module.
  */
 export default defineConfig({

@@ -1,5 +1,5 @@
 /**
- * `@deepseek-ai/dsh-bridge-browser`: token-authenticated WebSocket bridge for
+ * `@yuxianglin/dsh-bridge-browser`: token-authenticated WebSocket bridge for
  * the browser extension plus the text-only `browser_*` tool set.
  *
  * The bridge mounts its own upgrade route (`/ext/bridge`) on the host
@@ -13,7 +13,7 @@
  * Opt-in by design: nothing is registered unless this plugin appears in the
  * composition. No dsh core code is touched.
  *
- * @module @deepseek-ai/dsh-bridge-browser
+ * @module @yuxianglin/dsh-bridge-browser
  */
 
 import { randomUUID } from 'node:crypto'

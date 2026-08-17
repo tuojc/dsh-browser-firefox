@@ -9,12 +9,12 @@
  * @module
  */
 
-import type { BridgeCaps, ClientFrame, ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { BridgeCaps, ClientFrame, ServerFrame } from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
 import {
   DEFAULT_SNAPSHOT_MAX_CHARS,
   isServerFrame,
   parseBridgeFrame,
-} from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+} from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
 
 /** Coarse connection state for the UI. */
 export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped'

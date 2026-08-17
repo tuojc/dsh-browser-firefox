@@ -14,7 +14,7 @@ import type { Agent, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 
 /** Provenance key used for snapshot supersession and transcript presentation. */
-export const BROWSER_CONTEXT_PLUGIN = '@deepseek-ai/dsh-bridge-browser'
+export const BROWSER_CONTEXT_PLUGIN = '@yuxianglin/dsh-bridge-browser'
 
 /** Bound orphaned provisional sessions while retaining normal recent tabs. */
 const DEFAULT_MAX_PENDING = 32

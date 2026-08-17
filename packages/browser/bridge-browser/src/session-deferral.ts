@@ -9,7 +9,7 @@
  * the first `session.prompt` for that id. Abandoned provisional ids are
  * pruned after {@link PROVISIONAL_TTL_MS}.
  *
- * @module @deepseek-ai/dsh-bridge-browser/src/session-deferral
+ * @module @yuxianglin/dsh-bridge-browser/src/session-deferral
  */
 
 import { randomUUID } from 'node:crypto'

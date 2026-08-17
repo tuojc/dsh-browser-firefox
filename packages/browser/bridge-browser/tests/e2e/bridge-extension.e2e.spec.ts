@@ -13,7 +13,7 @@
  *
  * Self-skips without a usable Chromium (env `PLAYWRIGHT_CHROMIUM_PATH` or the
  * Playwright cache) or without a built extension dist. Run:
- *   pnpm --filter @deepseek-ai/dsh-bridge-browser exec vitest run tests/e2e/bridge-extension.e2e.ts
+ *   pnpm --filter @yuxianglin/dsh-bridge-browser exec vitest run tests/e2e/bridge-extension.e2e.ts
  */
 
 import { existsSync } from 'node:fs'
@@ -41,7 +41,7 @@ import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import * as BridgeBrowser from '../../src/index.ts'
 
-const BRIDGE = '@deepseek-ai/dsh-bridge-browser'
+const BRIDGE = '@yuxianglin/dsh-bridge-browser'
 const TOKEN = 'e2e0e2e0e2e0e2e0e2e0e2e0e2e0e2e0'
 
 /** Header-only persistence peer required by the real Workspace registry. */
