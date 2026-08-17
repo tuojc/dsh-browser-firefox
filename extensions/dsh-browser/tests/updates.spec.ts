@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
   checkForExtensionUpdate,
+  checkoutInstallCommand,
   compareExtensionVersions,
+  parseExtensionInstallInfo,
+  readExtensionInstallInfo,
   UPDATE_MANIFEST_URL,
 } from '../src/panel/updates.ts'
 
@@ -50,6 +53,35 @@ describe('extension update checks', () => {
     await expect(checkForExtensionUpdate('0.2.0', malformed)).rejects.toThrow('invalid extension version')
   })
 
+  it('distinguishes managed, checkout, and unknown install provenance', () => {
+    expect(parseExtensionInstallInfo({ schemaVersion: 1, mode: 'managed' })).toEqual({ mode: 'managed' })
+    expect(parseExtensionInstallInfo({
+      schemaVersion: 1,
+      mode: 'checkout',
+      sourceRoot: '/Users/example/dsh-browser',
+    })).toEqual({ mode: 'checkout', sourceRoot: '/Users/example/dsh-browser' })
+    expect(parseExtensionInstallInfo({ schemaVersion: 1, mode: 'checkout', sourceRoot: '../relative' }))
+      .toEqual({ mode: 'unknown' })
+    expect(parseExtensionInstallInfo({ mode: 'managed' })).toEqual({ mode: 'unknown' })
+  })
+
+  it('treats missing or malformed install metadata as unknown', async () => {
+    const missing = vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 404 }))
+    await expect(readExtensionInstallInfo('chrome-extension://id/install-info.json', missing))
+      .resolves.toEqual({ mode: 'unknown' })
+
+    const malformed = vi.fn<typeof fetch>().mockResolvedValue(new Response('{', { status: 200 }))
+    await expect(readExtensionInstallInfo('chrome-extension://id/install-info.json', malformed))
+      .resolves.toEqual({ mode: 'unknown' })
+  })
+
+  it('builds a shell-safe command for the originating checkout', () => {
+    expect(checkoutInstallCommand('/Users/example/My Checkout'))
+      .toBe("cd '/Users/example/My Checkout' && ./scripts/install.sh")
+    expect(checkoutInstallCommand("/Users/example/dev's checkout"))
+      .toBe("cd '/Users/example/dev'\"'\"'s checkout' && ./scripts/install.sh")
+  })
+
   it('keeps package, Chrome manifest, and update CSP metadata aligned', () => {
     const extensionRoot = process.cwd()
     const packageManifest = JSON.parse(readFileSync(`${extensionRoot}/package.json`, 'utf8')) as { version: string }
@@ -57,8 +89,12 @@ describe('extension update checks', () => {
       version: string
       content_security_policy: { extension_pages: string }
     }
+    const installer = readFileSync(`${extensionRoot}/../../scripts/install.sh`, 'utf8')
 
     expect(packageManifest.version).toBe(chromeManifest.version)
     expect(chromeManifest.content_security_policy.extension_pages).toContain(new URL(UPDATE_MANIFEST_URL).origin)
+    expect(installer).toContain('INSTALL_MODE="managed"')
+    expect(installer).toContain('INSTALL_MODE="checkout"')
+    expect(installer).toContain('$DIST_DIR/install-info.json')
   })
 })
