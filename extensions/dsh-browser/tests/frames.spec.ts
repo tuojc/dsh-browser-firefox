@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { allocateFrameBudgets, type TabFrame } from '../src/background/frames.ts'
+import { allocateFrameBudgets, sortTabFrames, type TabFrame } from '../src/background/frames.ts'
 
 function frames(count: number): TabFrame[] {
   return Array.from({ length: count }, (_, frameId) => ({
@@ -42,5 +42,19 @@ describe('allocateFrameBudgets', () => {
         expect(allocated.reduce((sum, entry) => sum + entry.maxChars, 0)).toBeLessThanOrEqual(budget.maxChars)
       }
     }
+  })
+})
+
+describe('sortTabFrames', () => {
+  it('orders parents before nested descendants without mutating the input', () => {
+    const input: TabFrame[] = [
+      { frameId: 9, parentFrameId: 4, url: 'https://deep.example/' },
+      { frameId: 4, parentFrameId: 0, url: 'https://child.example/' },
+      { frameId: 0, parentFrameId: -1, url: 'https://top.example/' },
+      { frameId: 2, parentFrameId: 0, url: 'https://sibling.example/' },
+    ]
+
+    expect(sortTabFrames(input).map((frame) => frame.frameId)).toEqual([0, 2, 4, 9])
+    expect(input.map((frame) => frame.frameId)).toEqual([9, 4, 0, 2])
   })
 })

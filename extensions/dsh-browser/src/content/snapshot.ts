@@ -10,7 +10,7 @@
  * @module
  */
 
-import { accessibleName, collectInteractive, isInViewport, isVisible, mainText, pageText, truncate } from './extract.ts'
+import { accessibleName, collectInteractive, isInViewport, mainText, pageText, truncate } from './extract.ts'
 import { ElementIds } from './ids.ts'
 import { isSensitiveField, maskValue } from './privacy.ts'
 
@@ -119,22 +119,29 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
   // first snapshot on a fresh document always adds everything.
   const reindexed = last !== null && added + removed > elements.length * 0.5
 
-  // Viewport-first ordering keeps the most relevant items inside the budget.
-  const ordered = [...elements].sort((a, b) => {
-    const av = isInViewport(a) ? 0 : 1
-    const bv = isInViewport(b) ? 0 : 1
-    return av - bv
-  })
+  // Measure viewport membership once. Calling getBoundingClientRect from a
+  // sort comparator forces repeated layout reads on large pages.
+  const elementViews = elements.map((element) => ({ element, inViewport: isInViewport(element) }))
+  const ordered = [...elementViews].sort((a, b) => Number(b.inViewport) - Number(a.inViewport))
+  const names = new Map<Element, string>()
+  const nameOf = (element: Element): string => {
+    let name = names.get(element)
+    if (name === undefined) {
+      name = accessibleName(element)
+      names.set(element, name)
+    }
+    return name
+  }
 
   const items: InventoryItem[] = []
-  for (const el of ordered.slice(0, options.budget.maxItems)) {
+  for (const { element: el, inViewport } of ordered.slice(0, options.budget.maxItems)) {
     const index = ids.indexOf(el)
     if (index === undefined) continue
     const item: InventoryItem = {
       index,
       role: roleOf(el),
-      name: accessibleName(el),
-      inViewport: isInViewport(el),
+      name: nameOf(el),
+      inViewport,
     }
     if (el instanceof HTMLButtonElement && el.disabled) item.disabled = true
     if (el instanceof HTMLInputElement) {
@@ -146,11 +153,13 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
     items.push(item)
   }
 
-  const formElements = [...document.querySelectorAll('input:not([type="hidden"]), select, textarea')]
-    .filter((el) => isVisible(el))
-    .slice(0, options.budget.maxForms)
+  // Form controls are already part of the visible interactive inventory, so
+  // reuse that scan instead of querying, styling, and measuring them again.
+  const formElements = elements.filter((el) => el instanceof HTMLInputElement
+    || el instanceof HTMLSelectElement
+    || el instanceof HTMLTextAreaElement)
   const forms: FormFieldView[] = []
-  for (const el of formElements) {
+  for (const el of formElements.slice(0, options.budget.maxForms)) {
     const index = ids.indexOf(el)
     if (index === undefined) continue
     const masked = isSensitiveField(el)
@@ -161,7 +170,7 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
         : ''
     forms.push({
       index,
-      label: accessibleName(el),
+      label: nameOf(el),
       kind: el instanceof HTMLInputElement ? el.type : el.tagName.toLowerCase(),
       value: masked ? maskValue(value) : value.slice(0, 120),
       masked,
@@ -179,22 +188,23 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
   const lastItems = last === null ? new Map<number, InventoryItem>() : new Map(last.items.map((item) => [item.index, item]))
   const lastForms = last === null ? new Map<number, FormFieldView>() : new Map(last.forms.map((form) => [form.index, form]))
 
-  const changed: number[] = []
+  const changed = new Set<number>()
   const removedIds: number[] = []
   if (options.delta === true && last !== null) {
     if (last.main !== main.text || last.url !== location.href || last.title !== document.title) {
-      changed.push(-1) // -1 = 正文/标题/URL 变化（渲染时说明）
+      changed.add(-1) // -1 = 正文/标题/URL 变化（渲染时说明）
     }
     for (const item of items) {
       const before = lastItems.get(item.index)
-      if (before === undefined || !sameItem(before, item)) changed.push(item.index)
+      if (before === undefined || !sameItem(before, item)) changed.add(item.index)
     }
+    const currentItemIds = new Set(items.map((item) => item.index))
     for (const index of lastItems.keys()) {
-      if (items.every((item) => item.index !== index)) removedIds.push(index)
+      if (!currentItemIds.has(index)) removedIds.push(index)
     }
     for (const form of forms) {
       const before = lastForms.get(form.index)
-      if (before === undefined || !sameForm(before, form)) changed.push(form.index)
+      if (before === undefined || !sameForm(before, form)) changed.add(form.index)
     }
   }
 
@@ -206,7 +216,7 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
     main: main.text,
     items,
     forms,
-    changed: options.delta === true ? changed : [],
+    changed: options.delta === true ? [...changed] : [],
     removed: options.delta === true ? removedIds : [],
     reindexed,
     truncated: {
@@ -281,8 +291,10 @@ export function renderSnapshot(view: SnapshotView, delta: boolean): string {
   if (view.forms.length > 0) {
     lines.push('')
     lines.push('Form fields:')
+    const renderedItems = new Set(view.items.map((item) => item.index))
     for (const form of view.forms) {
-      lines.push(`  [${form.index}] ${form.label} (${form.kind}) value="${form.masked ? '••••' : form.value}"${form.required === true ? ' required' : ''}`)
+      const identity = renderedItems.has(form.index) ? '' : `${form.label} (${form.kind}) `
+      lines.push(`  [${form.index}] ${identity}value="${form.masked ? '••••' : form.value}"${form.required === true ? ' required' : ''}`)
     }
   }
   const notes: string[] = []

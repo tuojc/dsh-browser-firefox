@@ -237,7 +237,9 @@ async function dispatchOnce(
   // approval cannot cross the final state-changing dispatch boundary.
   if (isCancelled(call, signal)) return cancelled()
   if (targetStillAllowed?.() === false) return targetChanged()
-  const response = await sendAction(tabId, call, frame, budget)
+  // Snapshot calls need negotiated limits; other actions avoid carrying and
+  // merging the same unused budget object on every message.
+  const response = await sendAction(tabId, call, frame)
   if (isCancelled(call, signal)) return cancelled()
   if (!isToolAnswer(response)) return unavailable('The page content script returned an invalid response.')
   if (call.name !== 'browser_get_text') return response

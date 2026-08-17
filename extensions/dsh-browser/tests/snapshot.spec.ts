@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ElementIds } from '../src/content/ids.ts'
 import { buildSnapshot, renderSnapshot, type SnapshotBudget } from '../src/content/snapshot.ts'
 
@@ -68,6 +68,19 @@ describe('buildSnapshot', () => {
     const view = buildSnapshot(ids, { budget: { ...BUDGET, maxItems: 10 }, region: undefined, delta: false }, null)
     expect(view.items.length).toBe(10)
     expect(view.truncated.itemsDropped).toBe(15)
+  })
+
+  it('reuses the interactive scan for form fields and reports omitted fields', () => {
+    document.body.innerHTML = Array.from({ length: 5 }, (_, i) => `<input aria-label="字段${i}">`).join('')
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+    const ids = new ElementIds()
+    const view = buildSnapshot(ids, { budget: { ...BUDGET, maxForms: 2 }, delta: false }, null)
+
+    expect(view.forms).toHaveLength(2)
+    expect(view.truncated.formsDropped).toBe(3)
+    // One visibility and one viewport measurement per interactive element;
+    // form extraction performs no second layout pass.
+    expect(rect).toHaveBeenCalledTimes(10)
   })
 
   it('truncates main content at the budget', () => {
