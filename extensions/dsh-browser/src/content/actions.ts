@@ -20,17 +20,97 @@ export interface ActionResult {
   text: string
 }
 
-/** Cooperative settle wait: readyState complete plus a short quiet window. */
-async function settle(timeoutMs = 5_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (document.readyState === 'complete') {
-      await sleep(250)
-      return true
+/** How long an action should observe a ready document before returning. */
+export interface PageSettlePolicy {
+  /** Earliest return after the document becomes ready. */
+  minimumMs: number
+  /** Required DOM-quiet period before returning. */
+  quietMs: number
+  /** Hard cap after readiness; continuously animated pages cannot stall tools. */
+  maxAfterReadyMs: number
+  /** Hard cap while waiting for document readiness. */
+  timeoutMs: number
+}
+
+const TYPE_SETTLE: PageSettlePolicy = { minimumMs: 32, quietMs: 32, maxAfterReadyMs: 100, timeoutMs: 5_000 }
+const ACTION_SETTLE: PageSettlePolicy = { minimumMs: 100, quietMs: 50, maxAfterReadyMs: 250, timeoutMs: 5_000 }
+const SCROLL_SETTLE: PageSettlePolicy = { minimumMs: 50, quietMs: 50, maxAfterReadyMs: 150, timeoutMs: 5_000 }
+const EXPLICIT_WAIT_SETTLE: PageSettlePolicy = { minimumMs: 100, quietMs: 100, maxAfterReadyMs: 1_000, timeoutMs: 5_000 }
+
+/**
+ * Wait for document readiness and a mutation-free window. The old fixed delay
+ * charged every action equally and still returned too early when a late DOM
+ * update landed near its boundary. This observer returns early on already
+ * stable pages, extends only for real mutations, and stays bounded on pages
+ * with continuous animation.
+ */
+export function waitForPageSettled(policy: PageSettlePolicy = ACTION_SETTLE): Promise<boolean> {
+  const startedAt = performance.now()
+  let readyAt = document.readyState === 'complete' ? startedAt : undefined
+  let lastMutationAt = startedAt
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let finished = false
+  let observer: MutationObserver | undefined
+
+  return new Promise((resolve) => {
+    const finish = (settled: boolean): void => {
+      if (finished) return
+      finished = true
+      if (timer !== undefined) clearTimeout(timer)
+      observer?.disconnect()
+      document.removeEventListener('readystatechange', schedule)
+      window.removeEventListener('load', schedule)
+      resolve(settled)
     }
-    await sleep(100)
-  }
-  return false
+    const check = (): void => {
+      timer = undefined
+      const now = performance.now()
+      if (readyAt === undefined && document.readyState === 'complete') {
+        readyAt = now
+        lastMutationAt = now
+      }
+      if (readyAt !== undefined) {
+        const afterReady = now - readyAt
+        const quietFor = now - lastMutationAt
+        if ((afterReady >= policy.minimumMs && quietFor >= policy.quietMs)
+          || afterReady >= policy.maxAfterReadyMs) {
+          finish(true)
+          return
+        }
+        const untilMinimum = Math.max(0, policy.minimumMs - afterReady)
+        const untilQuiet = Math.max(0, policy.quietMs - quietFor)
+        timer = setTimeout(check, Math.max(1, Math.min(policy.maxAfterReadyMs - afterReady, Math.max(untilMinimum, untilQuiet))))
+        return
+      }
+      const elapsed = now - startedAt
+      if (elapsed >= policy.timeoutMs) {
+        finish(false)
+        return
+      }
+      timer = setTimeout(check, Math.max(1, Math.min(100, policy.timeoutMs - elapsed)))
+    }
+    function schedule(): void {
+      if (finished) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(check, 0)
+    }
+
+    if (document.documentElement !== null) {
+      observer = new MutationObserver(() => {
+        lastMutationAt = performance.now()
+        schedule()
+      })
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      })
+    }
+    document.addEventListener('readystatechange', schedule)
+    window.addEventListener('load', schedule)
+    schedule()
+  })
 }
 
 function sleep(ms: number): Promise<void> {
@@ -97,8 +177,7 @@ export async function runAction(action: string, args: Record<string, unknown>, c
     case 'browser_forward':
       return historyAction(1)
     case 'browser_reload':
-      location.reload()
-      return { text: 'The page is reloading.' }
+      return reloadAction()
     case 'browser_get_text':
       return getTextAction(args)
     case 'browser_wait':
@@ -130,18 +209,17 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
   const el = elementOrThrow(ctx.ids, index)
   el.scrollIntoView({ block: 'center', behavior: 'instant' })
   if (el instanceof HTMLAnchorElement) {
-    const urlBefore = location.href
-    el.click()
-    await settle()
-    return location.href !== urlBefore
-      ? { text: `Clicked link [${index}]; the page is navigating. Call browser_snapshot again after it loads.` }
-      : { text: `Clicked link [${index}]; the page did not navigate.` }
+    // A normal link can unload this content script before an awaited settle
+    // sends its response. Answer first and start the click in the next task,
+    // matching the explicit navigation actions.
+    setTimeout(() => { el.click() }, 0)
+    return { text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
     throw new ActionError('action-failed', `Button [${index}] is disabled.`)
   }
   ;(el as HTMLElement).click()
-  await settle()
+  await waitForPageSettled(ACTION_SETTLE)
   return { text: `Clicked [${index}].` }
 }
 
@@ -163,7 +241,7 @@ async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Pr
     if (replace) setNativeValue(el, '')
     setNativeValue(el, `${el.value}${text}`)
   }
-  await settle()
+  await waitForPageSettled(TYPE_SETTLE)
   return { text: `Entered ${text.length} characters into [${index}].` }
 }
 
@@ -176,7 +254,7 @@ async function pressAction(args: Record<string, unknown>): Promise<ActionResult>
   if (key === 'Enter' && target instanceof HTMLInputElement && target.form !== null) {
     target.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   }
-  await settle()
+  await waitForPageSettled(ACTION_SETTLE)
   return { text: `Sent key "${key}".` }
 }
 
@@ -199,7 +277,7 @@ async function scrollAction(args: Record<string, unknown>): Promise<ActionResult
     default:
       throw new ActionError('bad-args', `direction must be up, down, top, or bottom; received "${direction}".`)
   }
-  await settle()
+  await waitForPageSettled(SCROLL_SETTLE)
   return { text: `Scrolled ${direction}.` }
 }
 
@@ -230,6 +308,12 @@ async function historyAction(delta: 1 | -1): Promise<ActionResult> {
   return { text: 'Navigating through browser history. Call browser_snapshot again after the page loads.' }
 }
 
+function reloadAction(): ActionResult {
+  resetDeltaState()
+  setTimeout(() => { location.reload() }, 0)
+  return { text: 'The page is reloading. Call browser_snapshot again after it loads.' }
+}
+
 async function getTextAction(args: Record<string, unknown>): Promise<ActionResult> {
   const selector = typeof args.selector === 'string' && args.selector !== '' ? args.selector : undefined
   const source = selector !== undefined ? document.querySelector(selector) : null
@@ -240,7 +324,7 @@ async function getTextAction(args: Record<string, unknown>): Promise<ActionResul
 
 async function waitAction(args: Record<string, unknown>): Promise<ActionResult> {
   const ms = typeof args.ms === 'number' && args.ms > 0 ? args.ms : 0
-  await settle()
+  await waitForPageSettled(EXPLICIT_WAIT_SETTLE)
   if (ms > 0) await sleep(ms)
   return { text: `The page is stable${ms > 0 ? ` after an additional ${ms}ms wait` : ''}.` }
 }
