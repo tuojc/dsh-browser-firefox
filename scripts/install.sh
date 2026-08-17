@@ -126,6 +126,7 @@ profile_has_dependency() {
 }
 
 require_command pnpm "未找到 pnpm；请先启用 Corepack 或安装 pnpm。" "pnpm was not found; enable Corepack or install pnpm first."
+require_command node "未找到 Node.js；请先安装受支持的 Node.js 版本。" "Node.js was not found; install a supported Node.js version first."
 require_command rsync "未找到 rsync；请先安装 rsync。" "rsync was not found; install rsync first."
 
 print_step 1 "构建浏览器桥" "Build the browser bridge"
@@ -150,6 +151,21 @@ else
 fi
 mkdir -p "$DIST_DIR"
 rsync -a --delete-after "$EXT/dist/" "$DIST_DIR/"
+if [ -f "$ROOT/.managed-by-install-sh" ]; then
+  INSTALL_MODE="managed"
+else
+  INSTALL_MODE="checkout"
+fi
+node -e '
+  const { writeFileSync } = require("node:fs");
+  const [filename, mode, sourceRoot] = process.argv.slice(1);
+  const info = {
+    schemaVersion: 1,
+    mode,
+    ...(mode === "checkout" ? { sourceRoot } : {}),
+  };
+  writeFileSync(filename, `${JSON.stringify(info, null, 2)}\n`);
+' "$DIST_DIR/install-info.json" "$INSTALL_MODE" "$ROOT"
 echo -n "$DIST_DIR" | pbcopy
 
 open -a "Google Chrome" "chrome://extensions" 2>/dev/null || open -b com.google.Chrome "chrome://extensions"
