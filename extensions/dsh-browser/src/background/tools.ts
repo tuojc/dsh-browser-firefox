@@ -196,7 +196,7 @@ function wrapActionDelta(status: string, pageContent: string, frame: TabFrame, m
   const prefix = `${status}\n${ACTION_DELTA_GUIDANCE}`
   const separator = '\n\n'
   const boundaryBudget = maxChars - prefix.length - separator.length
-  if (boundaryBudget <= 0) return prefix.slice(0, maxChars)
+  if (boundaryBudget < 500) return prefix.slice(0, maxChars)
   const framedContent = frame.frameId === 0 ? pageContent : `${frameHeader(frame)}\n${pageContent}`
   return `${prefix}${separator}${wrapUntrustedContent(framedContent, boundaryBudget)}`
 }
