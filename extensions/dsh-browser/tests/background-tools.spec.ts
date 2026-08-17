@@ -185,7 +185,73 @@ describe('dispatchToolCall', () => {
       type: 'DSH_ACTION',
       action: 'browser_click',
       args: { index: 3 },
+      budget: expect.objectContaining({ maxItems: 60 }),
+      includePageDelta: true,
     }, { documentId: 'child-doc' })
+  })
+
+  it('returns automatic action deltas inside a fresh untrusted-content boundary', async () => {
+    const call: ToolCall = { id: 'tool-delta', name: 'browser_click', args: { index: 3 } }
+    const budget = { maxItems: 10, maxChars: 1_000 }
+    const chromeMock = mockChrome({
+      tab: { id: 33, url: 'https://app.example/' },
+      respond: (message) => (message as { action?: string }).action === 'browser_snapshot'
+        ? { ok: true, result: { text: 'Initial page' } }
+        : {
+            ok: true,
+            result: {
+              text: 'Clicked [3].',
+              pageContent: 'Page change v2\nChanged main content:\nOrder complete',
+            },
+          },
+    })
+    await dispatchToolCall(CALL, 'auto', budget)
+    chromeMock.sendMessage.mockClear()
+
+    const answer = await dispatchToolCall(call, 'auto', budget, async () => 'approved')
+
+    expect(answer.ok).toBe(true)
+    const result = answer.result as { text: string; pageContent?: string }
+    expect(result.text).toContain('Clicked [3].')
+    expect(result.text).toContain('Continue from this state')
+    expect(result.text).toContain('UNTRUSTED_PAGE_CONTENT')
+    expect(result.text).toContain('Order complete')
+    expect(result.text.length).toBeLessThanOrEqual(budget.maxChars)
+    expect(result.pageContent).toBeUndefined()
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith(33, {
+      type: 'DSH_ACTION',
+      action: 'browser_click',
+      args: { index: 3 },
+      budget,
+      includePageDelta: true,
+    }, { documentId: 'document-33' })
+  })
+
+  it('does not extract or forward an action delta when reads require approval', async () => {
+    const call: ToolCall = { id: 'tool-private-delta', name: 'browser_click', args: { index: 2 } }
+    const chromeMock = mockChrome({
+      tab: { id: 34, url: 'https://private.example/' },
+      respond: (message) => (message as { action?: string }).action === 'browser_snapshot'
+        ? { ok: true, result: { text: 'Initial private page' } }
+        : {
+            ok: true,
+            result: {
+              text: 'Clicked [2].',
+              pageContent: 'This content must not cross the sharing boundary',
+            },
+          },
+    })
+    await dispatchToolCall(CALL, 'auto')
+    chromeMock.sendMessage.mockClear()
+
+    const answer = await dispatchToolCall(call, 'ask', undefined, async () => 'approved')
+
+    expect(answer).toEqual({ ok: true, result: { text: 'Clicked [2].' } })
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith(34, {
+      type: 'DSH_ACTION',
+      action: 'browser_click',
+      args: { index: 2 },
+    }, { documentId: 'document-34' })
   })
 
   it('wraps browser_get_text output in the same untrusted-content boundary', async () => {

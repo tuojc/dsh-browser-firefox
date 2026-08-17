@@ -46,6 +46,14 @@ export interface ContentBudget {
 }
 
 const CONTENT_SCRIPT_FILE = 'content.js'
+const ACTION_DELTA_TOOLS = new Set([
+  'browser_click',
+  'browser_type',
+  'browser_press',
+  'browser_scroll',
+  'browser_wait',
+])
+const ACTION_DELTA_GUIDANCE = 'The page settled and its current changes are included below. Continue from this state; take another snapshot only when broader page context is needed.'
 const pendingInjections = new Map<number, Promise<void>>()
 const snapshotDocumentsByTab = new Map<number, Map<number, string>>()
 
@@ -81,12 +89,19 @@ async function injectContentScript(tabId: number): Promise<void> {
   }
 }
 
-async function sendAction(tabId: number, call: ToolCall, frame: TabFrame, budget?: ContentBudget): Promise<unknown> {
+async function sendAction(
+  tabId: number,
+  call: ToolCall,
+  frame: TabFrame,
+  budget?: ContentBudget,
+  includePageDelta: boolean = false,
+): Promise<unknown> {
   return chrome.tabs.sendMessage(tabId, {
     type: 'DSH_ACTION',
     action: call.name,
     args: withoutFrame(call.args),
     ...budget === undefined ? {} : { budget },
+    ...includePageDelta ? { includePageDelta: true } : {},
   }, frame.documentId === undefined ? { frameId: frame.frameId } : { documentId: frame.documentId })
 }
 
@@ -152,6 +167,22 @@ function answerText(answer: ToolAnswer): string | undefined {
   if (!answer.ok || typeof answer.result !== 'object' || answer.result === null) return undefined
   const text = (answer.result as { text?: unknown }).text
   return typeof text === 'string' ? text : undefined
+}
+
+function answerPageContent(answer: ToolAnswer): string | undefined {
+  if (!answer.ok || typeof answer.result !== 'object' || answer.result === null) return undefined
+  const pageContent = (answer.result as { pageContent?: unknown }).pageContent
+  return typeof pageContent === 'string' ? pageContent : undefined
+}
+
+/** Keep extension-authored action status outside the nonce-bound page-data boundary. */
+function wrapActionDelta(status: string, pageContent: string, frame: TabFrame, maxChars: number): string {
+  const prefix = `${status}\n${ACTION_DELTA_GUIDANCE}`
+  const separator = '\n\n'
+  const boundaryBudget = maxChars - prefix.length - separator.length
+  if (boundaryBudget <= 0) return prefix.slice(0, maxChars)
+  const framedContent = frame.frameId === 0 ? pageContent : `${frameHeader(frame)}\n${pageContent}`
+  return `${prefix}${separator}${wrapUntrustedContent(framedContent, boundaryBudget)}`
 }
 
 async function snapshotAllFrames(
@@ -222,6 +253,7 @@ async function dispatchOnce(
   budget: ContentBudget,
   signal?: AbortSignal,
   targetStillAllowed?: () => boolean,
+  includeActionDelta: boolean = false,
 ): Promise<ToolAnswer> {
   if (isCancelled(call, signal)) return cancelled()
   if (targetStillAllowed?.() === false) return targetChanged()
@@ -237,16 +269,29 @@ async function dispatchOnce(
   // approval cannot cross the final state-changing dispatch boundary.
   if (isCancelled(call, signal)) return cancelled()
   if (targetStillAllowed?.() === false) return targetChanged()
-  // Snapshot calls need negotiated limits; other actions avoid carrying and
-  // merging the same unused budget object on every message.
-  const response = await sendAction(tabId, call, frame)
+  const hasSnapshotBaseline = snapshotDocumentsByTab.get(tabId)?.get(frameId) === frameDocumentKey(frame)
+  const requestPageDelta = includeActionDelta && hasSnapshotBaseline && ACTION_DELTA_TOOLS.has(call.name)
+  const response = await sendAction(
+    tabId,
+    call,
+    frame,
+    requestPageDelta ? budget : undefined,
+    requestPageDelta,
+  )
   if (isCancelled(call, signal)) return cancelled()
   if (!isToolAnswer(response)) return unavailable('The page content script returned an invalid response.')
-  if (call.name !== 'browser_get_text') return response
   const text = answerText(response)
-  return text === undefined
-    ? response
-    : { ok: true, result: { text: wrapUntrustedContent(text, budget.maxChars) } }
+  if (text === undefined) return response
+  if (call.name === 'browser_get_text') {
+    return { ok: true, result: { text: wrapUntrustedContent(text, budget.maxChars) } }
+  }
+  const pageContent = requestPageDelta ? answerPageContent(response) : undefined
+  return {
+    ok: true,
+    result: {
+      text: pageContent === undefined ? text : wrapActionDelta(text, pageContent, frame, budget.maxChars),
+    },
+  }
 }
 
 /**
@@ -313,7 +358,15 @@ export async function dispatchToolCall(
     if (refreshedTargetError !== undefined) return refreshedTargetError
   }
   try {
-    return await dispatchOnce(tab.id, executionFrames, call, effectiveBudget, signal, targetStillAllowed)
+    return await dispatchOnce(
+      tab.id,
+      executionFrames,
+      call,
+      effectiveBudget,
+      signal,
+      targetStillAllowed,
+      sharePageContent === 'auto',
+    )
   } catch {
     if (isCancelled(call, signal)) return cancelled()
     // Manifest content scripts do not run retroactively in tabs that were
@@ -339,7 +392,15 @@ export async function dispatchToolCall(
           return unavailable('The page changed while the content script was loading. Call browser_snapshot again before retrying.')
         }
       }
-      return await dispatchOnce(tab.id, refreshedFrames, call, effectiveBudget, signal, targetStillAllowed)
+      return await dispatchOnce(
+        tab.id,
+        refreshedFrames,
+        call,
+        effectiveBudget,
+        signal,
+        targetStillAllowed,
+        sharePageContent === 'auto',
+      )
     } catch {
       return unavailable('The content script could not be loaded on this page. Chrome internal and protected pages do not support browser operations.')
     }
