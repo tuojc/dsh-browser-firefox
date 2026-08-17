@@ -228,18 +228,43 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
   const el = elementOrThrow(ctx.ids, index)
   el.scrollIntoView({ block: 'center', behavior: 'instant' })
   if (el instanceof HTMLAnchorElement) {
-    // A normal link can unload this content script before an awaited settle
-    // sends its response. Answer first and start the click in the next task,
-    // matching the explicit navigation actions.
-    setTimeout(() => { el.click() }, 0)
     const target = el.target.trim().toLowerCase()
-    const sameFrameNavigation = (target === '' || target === '_self') && !el.hasAttribute('download')
-    return sameFrameNavigation
-      ? {
-          text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.`,
-          navigationPending: true,
-        }
-      : { text: `Clicked link [${index}]. The link may open outside the controlled frame.` }
+    const sameFrameTarget = target === '' || target === '_self'
+    let href: URL | undefined
+    try { href = new URL(el.href) } catch { /* let the native click handle unusual links */ }
+    const controlledNavigation = sameFrameTarget
+      && !el.hasAttribute('download')
+      && (href?.protocol === 'http:' || href?.protocol === 'https:')
+    if (controlledNavigation && href !== undefined) {
+      // Dispatch the click handlers without its default navigation so a
+      // client-side router can cancel synchronously and keep this document.
+      const shouldNavigate = el.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }))
+      if (!shouldNavigate) {
+        await waitForPageSettled(ACTION_SETTLE)
+        return withPageDelta(`Clicked link [${index}].`, ctx)
+      }
+      const sameDocument = href.origin === location.origin
+        && href.pathname === location.pathname
+        && href.search === location.search
+      if (sameDocument) {
+        if (href.hash !== location.hash) location.hash = href.hash
+        await waitForPageSettled(ACTION_SETTLE)
+        return withPageDelta(`Clicked link [${index}].`, ctx)
+      }
+      // A cross-document navigation can unload this content script before an
+      // awaited response. Answer first and navigate in the next task.
+      setTimeout(() => { location.href = href.href }, 0)
+      return {
+        text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.`,
+        navigationPending: true,
+      }
+    }
+    setTimeout(() => { el.click() }, 0)
+    return { text: `Clicked link [${index}]. The link may open outside the controlled frame.` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
     throw new ActionError('action-failed', `Button [${index}] is disabled.`)

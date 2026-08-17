@@ -70,7 +70,7 @@ describe('navigation action responses', () => {
     const link = document.createElement('a')
     link.href = 'https://example.com/next'
     link.scrollIntoView = vi.fn()
-    link.click = vi.fn()
+    const dispatch = vi.spyOn(link, 'dispatchEvent').mockReturnValue(true)
     const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
 
     await expect(runAction('browser_click', { index: 1 }, {
@@ -80,10 +80,7 @@ describe('navigation action responses', () => {
       text: expect.stringContaining('Clicked link [1]'),
       navigationPending: true,
     })
-    expect(link.click).not.toHaveBeenCalled()
-
-    await vi.advanceTimersByTimeAsync(0)
-    expect(link.click).toHaveBeenCalledOnce()
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'click' }))
   })
 
   it('does not wait for a replacement document when a link opens a new tab', async () => {

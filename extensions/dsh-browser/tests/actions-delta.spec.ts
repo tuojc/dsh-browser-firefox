@@ -92,4 +92,27 @@ describe('automatic action deltas', () => {
     await expect(pending).resolves.toEqual({ text: expect.stringContaining('Clicked') })
   })
 
+  it('returns a delta immediately when a client-side router cancels navigation', async () => {
+    document.body.innerHTML = '<main>Home</main><a href="/orders">Orders</a>'
+    const link = document.querySelector('a')!
+    link.scrollIntoView = vi.fn()
+    link.addEventListener('click', (event) => {
+      event.preventDefault()
+      document.querySelector('main')!.textContent = 'Orders'
+    })
+    const ids = new ElementIds()
+    await runAction('browser_snapshot', {}, { ids, budget: BUDGET })
+
+    const pending = runAction('browser_click', { index: ids.indexOf(link) }, {
+      ids,
+      budget: BUDGET,
+      includePageDelta: true,
+    })
+    await vi.advanceTimersByTimeAsync(100)
+    const result = await pending
+
+    expect(result.navigationPending).toBeUndefined()
+    expect(result.pageContent).toContain('Orders')
+  })
+
 })
