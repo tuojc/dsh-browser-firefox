@@ -236,14 +236,20 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
       && !el.hasAttribute('download')
       && (href?.protocol === 'http:' || href?.protocol === 'https:')
     if (controlledNavigation && href !== undefined) {
-      // Manual location assignment cannot preserve referrer-suppression
-      // attributes. Keep the browser's native navigation for those links.
+      // Manual location assignment cannot preserve browser-managed link
+      // semantics such as referrer suppression, hyperlink auditing, or
+      // attribution registration. Keep native activation for those links,
+      // but do not claim a replacement document is guaranteed: an SPA may
+      // still cancel the click and remain in this document.
       const hasReferrerPolicy = typeof el.referrerPolicy === 'string' && el.referrerPolicy !== ''
-      if (el.relList.contains('noreferrer') || hasReferrerPolicy) {
+      const requiresNativeActivation = el.relList.contains('noreferrer')
+        || hasReferrerPolicy
+        || el.hasAttribute('ping')
+        || el.hasAttribute('attributionsrc')
+      if (requiresNativeActivation) {
         setTimeout(() => { el.click() }, 0)
         return {
-          text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.`,
-          navigationPending: true,
+          text: `Clicked link [${index}] using native browser activation. Call browser_snapshot to read the resulting state.`,
         }
       }
       // Dispatch the click handlers without its default navigation so a
