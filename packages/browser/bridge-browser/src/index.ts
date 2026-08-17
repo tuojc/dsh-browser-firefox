@@ -191,7 +191,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       name: 'tool:bridge-browser',
       order: 107,
       text: 'A browser bridge may be connected. To read or operate the user\'s active browser page, call browser_snapshot '
-        + '(text-only; numbered items are the click/type targets). Never assume page content you have not snapshotted.',
+        + '(text-only; numbered items are the click/type targets), unless the current turn already includes a plugin-provided '
+        + 'followed-page browser_snapshot. Reuse that injected snapshot and its indices directly. Never assume page content you have not snapshotted.',
     }), 'bridge-browser: system prompt section')
   }
 

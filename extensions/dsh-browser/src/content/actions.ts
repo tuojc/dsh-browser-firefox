@@ -18,6 +18,10 @@ import { buildSnapshot, renderSnapshot } from './snapshot.ts'
 /** A settled action result. */
 export interface ActionResult {
   text: string
+  /** Page-authored snapshot delta; the background must wrap it as untrusted. */
+  pageContent?: string
+  /** A same-frame document navigation was scheduled after this response. */
+  navigationPending?: boolean
 }
 
 /** How long an action should observe a ready document before returning. */
@@ -36,6 +40,8 @@ const TYPE_SETTLE: PageSettlePolicy = { minimumMs: 32, quietMs: 32, maxAfterRead
 const ACTION_SETTLE: PageSettlePolicy = { minimumMs: 100, quietMs: 50, maxAfterReadyMs: 250, timeoutMs: 5_000 }
 const SCROLL_SETTLE: PageSettlePolicy = { minimumMs: 50, quietMs: 50, maxAfterReadyMs: 150, timeoutMs: 5_000 }
 const EXPLICIT_WAIT_SETTLE: PageSettlePolicy = { minimumMs: 100, quietMs: 100, maxAfterReadyMs: 1_000, timeoutMs: 5_000 }
+/** Keep automatic action context focused while preserving the negotiated full snapshot budget. */
+const ACTION_DELTA_MAX_CHARS = 4_000
 
 /**
  * Wait for document readiness and a mutation-free window. The old fixed delay
@@ -155,6 +161,8 @@ function setNativeValue(input: HTMLInputElement | HTMLTextAreaElement, value: st
 export interface ActionContext {
   ids: ElementIds
   budget: SnapshotBudget
+  /** Enabled only when the background may share page content without another approval. */
+  includePageDelta?: boolean
 }
 
 /** Run one named action with its args. */
@@ -167,9 +175,9 @@ export async function runAction(action: string, args: Record<string, unknown>, c
     case 'browser_type':
       return typeAction(args, ctx)
     case 'browser_press':
-      return pressAction(args)
+      return pressAction(args, ctx)
     case 'browser_scroll':
-      return scrollAction(args)
+      return scrollAction(args, ctx)
     case 'browser_navigate':
       return navigateAction(args)
     case 'browser_back':
@@ -181,7 +189,7 @@ export async function runAction(action: string, args: Record<string, unknown>, c
     case 'browser_get_text':
       return getTextAction(args)
     case 'browser_wait':
-      return waitAction(args)
+      return waitAction(args, ctx)
     default:
       throw new ActionError('bad-args', `Unknown action: ${action}`)
   }
@@ -204,23 +212,82 @@ function resetDeltaState(): void {
   lastSnapshot = null
 }
 
+/** Attach the settled page change while retaining the full view as the next delta baseline. */
+function withPageDelta(text: string, ctx: ActionContext): ActionResult {
+  if (ctx.includePageDelta !== true || lastSnapshot === null) return { text }
+  const view = buildSnapshot(ctx.ids, { delta: true, budget: ctx.budget }, lastSnapshot)
+  lastSnapshot = view
+  return {
+    text,
+    pageContent: renderSnapshot(view, true, Math.min(ctx.budget.maxChars, ACTION_DELTA_MAX_CHARS)),
+  }
+}
+
 async function clickAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const index = numberArg(args, 'index')
   const el = elementOrThrow(ctx.ids, index)
   el.scrollIntoView({ block: 'center', behavior: 'instant' })
   if (el instanceof HTMLAnchorElement) {
-    // A normal link can unload this content script before an awaited settle
-    // sends its response. Answer first and start the click in the next task,
-    // matching the explicit navigation actions.
+    const target = el.target.trim().toLowerCase()
+    const sameFrameTarget = target === '' || target === '_self'
+    let href: URL | undefined
+    try { href = new URL(el.href) } catch { /* let the native click handle unusual links */ }
+    const controlledNavigation = sameFrameTarget
+      && !el.hasAttribute('download')
+      && (href?.protocol === 'http:' || href?.protocol === 'https:')
+    if (controlledNavigation && href !== undefined) {
+      // Manual location assignment cannot preserve browser-managed link
+      // semantics such as referrer suppression, hyperlink auditing, or
+      // attribution registration. Keep native activation for those links,
+      // but do not claim a replacement document is guaranteed: an SPA may
+      // still cancel the click and remain in this document.
+      const hasReferrerPolicy = typeof el.referrerPolicy === 'string' && el.referrerPolicy !== ''
+      const requiresNativeActivation = el.relList.contains('noreferrer')
+        || hasReferrerPolicy
+        || el.hasAttribute('ping')
+        || el.hasAttribute('attributionsrc')
+      if (requiresNativeActivation) {
+        setTimeout(() => { el.click() }, 0)
+        return {
+          text: `Clicked link [${index}] using native browser activation. Call browser_snapshot to read the resulting state.`,
+        }
+      }
+      // Dispatch the click handlers without its default navigation so a
+      // client-side router can cancel synchronously and keep this document.
+      const shouldNavigate = el.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }))
+      if (!shouldNavigate) {
+        await waitForPageSettled(ACTION_SETTLE)
+        return withPageDelta(`Clicked link [${index}].`, ctx)
+      }
+      const sameDocument = href.origin === location.origin
+        && href.pathname === location.pathname
+        && href.search === location.search
+      if (sameDocument) {
+        if (href.hash !== location.hash) location.hash = href.hash
+        await waitForPageSettled(ACTION_SETTLE)
+        return withPageDelta(`Clicked link [${index}].`, ctx)
+      }
+      // A cross-document navigation can unload this content script before an
+      // awaited response. Answer first and navigate in the next task.
+      setTimeout(() => { location.href = href.href }, 0)
+      return {
+        text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.`,
+        navigationPending: true,
+      }
+    }
     setTimeout(() => { el.click() }, 0)
-    return { text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.` }
+    return { text: `Clicked link [${index}]. The link may open outside the controlled frame.` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
     throw new ActionError('action-failed', `Button [${index}] is disabled.`)
   }
   ;(el as HTMLElement).click()
   await waitForPageSettled(ACTION_SETTLE)
-  return { text: `Clicked [${index}].` }
+  return withPageDelta(`Clicked [${index}].`, ctx)
 }
 
 async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
@@ -242,10 +309,10 @@ async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Pr
     setNativeValue(el, `${el.value}${text}`)
   }
   await waitForPageSettled(TYPE_SETTLE)
-  return { text: `Entered ${text.length} characters into [${index}].` }
+  return withPageDelta(`Entered ${text.length} characters into [${index}].`, ctx)
 }
 
-async function pressAction(args: Record<string, unknown>): Promise<ActionResult> {
+async function pressAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const key = typeof args.key === 'string' && args.key !== '' ? args.key : ''
   if (key === '') throw new ActionError('bad-args', 'key must not be empty.')
   const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body
@@ -255,10 +322,10 @@ async function pressAction(args: Record<string, unknown>): Promise<ActionResult>
     target.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   }
   await waitForPageSettled(ACTION_SETTLE)
-  return { text: `Sent key "${key}".` }
+  return withPageDelta(`Sent key "${key}".`, ctx)
 }
 
-async function scrollAction(args: Record<string, unknown>): Promise<ActionResult> {
+async function scrollAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const direction = typeof args.direction === 'string' ? args.direction : ''
   const amount = typeof args.amount === 'number' ? args.amount : Math.floor(window.innerHeight * 0.8)
   switch (direction) {
@@ -278,7 +345,7 @@ async function scrollAction(args: Record<string, unknown>): Promise<ActionResult
       throw new ActionError('bad-args', `direction must be up, down, top, or bottom; received "${direction}".`)
   }
   await waitForPageSettled(SCROLL_SETTLE)
-  return { text: `Scrolled ${direction}.` }
+  return withPageDelta(`Scrolled ${direction}.`, ctx)
 }
 
 async function navigateAction(args: Record<string, unknown>): Promise<ActionResult> {
@@ -298,20 +365,29 @@ async function navigateAction(args: Record<string, unknown>): Promise<ActionResu
   // tabs.sendMessage response port before any await settles — so answer
   // FIRST, then navigate in a fresh task. The model re-snapshots after load.
   setTimeout(() => { location.href = parsed.href }, 0)
-  return { text: `Navigating to ${parsed.href}. Call browser_snapshot again after the page loads.` }
+  return {
+    text: `Navigating to ${parsed.href}. Call browser_snapshot again after the page loads.`,
+    navigationPending: true,
+  }
 }
 
 async function historyAction(delta: 1 | -1): Promise<ActionResult> {
   resetDeltaState()
   // 同 navigate：先响应再导航（文档卸载会销毁响应端口）。
   setTimeout(() => { if (delta === -1) history.back(); else history.forward() }, 0)
-  return { text: 'Navigating through browser history. Call browser_snapshot again after the page loads.' }
+  return {
+    text: 'Navigating through browser history. Call browser_snapshot again after the page loads.',
+    navigationPending: true,
+  }
 }
 
 function reloadAction(): ActionResult {
   resetDeltaState()
   setTimeout(() => { location.reload() }, 0)
-  return { text: 'The page is reloading. Call browser_snapshot again after it loads.' }
+  return {
+    text: 'The page is reloading. Call browser_snapshot again after it loads.',
+    navigationPending: true,
+  }
 }
 
 async function getTextAction(args: Record<string, unknown>): Promise<ActionResult> {
@@ -322,11 +398,11 @@ async function getTextAction(args: Record<string, unknown>): Promise<ActionResul
   return { text: truncated.text + (truncated.truncated > 0 ? `\n(Truncated ${truncated.truncated} characters.)` : '') }
 }
 
-async function waitAction(args: Record<string, unknown>): Promise<ActionResult> {
+async function waitAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const ms = typeof args.ms === 'number' && args.ms > 0 ? args.ms : 0
   await waitForPageSettled(EXPLICIT_WAIT_SETTLE)
   if (ms > 0) await sleep(ms)
-  return { text: `The page is stable${ms > 0 ? ` after an additional ${ms}ms wait` : ''}.` }
+  return withPageDelta(`The page is stable${ms > 0 ? ` after an additional ${ms}ms wait` : ''}.`, ctx)
 }
 
 function numberArg(args: Record<string, unknown>, name: string): number {

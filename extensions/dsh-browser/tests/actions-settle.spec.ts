@@ -70,15 +70,75 @@ describe('navigation action responses', () => {
     const link = document.createElement('a')
     link.href = 'https://example.com/next'
     link.scrollIntoView = vi.fn()
+    const dispatch = vi.spyOn(link, 'dispatchEvent').mockReturnValue(true)
+    const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
+
+    await expect(runAction('browser_click', { index: 1 }, {
+      ids,
+      budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
+    })).resolves.toMatchObject({
+      text: expect.stringContaining('Clicked link [1]'),
+      navigationPending: true,
+    })
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'click' }))
+  })
+
+  it('does not wait for a replacement document when a link opens a new tab', async () => {
+    vi.useFakeTimers()
+    const link = document.createElement('a')
+    link.href = 'https://example.com/next'
+    link.target = '_blank'
+    link.scrollIntoView = vi.fn()
     link.click = vi.fn()
     const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
 
     await expect(runAction('browser_click', { index: 1 }, {
       ids,
       budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
-    })).resolves.toMatchObject({ text: expect.stringContaining('Clicked link [1]') })
-    expect(link.click).not.toHaveBeenCalled()
+    })).resolves.toEqual({ text: expect.stringContaining('outside the controlled frame') })
 
+    await vi.advanceTimersByTimeAsync(0)
+    expect(link.click).toHaveBeenCalledOnce()
+  })
+
+  it('preserves native referrer policy without waiting for a guaranteed navigation', async () => {
+    vi.useFakeTimers()
+    const link = document.createElement('a')
+    link.href = 'https://example.com/private'
+    link.rel = 'noreferrer'
+    link.scrollIntoView = vi.fn()
+    link.click = vi.fn()
+    const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
+
+    const result = await runAction('browser_click', { index: 1 }, {
+      ids,
+      budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
+    })
+
+    expect(result.text).toContain('native browser activation')
+    expect(result.navigationPending).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(link.click).toHaveBeenCalledOnce()
+  })
+
+  it('preserves hyperlink auditing without entering the replacement-document wait', async () => {
+    vi.useFakeTimers()
+    const link = document.createElement('a')
+    link.href = 'https://example.com/next'
+    link.setAttribute('ping', 'https://audit.example/link')
+    link.scrollIntoView = vi.fn()
+    link.click = vi.fn()
+    const dispatch = vi.spyOn(link, 'dispatchEvent')
+    const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
+
+    const result = await runAction('browser_click', { index: 1 }, {
+      ids,
+      budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
+    })
+
+    expect(result.navigationPending).toBeUndefined()
+    expect(dispatch).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(0)
     expect(link.click).toHaveBeenCalledOnce()
   })
