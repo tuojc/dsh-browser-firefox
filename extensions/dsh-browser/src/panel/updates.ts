@@ -18,6 +18,49 @@ export interface ExtensionUpdateResult {
   updateAvailable: boolean
 }
 
+export type ExtensionInstallInfo =
+  | { mode: 'managed' }
+  | { mode: 'checkout'; sourceRoot: string }
+  | { mode: 'unknown' }
+
+/** Parse installer-written provenance without trusting malformed local data. */
+export function parseExtensionInstallInfo(value: unknown): ExtensionInstallInfo {
+  if (typeof value !== 'object' || value === null) return { mode: 'unknown' }
+  const info = value as { schemaVersion?: unknown; mode?: unknown; sourceRoot?: unknown }
+  if (info.schemaVersion !== 1) return { mode: 'unknown' }
+  if (info.mode === 'managed') return { mode: 'managed' }
+  if (info.mode === 'checkout'
+    && typeof info.sourceRoot === 'string'
+    && info.sourceRoot.startsWith('/')
+    && !info.sourceRoot.includes('\0')) {
+    return { mode: 'checkout', sourceRoot: info.sourceRoot }
+  }
+  return { mode: 'unknown' }
+}
+
+/** Read install provenance from the extension package; older installs safely resolve as unknown. */
+export async function readExtensionInstallInfo(
+  url: string,
+  request: typeof fetch = fetch,
+): Promise<ExtensionInstallInfo> {
+  try {
+    const response = await request(url, { cache: 'no-store' })
+    if (!response.ok) return { mode: 'unknown' }
+    return parseExtensionInstallInfo(await response.json())
+  } catch {
+    return { mode: 'unknown' }
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`
+}
+
+/** Re-run the installer from the exact checkout that produced this extension. */
+export function checkoutInstallCommand(sourceRoot: string): string {
+  return `cd ${shellQuote(sourceRoot)} && ./scripts/install.sh`
+}
+
 function versionParts(version: string): number[] {
   if (!/^\d+(?:\.\d+){0,3}$/.test(version)) throw new Error('invalid extension version')
   return version.split('.').map((part) => Number(part))

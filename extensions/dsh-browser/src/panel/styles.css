@@ -1396,6 +1396,44 @@ textarea:focus-visible {
   line-height: 1.3;
 }
 
+.update-meta {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.install-pill {
+  max-width: 128px;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.install-pill.install-managed {
+  border-color: #ccd6ff;
+  color: var(--blue-ink);
+}
+
+.install-pill.install-checkout {
+  border-color: #cddbd4;
+  color: #356a50;
+}
+
+.install-pill.install-unknown {
+  border-color: #ead9ae;
+  color: var(--security);
+}
+
 .version-pill {
   flex: 0 0 auto;
   padding: 4px 7px;

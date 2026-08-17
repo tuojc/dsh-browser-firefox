@@ -1,6 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PanelCopy } from './strings.ts'
-import { checkForExtensionUpdate, UPDATE_COMMAND } from './updates.ts'
+import {
+  checkForExtensionUpdate,
+  checkoutInstallCommand,
+  readExtensionInstallInfo,
+  UPDATE_COMMAND,
+  type ExtensionInstallInfo,
+} from './updates.ts'
 
 type CheckState =
   | { status: 'idle' }
@@ -16,6 +22,15 @@ export function UpdateCard({ copy }: { copy: PanelCopy['update'] }): React.JSX.E
   const currentVersion = chrome.runtime.getManifest().version
   const [checkState, setCheckState] = useState<CheckState>({ status: 'idle' })
   const [copyState, setCopyState] = useState<CopyState>('idle')
+  const [installInfo, setInstallInfo] = useState<ExtensionInstallInfo | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void readExtensionInstallInfo(chrome.runtime.getURL('install-info.json')).then((info) => {
+      if (current) setInstallInfo(info)
+    })
+    return () => { current = false }
+  }, [])
 
   async function check(): Promise<void> {
     if (checkState.status === 'checking') return
@@ -32,8 +47,14 @@ export function UpdateCard({ copy }: { copy: PanelCopy['update'] }): React.JSX.E
   }
 
   async function copyCommand(): Promise<void> {
+    const command = installInfo?.mode === 'managed'
+      ? UPDATE_COMMAND
+      : installInfo?.mode === 'checkout'
+        ? checkoutInstallCommand(installInfo.sourceRoot)
+        : null
+    if (command === null) return
     try {
-      await navigator.clipboard.writeText(UPDATE_COMMAND)
+      await navigator.clipboard.writeText(command)
       setCopyState('copied')
     } catch {
       setCopyState('error')
@@ -49,6 +70,13 @@ export function UpdateCard({ copy }: { copy: PanelCopy['update'] }): React.JSX.E
         : checkState.status === 'available'
           ? copy.availableTitle(checkState.latestVersion)
           : copy.errorTitle
+  const availableBody = installInfo === null
+    ? copy.availableLoadingBody
+    : installInfo.mode === 'managed'
+      ? copy.availableManagedBody
+      : installInfo.mode === 'checkout'
+        ? copy.availableCheckoutBody
+        : copy.availableUnknownBody
   const statusBody = checkState.status === 'idle'
     ? copy.idleBody
     : checkState.status === 'checking'
@@ -56,8 +84,18 @@ export function UpdateCard({ copy }: { copy: PanelCopy['update'] }): React.JSX.E
       : checkState.status === 'current'
         ? copy.currentBody(checkState.latestVersion)
         : checkState.status === 'available'
-          ? copy.availableBody
+          ? availableBody
           : copy.errorBody
+  const installMode = installInfo?.mode ?? 'loading'
+  const installLabel = installMode === 'managed'
+    ? copy.managedInstall
+    : installMode === 'checkout'
+      ? copy.checkoutInstall
+      : installMode === 'unknown'
+        ? copy.unknownInstall
+        : copy.loadingInstall
+  const updateCommandAvailable = installInfo?.mode === 'managed' || installInfo?.mode === 'checkout'
+  const copyLabel = installInfo?.mode === 'checkout' ? copy.copyCheckoutCommand : copy.copyManagedCommand
 
   return (
     <section className={`update-card update-${checkState.status}`} aria-labelledby="update-card-title">
@@ -66,7 +104,10 @@ export function UpdateCard({ copy }: { copy: PanelCopy['update'] }): React.JSX.E
           <span className="eyebrow">{copy.eyebrow}</span>
           <h2 id="update-card-title">{copy.title}</h2>
         </div>
-        <span className="version-pill">v{currentVersion}</span>
+        <div className="update-meta">
+          <span className={`install-pill install-${installMode}`}>{installLabel}</span>
+          <span className="version-pill">v{currentVersion}</span>
+        </div>
       </div>
       <div className="update-status" role="status" aria-live="polite" aria-busy={checkState.status === 'checking'}>
         <span className="update-beacon" aria-hidden="true" />
@@ -86,9 +127,9 @@ export function UpdateCard({ copy }: { copy: PanelCopy['update'] }): React.JSX.E
           onClick={() => { void check() }}>
           {checkState.status === 'checking' ? copy.checking : copy.check}
         </button>
-        {checkState.status === 'available' && (
+        {checkState.status === 'available' && updateCommandAvailable && (
           <button type="button" className="update-copy" onClick={() => { void copyCommand() }}>
-            {copyState === 'copied' ? copy.copied : copy.copyCommand}
+            {copyState === 'copied' ? copy.copied : copyLabel}
           </button>
         )}
       </div>
