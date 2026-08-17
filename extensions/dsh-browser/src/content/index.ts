@@ -25,7 +25,7 @@ type ContentListener = typeof onMessage
 /** A tool-call result for the bridge. */
 export interface ToolResult {
   ok: boolean
-  result?: { text: string; pageContent?: string }
+  result?: { text: string; pageContent?: string; navigationPending?: boolean }
   error?: { code: string; message: string }
 }
 
@@ -75,3 +75,7 @@ if (previousListener !== undefined) {
 }
 contentGlobal[CONTENT_SCRIPT_LISTENER] = onMessage
 chrome.runtime.onMessage.addListener(onMessage)
+
+// A navigation action answers before unloading. The replacement content
+// script announces when the new document can accept its automatic snapshot.
+void chrome.runtime.sendMessage({ type: 'DSH_CONTENT_READY' }).catch(() => {})

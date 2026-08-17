@@ -76,8 +76,29 @@ describe('navigation action responses', () => {
     await expect(runAction('browser_click', { index: 1 }, {
       ids,
       budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
-    })).resolves.toMatchObject({ text: expect.stringContaining('Clicked link [1]') })
+    })).resolves.toMatchObject({
+      text: expect.stringContaining('Clicked link [1]'),
+      navigationPending: true,
+    })
     expect(link.click).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(link.click).toHaveBeenCalledOnce()
+  })
+
+  it('does not wait for a replacement document when a link opens a new tab', async () => {
+    vi.useFakeTimers()
+    const link = document.createElement('a')
+    link.href = 'https://example.com/next'
+    link.target = '_blank'
+    link.scrollIntoView = vi.fn()
+    link.click = vi.fn()
+    const ids = { elementByIndex: vi.fn(() => link) } as unknown as ElementIds
+
+    await expect(runAction('browser_click', { index: 1 }, {
+      ids,
+      budget: { maxItems: 20, maxForms: 10, maxChars: 2_000 },
+    })).resolves.toEqual({ text: expect.stringContaining('outside the controlled frame') })
 
     await vi.advanceTimersByTimeAsync(0)
     expect(link.click).toHaveBeenCalledOnce()

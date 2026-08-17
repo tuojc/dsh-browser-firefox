@@ -20,6 +20,8 @@ export interface ActionResult {
   text: string
   /** Page-authored snapshot delta; the background must wrap it as untrusted. */
   pageContent?: string
+  /** A same-frame document navigation was scheduled after this response. */
+  navigationPending?: boolean
 }
 
 /** How long an action should observe a ready document before returning. */
@@ -230,7 +232,14 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
     // sends its response. Answer first and start the click in the next task,
     // matching the explicit navigation actions.
     setTimeout(() => { el.click() }, 0)
-    return { text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.` }
+    const target = el.target.trim().toLowerCase()
+    const sameFrameNavigation = (target === '' || target === '_self') && !el.hasAttribute('download')
+    return sameFrameNavigation
+      ? {
+          text: `Clicked link [${index}]. Call browser_snapshot again after navigation settles.`,
+          navigationPending: true,
+        }
+      : { text: `Clicked link [${index}]. The link may open outside the controlled frame.` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
     throw new ActionError('action-failed', `Button [${index}] is disabled.`)
@@ -315,20 +324,29 @@ async function navigateAction(args: Record<string, unknown>): Promise<ActionResu
   // tabs.sendMessage response port before any await settles — so answer
   // FIRST, then navigate in a fresh task. The model re-snapshots after load.
   setTimeout(() => { location.href = parsed.href }, 0)
-  return { text: `Navigating to ${parsed.href}. Call browser_snapshot again after the page loads.` }
+  return {
+    text: `Navigating to ${parsed.href}. Call browser_snapshot again after the page loads.`,
+    navigationPending: true,
+  }
 }
 
 async function historyAction(delta: 1 | -1): Promise<ActionResult> {
   resetDeltaState()
   // 同 navigate：先响应再导航（文档卸载会销毁响应端口）。
   setTimeout(() => { if (delta === -1) history.back(); else history.forward() }, 0)
-  return { text: 'Navigating through browser history. Call browser_snapshot again after the page loads.' }
+  return {
+    text: 'Navigating through browser history. Call browser_snapshot again after the page loads.',
+    navigationPending: true,
+  }
 }
 
 function reloadAction(): ActionResult {
   resetDeltaState()
   setTimeout(() => { location.reload() }, 0)
-  return { text: 'The page is reloading. Call browser_snapshot again after it loads.' }
+  return {
+    text: 'The page is reloading. Call browser_snapshot again after it loads.',
+    navigationPending: true,
+  }
 }
 
 async function getTextAction(args: Record<string, unknown>): Promise<ActionResult> {
