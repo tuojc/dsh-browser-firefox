@@ -20,6 +20,7 @@ import type { ApprovalDecision, ApprovalRequest } from '../security/approval.ts'
 import { getUiLocale } from '../i18n.ts'
 import { PANEL_COPY, type PanelCopy } from './strings.ts'
 import { QuestionCard } from './QuestionCard.tsx'
+import { UpdateCard } from './UpdateCard.tsx'
 import type { QuestionAnswer } from './questions.ts'
 import {
   hasPendingQuestion,
@@ -836,6 +837,7 @@ export function App(): React.JSX.Element {
             <h1>{copy.settings.title}</h1>
           </div>
         </div>
+        <UpdateCard copy={copy.update} />
         <div className="settings-panel">
           <label>
             <span>{copy.settings.bridgeAddress}</span>

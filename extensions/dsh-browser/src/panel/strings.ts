@@ -85,6 +85,33 @@ export interface PanelCopy {
     cancel: string
     snapshotHint: (maxChars: number) => string
   }
+  update: {
+    eyebrow: string
+    title: string
+    idleTitle: string
+    idleBody: string
+    checking: string
+    checkingBody: string
+    currentTitle: string
+    currentBody: (latestVersion: string) => string
+    availableTitle: (latestVersion: string) => string
+    availableLoadingBody: string
+    availableManagedBody: string
+    availableCheckoutBody: string
+    availableUnknownBody: string
+    reloadReminder: string
+    loadingInstall: string
+    managedInstall: string
+    checkoutInstall: string
+    unknownInstall: string
+    errorTitle: string
+    errorBody: string
+    check: string
+    copyManagedCommand: string
+    copyCheckoutCommand: string
+    copied: string
+    copyError: string
+  }
   app: {
     openSettings: string
     settings: string
@@ -183,8 +210,8 @@ const EN: PanelCopy = {
   },
   settings: {
     back: 'Back to chat',
-    eyebrow: 'Preferences',
-    title: 'Connection & Privacy',
+    eyebrow: 'Browser assistant',
+    title: 'Settings',
     bridgeAddress: 'Bridge address',
     bridgeHelp: 'Leave blank to detect a local service automatically',
     bridgePlaceholder: 'Auto-detect 3080 / 3081 / 3090',
@@ -210,6 +237,33 @@ const EN: PanelCopy = {
     save: 'Save & Connect',
     cancel: 'Cancel',
     snapshotHint: (maxChars) => `Page snapshots are limited to ${maxChars} characters and longer content is truncated. Change snapshotMaxChars in the dsh plugin to adjust this limit.`,
+  },
+  update: {
+    eyebrow: 'Release channel',
+    title: 'Updates',
+    idleTitle: 'Ready to check',
+    idleBody: 'Compare this build with the version on GitHub main.',
+    checking: 'Checking…',
+    checkingBody: 'Reading the latest extension manifest from GitHub.',
+    currentTitle: 'No update found',
+    currentBody: (latestVersion) => `Repository version: v${latestVersion}.`,
+    availableTitle: (latestVersion) => `Version ${latestVersion} is available`,
+    availableLoadingBody: 'Confirming how this extension was installed before offering an update command.',
+    availableManagedBody: 'Copy the managed update command and run it in Terminal.',
+    availableCheckoutBody: 'Pull or switch to the revision you want in the original checkout, then rerun its installer.',
+    availableUnknownBody: 'This copy predates install-source metadata. Use the same update flow you originally installed with; no command will be copied.',
+    reloadReminder: 'After updating, open chrome://extensions, find “dsh Browser Assistant,” click the rotating-arrow Reload button on its card, then restart dsh.',
+    loadingInstall: 'Identifying install…',
+    managedInstall: 'Managed install',
+    checkoutInstall: 'Local checkout',
+    unknownInstall: 'Install source unknown',
+    errorTitle: 'Could not check for updates',
+    errorBody: 'Check your network connection and try again.',
+    check: 'Check for updates',
+    copyManagedCommand: 'Copy update command',
+    copyCheckoutCommand: 'Copy checkout command',
+    copied: 'Command copied',
+    copyError: 'Could not copy the command. Run the installer from the original installation source instead.',
   },
   app: {
     openSettings: 'Open settings',
@@ -309,8 +363,8 @@ const ZH: PanelCopy = {
   },
   settings: {
     back: '返回对话',
-    eyebrow: '偏好设置',
-    title: '连接与隐私',
+    eyebrow: '浏览器助手',
+    title: '设置',
     bridgeAddress: '桥地址',
     bridgeHelp: '留空时自动检测本机服务',
     bridgePlaceholder: '自动检测 3080 / 3081 / 3090',
@@ -336,6 +390,33 @@ const ZH: PanelCopy = {
     save: '保存并连接',
     cancel: '取消',
     snapshotHint: (maxChars) => `页面快照上限为 ${maxChars} 字符，超出内容会被截断。可在 dsh 插件中调整 snapshotMaxChars。`,
+  },
+  update: {
+    eyebrow: '发布通道',
+    title: '软件更新',
+    idleTitle: '可以检查新版本',
+    idleBody: '与 GitHub main 上的扩展版本进行比较。',
+    checking: '正在检查…',
+    checkingBody: '正在读取 GitHub 上的最新扩展清单。',
+    currentTitle: '未发现更新',
+    currentBody: (latestVersion) => `仓库版本：v${latestVersion}。`,
+    availableTitle: (latestVersion) => `发现新版本 ${latestVersion}`,
+    availableLoadingBody: '正在确认此扩展的安装来源，然后再提供更新命令。',
+    availableManagedBody: '复制托管更新命令并在终端运行。',
+    availableCheckoutBody: '请先在原 checkout 中 pull 或切换到目标 revision，再重新运行其中的安装脚本。',
+    availableUnknownBody: '这个副本没有安装来源记录。请沿用最初的更新方式；这里不会复制可能覆盖来源的命令。',
+    reloadReminder: '更新完成后，打开 chrome://extensions，找到“dsh 浏览器助手”，点击卡片上的“重新加载”旋转箭头，然后重启 dsh。',
+    loadingInstall: '正在识别安装来源…',
+    managedInstall: '托管安装',
+    checkoutInstall: '本地 checkout',
+    unknownInstall: '安装来源未知',
+    errorTitle: '暂时无法检查更新',
+    errorBody: '请检查网络连接，然后重试。',
+    check: '检查更新',
+    copyManagedCommand: '复制更新命令',
+    copyCheckoutCommand: '复制 checkout 命令',
+    copied: '命令已复制',
+    copyError: '无法复制命令，请回到原安装来源重新运行安装脚本。',
   },
   app: {
     openSettings: '打开设置',

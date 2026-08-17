@@ -1344,6 +1344,254 @@ textarea:focus-visible {
   box-shadow: 0 6px 18px rgba(23, 32, 51, 0.05);
 }
 
+.update-card {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d5ddfb;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #ffffff 0%, var(--blue-wash) 100%);
+  box-shadow: 0 7px 20px rgba(41, 69, 199, 0.07);
+}
+
+.update-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--blue);
+  content: "";
+}
+
+.update-card.update-available::before {
+  background: var(--warning);
+}
+
+.update-card.update-error::before {
+  background: var(--danger);
+}
+
+.update-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.update-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.update-heading h2 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.update-meta {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.install-pill {
+  max-width: 128px;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.install-pill.install-managed {
+  border-color: #ccd6ff;
+  color: var(--blue-ink);
+}
+
+.install-pill.install-checkout {
+  border-color: #cddbd4;
+  color: #356a50;
+}
+
+.install-pill.install-unknown {
+  border-color: #ead9ae;
+  color: var(--security);
+}
+
+.version-pill {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border: 1px solid #ccd6ff;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--blue-ink);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.update-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+}
+
+.update-status > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.update-status strong {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.update-status small {
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.48;
+}
+
+.update-beacon {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 0 2px rgba(77, 107, 254, 0.18);
+}
+
+.update-checking .update-beacon {
+  animation: update-pulse 1.2s ease-in-out infinite;
+}
+
+.update-available .update-beacon {
+  background: var(--warning);
+  box-shadow: 0 0 0 2px rgba(208, 138, 23, 0.2);
+}
+
+.update-error .update-beacon {
+  background: var(--danger);
+  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.16);
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.update-reload-reminder {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid #ead9ae;
+  border-radius: 10px;
+  background: #fffaf0;
+  color: var(--security);
+}
+
+.update-reload-reminder strong {
+  font-size: 9.5px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.update-reload-glyph {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #e0c989;
+  border-radius: 50%;
+  background: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  place-items: center;
+}
+
+.update-actions button {
+  min-height: 32px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease;
+}
+
+.update-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.update-actions button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.update-check {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.update-check:hover:not(:disabled) {
+  border-color: #adb7c7;
+}
+
+.update-copy {
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.update-copy:hover {
+  border-color: var(--blue-hover);
+  background: var(--blue-hover);
+}
+
+.update-copy-error {
+  color: var(--danger);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+@keyframes update-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(77, 107, 254, 0.16); }
+  50% { box-shadow: 0 0 0 5px rgba(77, 107, 254, 0.05); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-checking .update-beacon {
+    animation: none;
+  }
+}
+
 .settings label {
   display: grid;
   min-width: 0;
