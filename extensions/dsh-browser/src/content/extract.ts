@@ -85,7 +85,8 @@ export function truncate(text: string, max: number): { text: string; truncated: 
 
 /**
  * The accessible name of an element, following the ARIA precedence chain
- * (aria-label → aria-labelledby → label[for] → own text → placeholder/alt).
+ * (aria-label → aria-labelledby → associated label → own text →
+ * placeholder/alt).
  * @param el - element.
  * @returns a ≤80-char name, or the tag name as last resort.
  */
@@ -100,10 +101,17 @@ export function accessibleName(el: Element): string {
     if (refText !== undefined && refText.trim() !== '') return truncate(clean(refText), MAX_ITEM_NAME_CHARS).text
   }
 
-  if (el instanceof HTMLInputElement && el.id !== '') {
-    const label = document.querySelector<HTMLLabelElement>(`label[for="${cssEscape(el.id)}"]`)
-    const labelText = label?.textContent
-    if (labelText !== undefined && labelText.trim() !== '') return truncate(clean(labelText), MAX_ITEM_NAME_CHARS).text
+  const labelable = el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement
+  if (labelable) {
+    if (el.id !== '') {
+      const label = el.ownerDocument.querySelector<HTMLLabelElement>(`label[for="${cssEscape(el.id)}"]`)
+      const labelText = label?.textContent
+      if (labelText !== undefined && labelText.trim() !== '') return truncate(clean(labelText), MAX_ITEM_NAME_CHARS).text
+    }
+    const wrappingLabelText = el.closest('label')?.textContent
+    if (wrappingLabelText !== undefined && wrappingLabelText.trim() !== '') {
+      return truncate(clean(wrappingLabelText), MAX_ITEM_NAME_CHARS).text
+    }
   }
 
   const ownText = el instanceof HTMLInputElement ? '' : el.textContent
@@ -147,17 +155,18 @@ export function collectInteractive(root: Document | Element): Element[] {
 }
 
 /**
- * Best-effort main-content extraction (readability-lite): prefer
- * `<article>`/`<main>`, else the largest block containing at least two
- * paragraphs. Intended for article pages; SPA shells degrade to body text.
+ * Best-effort main-content extraction (readability-lite): prefer a main
+ * landmark, then a single standalone article, else the largest block
+ * containing at least two paragraphs. Multiple articles commonly represent
+ * cards or feed entries, so selecting only the first would hide page content.
  * @param doc - the document.
  * @returns the cleaned main text (unbounded; callers apply budgets).
  */
 export function mainText(doc: Document): string {
-  const article = doc.querySelector('article')
-  if (article !== null) return clean(elementText(article))
-  const main = doc.querySelector('main')
+  const main = doc.querySelector('main, [role="main"]')
   if (main !== null) return clean(elementText(main))
+  const articles = doc.querySelectorAll('article')
+  if (articles.length === 1) return clean(elementText(articles[0]!))
 
   let best: Element | null = null
   let bestScore = 0

@@ -48,6 +48,11 @@ describe('accessibleName', () => {
     expect(accessibleName(input)).toBe('邮箱地址')
   })
 
+  it('resolves a wrapping label for form controls', () => {
+    document.body.innerHTML = '<label><input type="checkbox">邮件通知</label>'
+    expect(accessibleName(document.querySelector('input')!)).toBe('邮件通知')
+  })
+
   it('falls back to own text then tag name', () => {
     const button = document.createElement('button')
     button.textContent = '  提交  '
@@ -84,5 +89,19 @@ describe('mainText', () => {
   it('falls back to body text without an article', () => {
     document.body.innerHTML = '<div>只有一段话的页面。</div>'
     expect(mainText(document)).toContain('只有一段话的页面')
+  })
+
+  it('keeps all article cards inside the main landmark', () => {
+    document.body.innerHTML = `
+      <nav>导航垃圾文字</nav>
+      <main>
+        <article>Delta 收纳盒</article>
+        <article>Cedar 收纳盒</article>
+      </main>
+    `
+    const text = mainText(document)
+    expect(text).toContain('Delta 收纳盒')
+    expect(text).toContain('Cedar 收纳盒')
+    expect(text).not.toContain('导航垃圾')
   })
 })
