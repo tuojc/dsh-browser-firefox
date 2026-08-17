@@ -33,14 +33,12 @@ export async function listTabFrames(tabId: number, mainUrl: string | undefined):
   try {
     const discovered = await chrome.webNavigation.getAllFrames({ tabId })
     if (discovered !== null && discovered !== undefined && discovered.length > 0) {
-      return discovered
-        .map((frame) => ({
-          frameId: frame.frameId,
-          parentFrameId: frame.parentFrameId,
-          documentId: frame.documentId,
-          url: frame.url,
-        }))
-        .sort((a, b) => frameDepth(a, discovered) - frameDepth(b, discovered) || a.frameId - b.frameId)
+      return sortTabFrames(discovered.map((frame) => ({
+        frameId: frame.frameId,
+        parentFrameId: frame.parentFrameId,
+        documentId: frame.documentId,
+        url: frame.url,
+      })))
     }
   } catch {
     // A main-frame message still gives a useful result while the frame tree is
@@ -49,11 +47,18 @@ export async function listTabFrames(tabId: number, mainUrl: string | undefined):
   return [{ frameId: 0, parentFrameId: -1, url: mainUrl ?? '' }]
 }
 
-function frameDepth(frame: { frameId: number; parentFrameId: number }, frames: Array<{ frameId: number; parentFrameId: number }>): number {
-  const parents = new Map(frames.map((candidate) => [candidate.frameId, candidate.parentFrameId]))
+/** Sort parents before descendants without rebuilding the frame graph per comparison. */
+export function sortTabFrames(frames: TabFrame[]): TabFrame[] {
+  const parents = new Map(frames.map((frame) => [frame.frameId, frame.parentFrameId]))
+  const depths = new Map<number, number>()
+  for (const frame of frames) depths.set(frame.frameId, frameDepth(frame.frameId, parents))
+  return [...frames].sort((a, b) => depths.get(a.frameId)! - depths.get(b.frameId)! || a.frameId - b.frameId)
+}
+
+function frameDepth(frameId: number, parents: Map<number, number>): number {
   const visited = new Set<number>()
   let depth = 0
-  let parent = frame.parentFrameId
+  let parent = parents.get(frameId) ?? -1
   while (parent !== -1 && !visited.has(parent)) {
     visited.add(parent)
     depth += 1
