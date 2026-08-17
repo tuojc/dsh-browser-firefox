@@ -23,7 +23,7 @@ const DEFAULT_MAX_PENDING = 32
 export function createBrowserSnapshotMessage(snapshot: string): UserMessage {
   const text = [
     'The user chose to follow the newly active browser tab. The browser page context was refreshed immediately after that choice.',
-    'The following browser_snapshot is the current page state. Use it for the next request instead of asking whether the page was read.',
+    'The following is an already completed browser_snapshot of the current page. Use its stable indices directly for the next request; do not take an immediate duplicate snapshot unless required context is missing.',
     snapshot,
   ].join('\n\n')
   return createUserMessage({
