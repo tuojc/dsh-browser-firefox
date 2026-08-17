@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_SNAPSHOT_MAX_CHARS } from '@yuxianglin/dsh-bridge-browser/src/protocol.ts'
 import { dispatchToolCall, type ToolAnswer, type ToolCall } from '../src/background/tools.ts'
 
 const CALL: ToolCall = { id: 'tool-1', name: 'browser_snapshot', args: {} }
@@ -186,7 +185,6 @@ describe('dispatchToolCall', () => {
       type: 'DSH_ACTION',
       action: 'browser_click',
       args: { index: 3 },
-      budget: { maxItems: 60, maxChars: DEFAULT_SNAPSHOT_MAX_CHARS },
     }, { documentId: 'child-doc' })
   })
 
