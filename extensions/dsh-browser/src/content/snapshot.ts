@@ -254,6 +254,7 @@ function sameForm(a: FormFieldView, b: FormFieldView): boolean {
  * block; no images anywhere).
  * @param view - snapshot to render.
  * @param delta - whether this is a delta render (changes only).
+ * @param maxChars - optional render cap for compact derivative responses.
  * @returns the text payload.
  */
 /** 渲染结果的整体预算：主文/清单之外的部分（标题、URL、包装行）也计入。 */
@@ -289,7 +290,7 @@ function appendTruncationNotes(lines: string[], view: SnapshotView): void {
   if (notes.length > 0) lines.push(`\n(${notes.join('; ')}. Use browser_get_text or specify region for more content.)`)
 }
 
-export function renderSnapshot(view: SnapshotView, delta: boolean): string {
+export function renderSnapshot(view: SnapshotView, delta: boolean, maxChars: number = view.budgetChars): string {
   const lines: string[] = []
   if (delta) {
     lines.push(`Page change v${view.version} (${view.url})`)
@@ -321,7 +322,7 @@ export function renderSnapshot(view: SnapshotView, delta: boolean): string {
     if (view.removed.length > 0) lines.push(`Removed elements: ${view.removed.join(', ')}`)
     if (view.changed.length === 0 && view.removed.length === 0) lines.push('(No visible changes.)')
     appendTruncationNotes(lines, view)
-    return capRendered(lines.join('\n'), view.budgetChars)
+    return capRendered(lines.join('\n'), maxChars)
   }
   lines.push(`Title: ${view.title || '(untitled)'}`)
   lines.push(`URL: ${view.url}`)
@@ -345,5 +346,5 @@ export function renderSnapshot(view: SnapshotView, delta: boolean): string {
     }
   }
   appendTruncationNotes(lines, view)
-  return capRendered(lines.join('\n'), view.budgetChars)
+  return capRendered(lines.join('\n'), maxChars)
 }
