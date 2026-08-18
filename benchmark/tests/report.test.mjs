@@ -70,3 +70,13 @@ test('report skips duplicate backend records instead of silently cross-pairing t
   assert.match(markdown, /有重复后端记录，已跳过/u)
   assert.match(markdown, /\| 总计 \| 0 \| 0 \| 0 \| 0 \| 0 \|/u)
 })
+
+test('report rejects records from incompatible benchmark suite versions', () => {
+  const legacy = { ...record('playwright', 800), benchmarkSuiteVersion: 1 }
+  const current = record('extension', 400)
+
+  assert.throws(
+    () => renderReport([legacy, current]),
+    /不能汇总多个评测套件版本：1、2/u,
+  )
+})

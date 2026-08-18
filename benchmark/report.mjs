@@ -219,6 +219,10 @@ function failureRows(records) {
 
 export function renderReport(records, { sourceName = 'benchmark.jsonl' } = {}) {
   const valid = records.filter((record) => record?.schemaVersion === 1 && typeof record.backend === 'string')
+  const suiteVersions = [...new Set(valid.map((record) => record.benchmarkSuiteVersion ?? 'legacy/unknown'))]
+  if (suiteVersions.length > 1) {
+    throw new Error(`不能汇总多个评测套件版本：${suiteVersions.join('、')}。请按 benchmarkSuiteVersion 分别生成报告。`)
+  }
   const benchmarkIds = [...new Set(valid.map((record) => record.benchmarkId).filter(Boolean))]
   const backendGroups = groupBy(valid, (record) => record.backend)
   const overview = [...backendGroups.entries()]
@@ -241,12 +245,10 @@ export function renderReport(records, { sourceName = 'benchmark.jsonl' } = {}) {
     model: record.model,
     timeoutMs: record.timeoutMs,
   }))).size
-  const suiteVersions = [...new Set(valid.map((record) => record.benchmarkSuiteVersion ?? 'legacy/unknown'))]
   const consistencyNotes = [
     `有效记录 ${valid.length} 条，Benchmark ID ${benchmarkIds.length} 个。配对键同时包含 Benchmark ID，不会把追加到同一 JSONL 的多次运行交叉配对。`,
     `评测套件版本：${suiteVersions.join('、')}。`,
     ...(suiteVersions.includes('legacy/unknown') ? ['部分记录没有评测套件版本；它们属于旧结果，不应与修正成功标准后的结果直接比较。'] : []),
-    ...(suiteVersions.length > 1 ? ['检测到多个评测套件版本；任务或 validator 语义可能不同，请按版本拆分报告。'] : []),
     ...(configurationCount > 1 ? [`检测到 ${configurationCount} 套环境、模型或超时配置；不要把它们当成一个受控实验直接汇总。`] : []),
     ...paired.warnings,
   ]

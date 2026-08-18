@@ -60,7 +60,7 @@ node benchmark/report.mjs
 node benchmark/report.mjs benchmark/results/<file>.jsonl
 ```
 
-`--output` 必须指向一个尚不存在的新文件；runner 会拒绝向旧 JSONL 追加另一轮 benchmark，避免不同套件版本、模型或环境被静默汇总。需要合并分析时应保留各自文件，并显式按 `benchmarkSuiteVersion` 和配置分组。
+`--output` 必须指向一个尚不存在的新文件；runner 会拒绝向旧 JSONL 追加另一轮 benchmark，避免不同套件版本、模型或环境被静默汇总。报告生成器也会拒绝聚合包含多个 `benchmarkSuiteVersion` 的 JSONL。需要合并分析时应保留各自文件，并显式按套件版本和配置分组后分别生成报告。
 
 ## 任务集
 
