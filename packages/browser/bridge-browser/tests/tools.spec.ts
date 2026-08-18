@@ -121,13 +121,20 @@ describe('registerBrowserTools', () => {
     expect(requestTool).toHaveBeenLastCalledWith('browser_wait', { frame: 4 }, exec.signal, 1_000)
   })
 
-  it('declares a JSON Schema object root on every tool (empty objects serialize to type:null and get 400)', () => {
+  it('normalizes every DSH parameter map to JSON Schema before registration', () => {
     const { ctx, bridge, registered } = makeHarness()
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
     for (const { definition } of registered) {
-      const params = definition.parameters as { type?: unknown }
+      const params = definition.parameters as { type?: unknown; properties?: unknown }
       expect(params.type).toBe('object')
+      expect(params.properties).toBeDefined()
     }
+    const click = registered.find(({ name }) => name === 'browser_click')!.definition.parameters as {
+      properties: Record<string, unknown>
+      required?: string[]
+    }
+    expect(click.properties.index).toBeDefined()
+    expect(click.required).toContain('index')
   })
 
   it('declares cooperative timeoutMs on every tool', () => {
@@ -160,12 +167,12 @@ describe('registerBrowserTools', () => {
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 5_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
     const byName = new Map(registered.map((entry) => [entry.name, entry.definition]))
     for (const name of ['browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_get_text', 'browser_wait']) {
-      const params = byName.get(name)!.parameters as { frame?: { type?: unknown } }
-      expect(params.frame?.type).toBe('number')
+      const params = byName.get(name)!.parameters as { properties: { frame?: { type?: unknown } } }
+      expect(params.properties.frame?.type).toBe('number')
     }
     for (const name of ['browser_snapshot', 'browser_navigate', 'browser_back', 'browser_forward', 'browser_reload']) {
-      const params = byName.get(name)!.parameters as { frame?: unknown }
-      expect(params.frame).toBeUndefined()
+      const params = byName.get(name)!.parameters as { properties: { frame?: unknown } }
+      expect(params.properties.frame).toBeUndefined()
     }
   })
 

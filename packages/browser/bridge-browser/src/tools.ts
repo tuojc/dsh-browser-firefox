@@ -13,7 +13,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { BridgeServer } from './server.ts'
 
 /** Options resolved from plugin config before tool registration. */
@@ -32,23 +32,18 @@ interface TextResult {
 }
 
 /** Output contract shared by every browser tool. */
-const TEXT_OUTPUT: ToolDefinition['output'] = {
+const TEXT_OUTPUT = {
   schema: {
     type: 'object',
     additionalProperties: false,
-    properties: { text: { type: 'string' } },
-    required: ['text'],
+    properties: { text: { type: 'string', required: true } },
   },
-  render: (_args, value) => {
-    const result = value as unknown as TextResult
-    return [{ type: 'text', text: result.text }]
+  render: (_args: unknown, value: unknown) => {
+    const result = value as TextResult
+    return [{ type: 'text' as const, text: result.text }]
   },
-}
+} as const
 
-/** 显式 JSON Schema object 顶层：空 parameters 对象会被 DeepSeek 适配器序列化成
- * `{ type: null }` 并遭 API 拒绝（400 INVALID_REQUEST），所以每个工具的参数
- * schema 都必须显式声明 `type: 'object'`。 */
-const OBJECT_SCHEMA = { type: 'object' as const, additionalProperties: false as const }
 const FRAME_PARAMETER = {
   type: 'number' as const,
   description: 'Iframe number from browser_snapshot; omit for the top page.',
@@ -115,11 +110,10 @@ interface Call {
 
 /** The v1 tool set, model-perspective contracts only (no transport vocabulary). */
 function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[] {
-  const snapshot = (): ToolDefinition => ({
+  const snapshot = (): ToolDefinition => defineTool({
     name: 'browser_snapshot',
     description: `Read the page and accessible iframes as structured text with numbered action targets. Use frame for iframe targets and delta=true for changes only. ${UNTRUSTED_CONTENT_WARNING}`,
     parameters: {
-      ...OBJECT_SCHEMA,
       delta: { type: 'boolean', description: 'Return changes since the previous snapshot.' },
       region: { type: 'string', description: 'CSS selector or "main" to read only that region.' },
     },
@@ -134,11 +128,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     },
   })
 
-  const click = (): ToolDefinition => ({
+  const click = (): ToolDefinition => defineTool({
     name: 'browser_click',
     description: 'Click an element from the latest browser_snapshot by index; include frame for an iframe target.',
     parameters: {
-      ...OBJECT_SCHEMA,
       index: { type: 'number', required: true, description: 'Element index from the browser_snapshot inventory.' },
       frame: FRAME_PARAMETER,
     },
@@ -147,11 +140,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     execute: (args, exec) => call(exec, 'browser_click', args as Record<string, unknown>),
   })
 
-  const type = (): ToolDefinition => ({
+  const type = (): ToolDefinition => defineTool({
     name: 'browser_type',
     description: 'Append text to a field from browser_snapshot, or clear it first with replace=true. Include frame for an iframe target. Sensitive values are never returned.',
     parameters: {
-      ...OBJECT_SCHEMA,
       index: { type: 'number', required: true, description: 'Form-field index from the browser_snapshot forms inventory.' },
       frame: FRAME_PARAMETER,
       text: { type: 'string', required: true, description: 'Text to enter.' },
@@ -170,11 +162,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     },
   })
 
-  const press = (): ToolDefinition => ({
+  const press = (): ToolDefinition => defineTool({
     name: 'browser_press',
     description: 'Send one key press, such as Enter, Tab, Escape, an arrow, Backspace, or Delete.',
     parameters: {
-      ...OBJECT_SCHEMA,
       key: { type: 'string', required: true, description: 'Key name using KeyboardEvent.key semantics.' },
       frame: FRAME_PARAMETER,
     },
@@ -183,11 +174,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     execute: (args, exec) => call(exec, 'browser_press', args as Record<string, unknown>),
   })
 
-  const scroll = (): ToolDefinition => ({
+  const scroll = (): ToolDefinition => defineTool({
     name: 'browser_scroll',
     description: 'Scroll up, down, top, or bottom; amount is optional pixels.',
     parameters: {
-      ...OBJECT_SCHEMA,
       direction: { type: 'string', required: true, enum: ['up', 'down', 'top', 'bottom'], description: 'Scroll direction.' },
       amount: { type: 'number', description: 'Number of pixels to scroll; ignored for top and bottom.' },
       frame: FRAME_PARAMETER,
@@ -204,11 +194,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     },
   })
 
-  const navigate = (): ToolDefinition => ({
+  const navigate = (): ToolDefinition => defineTool({
     name: 'browser_navigate',
     description: 'Navigate the controlled tab to an HTTP(S) URL while preserving its login state.',
     parameters: {
-      ...OBJECT_SCHEMA,
       url: { type: 'string', required: true, description: 'Complete http or https URL.' },
     },
     timeoutMs: options.toolTimeoutMs,
@@ -216,20 +205,19 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     execute: (args, exec) => call(exec, 'browser_navigate', args as Record<string, unknown>),
   })
 
-  const simple = (name: 'browser_back' | 'browser_forward' | 'browser_reload', description: string): ToolDefinition => ({
+  const simple = (name: 'browser_back' | 'browser_forward' | 'browser_reload', description: string): ToolDefinition => defineTool({
     name,
     description,
-    parameters: { ...OBJECT_SCHEMA, properties: {} },
+    parameters: {},
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (_args, exec) => call(exec, name, {}),
   })
 
-  const getText = (): ToolDefinition => ({
+  const getText = (): ToolDefinition => defineTool({
     name: 'browser_get_text',
     description: `Read plain text from the page or a selector. ${UNTRUSTED_CONTENT_WARNING}`,
     parameters: {
-      ...OBJECT_SCHEMA,
       selector: { type: 'string', description: 'CSS selector. Omit to read the whole page.' },
       frame: FRAME_PARAMETER,
     },
@@ -244,11 +232,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     },
   })
 
-  const wait = (): ToolDefinition => ({
+  const wait = (): ToolDefinition => defineTool({
     name: 'browser_wait',
     description: 'Wait for loading and DOM changes to settle, with an optional extra delay.',
     parameters: {
-      ...OBJECT_SCHEMA,
       ms: { type: 'number', description: 'Additional milliseconds to wait. Omit to perform only the settle check.' },
       frame: FRAME_PARAMETER,
     },
