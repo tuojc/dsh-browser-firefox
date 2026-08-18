@@ -1,7 +1,7 @@
 import { access, readdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 
 const workspaceRequire = createRequire(new URL('../../packages/browser/bridge-browser/package.json', import.meta.url))
@@ -17,8 +17,36 @@ async function executable(path) {
   }
 }
 
-async function newestPlaywrightChromium() {
-  const cacheRoot = join(homedir(), 'Library', 'Caches', 'ms-playwright')
+export function playwrightCacheRoot({ platform = process.platform, env = process.env, home = homedir(), cwd = process.cwd() } = {}) {
+  const configured = env.PLAYWRIGHT_BROWSERS_PATH?.trim()
+  if (configured !== undefined && configured !== '' && configured !== '0') {
+    return isAbsolute(configured) ? configured : resolve(cwd, configured)
+  }
+  if (platform === 'darwin') return join(home, 'Library', 'Caches', 'ms-playwright')
+  if (platform === 'win32') return join(env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'ms-playwright')
+  return join(env.XDG_CACHE_HOME ?? join(home, '.cache'), 'ms-playwright')
+}
+
+export function systemBrowserCandidates({ platform = process.platform, requireExtensions = false } = {}) {
+  if (platform === 'darwin') {
+    return requireExtensions
+      ? ['/Applications/Chromium.app/Contents/MacOS/Chromium']
+      : [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        ]
+  }
+  if (platform === 'linux') {
+    return requireExtensions
+      ? ['/usr/bin/chromium', '/usr/bin/chromium-browser']
+      : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']
+  }
+  return []
+}
+
+async function newestPlaywrightChromium({ requireExtensions = false } = {}) {
+  const cacheRoot = playwrightCacheRoot()
   let entries
   try {
     entries = await readdir(cacheRoot, { withFileTypes: true })
@@ -26,9 +54,16 @@ async function newestPlaywrightChromium() {
     return undefined
   }
   const candidates = entries
-    .filter((entry) => entry.isDirectory() && /^(?:chromium|chromium_headless_shell)-/u.test(entry.name))
+    .filter((entry) => entry.isDirectory() && (requireExtensions
+      ? /^chromium-/u.test(entry.name)
+      : /^(?:chromium|chromium_headless_shell)-/u.test(entry.name)))
     .sort((left, right) => right.name.localeCompare(left.name))
-  const relativeExecutables = [
+  const relativeExecutables = requireExtensions ? [
+    ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
+    ['chrome-mac', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
+    ['chrome-linux', 'chrome'],
+    ['chrome-win', 'chrome.exe'],
+  ] : [
     ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
     ['chrome-mac', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
     ['chrome-linux', 'chrome'],
@@ -47,21 +82,19 @@ async function newestPlaywrightChromium() {
   return undefined
 }
 
-export async function findChromiumExecutable(override = process.env.PLAYWRIGHT_CHROMIUM_PATH) {
+export async function findChromiumExecutable(
+  override = process.env.PLAYWRIGHT_CHROMIUM_PATH,
+  { requireExtensions = false } = {},
+) {
   const explicit = await executable(override)
   if (explicit !== undefined) return explicit
   const bundled = await executable(chromium.executablePath())
   if (bundled !== undefined) return bundled
-  for (const candidate of [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-  ]) {
+  const cached = await newestPlaywrightChromium({ requireExtensions })
+  if (cached !== undefined) return cached
+  for (const candidate of systemBrowserCandidates({ requireExtensions })) {
     const found = await executable(candidate)
     if (found !== undefined) return found
   }
-  return newestPlaywrightChromium()
+  return undefined
 }

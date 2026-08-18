@@ -4,7 +4,7 @@ import { chromium, findChromiumExecutable } from './chromium.mjs'
 
 export async function startExtensionBrowser({ repoRoot, benchmarkRoot, bridgeUrl, trustedOrigin, connectTimeoutMs = 30_000, actionTimeoutMs = 8_000 }) {
   const extensionDir = resolve(repoRoot, 'extensions/dsh-browser/dist')
-  const executablePath = await findChromiumExecutable()
+  const executablePath = await findChromiumExecutable(undefined, { requireExtensions: true })
   if (executablePath === undefined) throw new Error('no Chromium executable found; set PLAYWRIGHT_CHROMIUM_PATH')
   const tempParent = resolve(benchmarkRoot, '.tmp')
   await mkdir(tempParent, { recursive: true })
