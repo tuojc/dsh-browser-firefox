@@ -15,6 +15,17 @@ The workspace uses a pinned, publicly available `@deepseek-ai/dsh` release for r
 > [!IMPORTANT]
 > The unscoped [`dsh-browser`](https://www.npmjs.com/package/dsh-browser) package on npm belongs to a different project and is not affiliated with this repository. This project is not currently published as an npm package; use the installation method below.
 
+## Performance
+
+In a paired 60-run end-to-end benchmark on August 18, 2026, both backends completed all 30 assigned runs successfully, while dsh Browser Control required fewer model/tool round trips and finished faster:
+
+| Backend | Success | Mean end-to-end latency | Mean browser tool calls |
+|---|---:|---:|---:|
+| **dsh Browser Control** | **30/30** | **5.32 s** | **3.4** |
+| Matched Playwright baseline | 30/30 | 6.67 s | 4.7 |
+
+The paired Playwright / extension duration ratio was **1.24** (95% CI **1.16–1.34**): Playwright took about 24% longer, or equivalently, dsh Browser Control reduced latency by about 20% and saved 1.35 seconds per task on average. The suite used six browser tasks, five deterministic seeds, the same DSH profile and model (`deepseek-v4-flash`), and independently validated page state. See the [benchmark methodology and reproduction guide](benchmark/README.md).
+
 ## Core capabilities
 
 | Capability | Tool | Notes |
