@@ -19,6 +19,7 @@ import {
 } from './frames.ts'
 import { wrapUntrustedContent } from './untrusted.ts'
 import { approvalPromptForCall } from './authorization.ts'
+import { waitForNextDocumentReady } from './navigation.ts'
 import type { ApprovalAuthorization, ApprovalPrompt } from '../security/approval.ts'
 
 /** A tool call from the bridge. */
@@ -46,6 +47,22 @@ export interface ContentBudget {
 }
 
 const CONTENT_SCRIPT_FILE = 'content.js'
+const ACTION_DELTA_TOOLS = new Set([
+  'browser_click',
+  'browser_type',
+  'browser_press',
+  'browser_scroll',
+  'browser_wait',
+])
+const ACTION_DELTA_GUIDANCE = 'The page settled and its current changes are included below. Continue from this state; take another snapshot only when broader page context is needed.'
+const NAVIGATION_CANDIDATE_TOOLS = new Set([
+  'browser_click',
+  'browser_navigate',
+  'browser_back',
+  'browser_forward',
+  'browser_reload',
+])
+const NAVIGATION_SNAPSHOT_GUIDANCE = 'Navigation completed and the current page snapshot is included below. Use it directly instead of taking an immediate duplicate snapshot.'
 const pendingInjections = new Map<number, Promise<void>>()
 const snapshotDocumentsByTab = new Map<number, Map<number, string>>()
 
@@ -81,12 +98,19 @@ async function injectContentScript(tabId: number): Promise<void> {
   }
 }
 
-async function sendAction(tabId: number, call: ToolCall, frame: TabFrame, budget?: ContentBudget): Promise<unknown> {
+async function sendAction(
+  tabId: number,
+  call: ToolCall,
+  frame: TabFrame,
+  budget?: ContentBudget,
+  includePageDelta: boolean = false,
+): Promise<unknown> {
   return chrome.tabs.sendMessage(tabId, {
     type: 'DSH_ACTION',
     action: call.name,
     args: withoutFrame(call.args),
     ...budget === undefined ? {} : { budget },
+    ...includePageDelta ? { includePageDelta: true } : {},
   }, frame.documentId === undefined ? { frameId: frame.frameId } : { documentId: frame.documentId })
 }
 
@@ -154,6 +178,29 @@ function answerText(answer: ToolAnswer): string | undefined {
   return typeof text === 'string' ? text : undefined
 }
 
+function answerPageContent(answer: ToolAnswer): string | undefined {
+  if (!answer.ok || typeof answer.result !== 'object' || answer.result === null) return undefined
+  const pageContent = (answer.result as { pageContent?: unknown }).pageContent
+  return typeof pageContent === 'string' ? pageContent : undefined
+}
+
+function answerNavigationPending(answer: ToolAnswer): boolean {
+  return answer.ok
+    && typeof answer.result === 'object'
+    && answer.result !== null
+    && (answer.result as { navigationPending?: unknown }).navigationPending === true
+}
+
+/** Keep extension-authored action status outside the nonce-bound page-data boundary. */
+function wrapActionDelta(status: string, pageContent: string, frame: TabFrame, maxChars: number): string {
+  const prefix = `${status}\n${ACTION_DELTA_GUIDANCE}`
+  const separator = '\n\n'
+  const boundaryBudget = maxChars - prefix.length - separator.length
+  if (boundaryBudget < 500) return prefix.slice(0, maxChars)
+  const framedContent = frame.frameId === 0 ? pageContent : `${frameHeader(frame)}\n${pageContent}`
+  return `${prefix}${separator}${wrapUntrustedContent(framedContent, boundaryBudget)}`
+}
+
 async function snapshotAllFrames(
   tabId: number,
   frames: TabFrame[],
@@ -215,6 +262,33 @@ function frameHeader(frame: TabFrame): string {
   return `\n--- iframe frame=${frame.frameId} parent=${frame.parentFrameId} origin=${frameOrigin(frame)} ---`
 }
 
+function stripDuplicateSnapshotPrompt(status: string): string {
+  return status.replace(/ Call browser_snapshot again after (?:navigation settles|the page loads|it loads)\.$/, '')
+}
+
+async function snapshotAfterNavigation(
+  tabId: number,
+  call: ToolCall,
+  status: string,
+  budget: ContentBudget,
+  targetStillAllowed?: () => boolean,
+): Promise<ToolAnswer | undefined> {
+  const prefix = `${stripDuplicateSnapshotPrompt(status)}\n${NAVIGATION_SNAPSHOT_GUIDANCE}`
+  const snapshotMaxChars = budget.maxChars - prefix.length - 2
+  if (snapshotMaxChars < 500) return undefined
+  const frames = await listTabFrames(tabId, undefined)
+  if (targetStillAllowed?.() === false) return targetChanged()
+  const answer = await snapshotAllFrames(
+    tabId,
+    frames,
+    { ...call, name: 'browser_snapshot', args: {} },
+    { ...budget, maxChars: snapshotMaxChars },
+  )
+  const snapshot = answerText(answer)
+  if (snapshot === undefined) return undefined
+  return { ok: true, result: { text: `${prefix}\n\n${snapshot}` } }
+}
+
 async function dispatchOnce(
   tabId: number,
   frames: TabFrame[],
@@ -222,6 +296,7 @@ async function dispatchOnce(
   budget: ContentBudget,
   signal?: AbortSignal,
   targetStillAllowed?: () => boolean,
+  includeActionDelta: boolean = false,
 ): Promise<ToolAnswer> {
   if (isCancelled(call, signal)) return cancelled()
   if (targetStillAllowed?.() === false) return targetChanged()
@@ -237,16 +312,63 @@ async function dispatchOnce(
   // approval cannot cross the final state-changing dispatch boundary.
   if (isCancelled(call, signal)) return cancelled()
   if (targetStillAllowed?.() === false) return targetChanged()
-  // Snapshot calls need negotiated limits; other actions avoid carrying and
-  // merging the same unused budget object on every message.
-  const response = await sendAction(tabId, call, frame)
-  if (isCancelled(call, signal)) return cancelled()
-  if (!isToolAnswer(response)) return unavailable('The page content script returned an invalid response.')
-  if (call.name !== 'browser_get_text') return response
+  const hasSnapshotBaseline = snapshotDocumentsByTab.get(tabId)?.get(frameId) === frameDocumentKey(frame)
+  const requestPageDelta = includeActionDelta && hasSnapshotBaseline && ACTION_DELTA_TOOLS.has(call.name)
+  const navigationWait = includeActionDelta && NAVIGATION_CANDIDATE_TOOLS.has(call.name)
+    ? waitForNextDocumentReady(tabId, frameId, frame.documentId, signal)
+    : undefined
+  let response: unknown
+  try {
+    response = await sendAction(
+      tabId,
+      call,
+      frame,
+      requestPageDelta ? budget : undefined,
+      requestPageDelta,
+    )
+  } catch (error: unknown) {
+    navigationWait?.cancel()
+    throw error
+  }
+  if (isCancelled(call, signal)) {
+    navigationWait?.cancel()
+    return cancelled()
+  }
+  if (!isToolAnswer(response)) {
+    navigationWait?.cancel()
+    return unavailable('The page content script returned an invalid response.')
+  }
   const text = answerText(response)
-  return text === undefined
-    ? response
-    : { ok: true, result: { text: wrapUntrustedContent(text, budget.maxChars) } }
+  if (text === undefined) {
+    navigationWait?.cancel()
+    return response
+  }
+  if (answerNavigationPending(response) && navigationWait !== undefined) {
+    const ready = await navigationWait.ready
+    if (isCancelled(call, signal)) return cancelled()
+    if (targetStillAllowed?.() === false) return targetChanged()
+    if (ready) {
+      try {
+        const snapshot = await snapshotAfterNavigation(tabId, call, text, budget, targetStillAllowed)
+        if (snapshot !== undefined) return snapshot
+      } catch {
+        // Preserve the successful navigation status when the replacement page
+        // becomes unavailable before its opportunistic snapshot completes.
+      }
+    }
+  } else {
+    navigationWait?.cancel()
+  }
+  if (call.name === 'browser_get_text') {
+    return { ok: true, result: { text: wrapUntrustedContent(text, budget.maxChars) } }
+  }
+  const pageContent = requestPageDelta ? answerPageContent(response) : undefined
+  return {
+    ok: true,
+    result: {
+      text: pageContent === undefined ? text : wrapActionDelta(text, pageContent, frame, budget.maxChars),
+    },
+  }
 }
 
 /**
@@ -313,7 +435,15 @@ export async function dispatchToolCall(
     if (refreshedTargetError !== undefined) return refreshedTargetError
   }
   try {
-    return await dispatchOnce(tab.id, executionFrames, call, effectiveBudget, signal, targetStillAllowed)
+    return await dispatchOnce(
+      tab.id,
+      executionFrames,
+      call,
+      effectiveBudget,
+      signal,
+      targetStillAllowed,
+      sharePageContent === 'auto',
+    )
   } catch {
     if (isCancelled(call, signal)) return cancelled()
     // Manifest content scripts do not run retroactively in tabs that were
@@ -339,7 +469,15 @@ export async function dispatchToolCall(
           return unavailable('The page changed while the content script was loading. Call browser_snapshot again before retrying.')
         }
       }
-      return await dispatchOnce(tab.id, refreshedFrames, call, effectiveBudget, signal, targetStillAllowed)
+      return await dispatchOnce(
+        tab.id,
+        refreshedFrames,
+        call,
+        effectiveBudget,
+        signal,
+        targetStillAllowed,
+        sharePageContent === 'auto',
+      )
     } catch {
       return unavailable('The content script could not be loaded on this page. Chrome internal and protected pages do not support browser operations.')
     }

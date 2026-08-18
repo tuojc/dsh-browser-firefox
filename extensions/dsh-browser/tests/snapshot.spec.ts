@@ -55,11 +55,46 @@ describe('buildSnapshot', () => {
     const second = buildSnapshot(ids, { delta: true, budget: BUDGET }, first)
     expect(second.changed).toContain(ids.indexOf(a))
     expect(second.changed).not.toContain(bIndex)
+    const secondText = renderSnapshot(second, true)
+    expect(secondText).toContain('Changed interactive elements:')
+    expect(secondText).toContain('甲已改名')
+    expect(secondText).not.toContain('Call browser_snapshot again')
 
     document.getElementById('b')!.remove()
     const third = buildSnapshot(ids, { delta: true, budget: BUDGET }, second)
     expect(third.removed).toContain(bIndex)
     expect(renderSnapshot(third, true)).toContain('Removed elements:')
+  })
+
+  it('renders wrapped checkbox labels and explicit checked state', () => {
+    document.body.innerHTML = '<label><input type="checkbox">邮件通知</label>'
+    const checkbox = document.querySelector<HTMLInputElement>('input')!
+    const ids = new ElementIds()
+    const first = buildSnapshot(ids, { budget: BUDGET }, null)
+    const firstText = renderSnapshot(first, false)
+
+    expect(firstText).toContain('checkbox "邮件通知" [unchecked]')
+    expect(firstText).toContain('checked=false')
+    expect(firstText).not.toContain('value="on"')
+
+    checkbox.checked = true
+    const second = buildSnapshot(ids, { delta: true, budget: BUDGET }, first)
+    const secondText = renderSnapshot(second, true)
+    expect(second.changed).toContain(ids.indexOf(checkbox))
+    expect(secondText).toContain('checkbox "邮件通知" [checked]')
+    expect(secondText).toContain('checked=true')
+  })
+
+  it('includes changed main content in delta snapshots', () => {
+    document.body.innerHTML = '<main>处理中</main>'
+    const ids = new ElementIds()
+    const first = buildSnapshot(ids, { budget: BUDGET }, null)
+    document.querySelector('main')!.textContent = '结算完成'
+
+    const second = buildSnapshot(ids, { delta: true, budget: BUDGET }, first)
+    const text = renderSnapshot(second, true)
+    expect(text).toContain('Changed main content:')
+    expect(text).toContain('结算完成')
   })
 
   it('caps inventory by budget and reports drops', () => {

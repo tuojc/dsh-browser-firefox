@@ -13,8 +13,9 @@ describe('content script registration', () => {
   it('replaces a stale listener when content.js is injected again', async () => {
     const addListener = vi.fn()
     const removeListener = vi.fn()
+    const sendMessage = vi.fn(async () => undefined)
     vi.stubGlobal('chrome', {
-      runtime: { onMessage: { addListener, removeListener } },
+      runtime: { onMessage: { addListener, removeListener }, sendMessage },
     })
 
     await import('../src/content/index.ts')
@@ -28,5 +29,7 @@ describe('content script registration', () => {
     expect(removeListener).toHaveBeenCalledWith(firstListener)
     expect(addListener).toHaveBeenCalledTimes(2)
     expect(addListener.mock.calls[1]?.[0]).not.toBe(firstListener)
+    expect(sendMessage).toHaveBeenCalledTimes(2)
+    expect(sendMessage).toHaveBeenLastCalledWith({ type: 'DSH_CONTENT_READY' })
   })
 })

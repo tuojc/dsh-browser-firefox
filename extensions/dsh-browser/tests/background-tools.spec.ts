@@ -13,6 +13,7 @@ function mockChrome(options: {
   respond?: (message: unknown, frameId: number) => unknown
 }) {
   const responses = [...(options.responses ?? [OK])]
+  const runtimeListeners = new Set<(message: unknown, sender: chrome.runtime.MessageSender) => void>()
   const currentFrames = () => options.frames ?? (options.tab?.id === undefined ? [] : [{
     frameId: 0,
     parentFrameId: -1,
@@ -40,8 +41,23 @@ function mockChrome(options: {
     tabs: { query, sendMessage },
     scripting: { executeScript },
     webNavigation: { getAllFrames },
+    runtime: {
+      onMessage: {
+        addListener: (listener: (message: unknown, sender: chrome.runtime.MessageSender) => void) => {
+          runtimeListeners.add(listener)
+        },
+        removeListener: (listener: (message: unknown, sender: chrome.runtime.MessageSender) => void) => {
+          runtimeListeners.delete(listener)
+        },
+      },
+    },
   })
-  return { executeScript, getAllFrames, query, sendMessage }
+  const emitContentReady = (tabId: number, frameId: number, documentId: string): void => {
+    for (const listener of runtimeListeners) {
+      listener({ type: 'DSH_CONTENT_READY' }, { tab: { id: tabId }, frameId, documentId } as chrome.runtime.MessageSender)
+    }
+  }
+  return { emitContentReady, executeScript, getAllFrames, query, sendMessage }
 }
 
 afterEach(() => {
@@ -185,7 +201,148 @@ describe('dispatchToolCall', () => {
       type: 'DSH_ACTION',
       action: 'browser_click',
       args: { index: 3 },
+      budget: expect.objectContaining({ maxItems: 60 }),
+      includePageDelta: true,
     }, { documentId: 'child-doc' })
+  })
+
+  it('returns automatic action deltas inside a fresh untrusted-content boundary', async () => {
+    const call: ToolCall = { id: 'tool-delta', name: 'browser_click', args: { index: 3 } }
+    const budget = { maxItems: 10, maxChars: 1_000 }
+    const chromeMock = mockChrome({
+      tab: { id: 33, url: 'https://app.example/' },
+      respond: (message) => (message as { action?: string }).action === 'browser_snapshot'
+        ? { ok: true, result: { text: 'Initial page' } }
+        : {
+            ok: true,
+            result: {
+              text: 'Clicked [3].',
+              pageContent: 'Page change v2\nChanged main content:\nOrder complete',
+            },
+          },
+    })
+    await dispatchToolCall(CALL, 'auto', budget)
+    chromeMock.sendMessage.mockClear()
+
+    const answer = await dispatchToolCall(call, 'auto', budget, async () => 'approved')
+
+    expect(answer.ok).toBe(true)
+    const result = answer.result as { text: string; pageContent?: string }
+    expect(result.text).toContain('Clicked [3].')
+    expect(result.text).toContain('Continue from this state')
+    expect(result.text).toContain('UNTRUSTED_PAGE_CONTENT')
+    expect(result.text).toContain('Order complete')
+    expect(result.text.length).toBeLessThanOrEqual(budget.maxChars)
+    expect(result.pageContent).toBeUndefined()
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith(33, {
+      type: 'DSH_ACTION',
+      action: 'browser_click',
+      args: { index: 3 },
+      budget,
+      includePageDelta: true,
+    }, { documentId: 'document-33' })
+  })
+
+  it('does not extract or forward an action delta when reads require approval', async () => {
+    const call: ToolCall = { id: 'tool-private-delta', name: 'browser_click', args: { index: 2 } }
+    const chromeMock = mockChrome({
+      tab: { id: 34, url: 'https://private.example/' },
+      respond: (message) => (message as { action?: string }).action === 'browser_snapshot'
+        ? { ok: true, result: { text: 'Initial private page' } }
+        : {
+            ok: true,
+            result: {
+              text: 'Clicked [2].',
+              pageContent: 'This content must not cross the sharing boundary',
+            },
+          },
+    })
+    await dispatchToolCall(CALL, 'auto')
+    chromeMock.sendMessage.mockClear()
+
+    const answer = await dispatchToolCall(call, 'ask', undefined, async () => 'approved')
+
+    expect(answer).toEqual({ ok: true, result: { text: 'Clicked [2].' } })
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith(34, {
+      type: 'DSH_ACTION',
+      action: 'browser_click',
+      args: { index: 2 },
+    }, { documentId: 'document-34' })
+  })
+
+  it('returns the replacement page snapshot in the same navigation tool call', async () => {
+    const frames = [
+      { frameId: 0, parentFrameId: -1, documentId: 'document-before', url: 'https://app.example/start' },
+    ]
+    const budget = { maxItems: 10, maxChars: 2_000 }
+    const chromeMock = mockChrome({
+      tab: { id: 35, url: 'https://app.example/start' },
+      frames,
+      respond: (message) => (message as { action?: string }).action === 'browser_navigate'
+        ? {
+            ok: true,
+            result: {
+              text: 'Navigating to https://app.example/next. Call browser_snapshot again after the page loads.',
+              navigationPending: true,
+            },
+          }
+        : { ok: true, result: { text: 'Title: Next page\nURL: https://app.example/next' } },
+    })
+
+    const pending = dispatchToolCall(
+      { id: 'tool-navigation', name: 'browser_navigate', args: { url: 'https://app.example/next' } },
+      'auto',
+      budget,
+      async () => 'approved',
+    )
+    await vi.waitFor(() => { expect(chromeMock.sendMessage).toHaveBeenCalledTimes(1) })
+    frames[0] = {
+      frameId: 0,
+      parentFrameId: -1,
+      documentId: 'document-after',
+      url: 'https://app.example/next',
+    }
+    chromeMock.emitContentReady(35, 0, 'document-after')
+
+    const answer = await pending
+    const text = (answer.result as { text: string }).text
+    expect(text).toContain('Navigation completed')
+    expect(text).toContain('Title: Next page')
+    expect(text).toContain('UNTRUSTED_PAGE_CONTENT')
+    expect(text).not.toContain('Call browser_snapshot again')
+    expect(text.length).toBeLessThanOrEqual(budget.maxChars)
+    expect(chromeMock.sendMessage).toHaveBeenCalledTimes(2)
+    expect(chromeMock.sendMessage).toHaveBeenLastCalledWith(35, expect.objectContaining({
+      action: 'browser_snapshot',
+      args: { delta: false },
+      budget: expect.objectContaining({ maxChars: expect.any(Number) }),
+    }), { documentId: 'document-after' })
+  })
+
+  it('does not wait for or return navigation page content when reads are not automatic', async () => {
+    const chromeMock = mockChrome({
+      tab: { id: 36, url: 'https://app.example/start' },
+      respond: () => ({
+        ok: true,
+        result: {
+          text: 'Navigating to https://app.example/next. Call browser_snapshot again after the page loads.',
+          navigationPending: true,
+        },
+      }),
+    })
+
+    const answer = await dispatchToolCall(
+      { id: 'tool-private-navigation', name: 'browser_navigate', args: { url: 'https://app.example/next' } },
+      'ask',
+      undefined,
+      async () => 'approved',
+    )
+
+    expect(answer).toEqual({
+      ok: true,
+      result: { text: expect.stringContaining('Call browser_snapshot again') },
+    })
+    expect(chromeMock.sendMessage).toHaveBeenCalledTimes(1)
   })
 
   it('wraps browser_get_text output in the same untrusted-content boundary', async () => {

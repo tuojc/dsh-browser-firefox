@@ -25,7 +25,7 @@ type ContentListener = typeof onMessage
 /** A tool-call result for the bridge. */
 export interface ToolResult {
   ok: boolean
-  result?: { text: string }
+  result?: { text: string; pageContent?: string; navigationPending?: boolean }
   error?: { code: string; message: string }
 }
 
@@ -45,11 +45,16 @@ function onMessage(message: unknown, _sender: chrome.runtime.MessageSender, send
     action?: string
     args?: Record<string, unknown>
     budget?: Partial<SnapshotBudget>
+    includePageDelta?: boolean
   }
   const action = actionMsg.action ?? ''
   const args = actionMsg.args ?? {}
   const actionBudget = actionMsg.budget === undefined ? budget : { ...budget, ...actionMsg.budget }
-  void runAction(action, args, { ids, budget: actionBudget }).then(
+  void runAction(action, args, {
+    ids,
+    budget: actionBudget,
+    includePageDelta: actionMsg.includePageDelta === true,
+  }).then(
     (result) => { sendResponse({ ok: true, result }) },
     (error: unknown) => {
       const code = error instanceof ActionError ? error.code : 'action-failed'
@@ -70,3 +75,7 @@ if (previousListener !== undefined) {
 }
 contentGlobal[CONTENT_SCRIPT_LISTENER] = onMessage
 chrome.runtime.onMessage.addListener(onMessage)
+
+// A navigation action answers before unloading. The replacement content
+// script announces when the new document can accept its automatic snapshot.
+void chrome.runtime.sendMessage({ type: 'DSH_CONTENT_READY' }).catch(() => {})

@@ -52,6 +52,7 @@ interface FormFieldView {
   kind: string
   value: string
   masked: boolean
+  checked?: boolean
   required?: boolean
 }
 
@@ -148,6 +149,8 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
       if (el.disabled) item.disabled = true
       if (el.type === 'checkbox' || el.type === 'radio') item.checked = el.checked
     }
+    const ariaChecked = el.getAttribute('aria-checked')
+    if (ariaChecked === 'true' || ariaChecked === 'false') item.checked = ariaChecked === 'true'
     if (el instanceof HTMLOptionElement && el.selected) item.selected = true
     if (el instanceof HTMLAnchorElement && el.href !== '') item.href = hrefHeadline(el.href)
     items.push(item)
@@ -163,7 +166,10 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
     const index = ids.indexOf(el)
     if (index === undefined) continue
     const masked = isSensitiveField(el)
-    const value = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+    const checkable = el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')
+    const value = checkable
+      ? ''
+      : el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
       ? el.value
       : el instanceof HTMLSelectElement
         ? selectedText(el)
@@ -174,6 +180,7 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
       kind: el instanceof HTMLInputElement ? el.type : el.tagName.toLowerCase(),
       value: masked ? maskValue(value) : value.slice(0, 120),
       masked,
+      ...checkable ? { checked: el.checked } : {},
       ...el instanceof HTMLInputElement && el.required ? { required: true } : {},
     })
   }
@@ -239,6 +246,7 @@ function sameItem(a: InventoryItem, b: InventoryItem): boolean {
 
 function sameForm(a: FormFieldView, b: FormFieldView): boolean {
   return a.label === b.label && a.kind === b.kind && a.value === b.value && a.masked === b.masked
+    && a.checked === b.checked && a.required === b.required
 }
 
 /**
@@ -246,6 +254,7 @@ function sameForm(a: FormFieldView, b: FormFieldView): boolean {
  * block; no images anywhere).
  * @param view - snapshot to render.
  * @param delta - whether this is a delta render (changes only).
+ * @param maxChars - optional render cap for compact derivative responses.
  * @returns the text payload.
  */
 /** 渲染结果的整体预算：主文/清单之外的部分（标题、URL、包装行）也计入。 */
@@ -254,17 +263,66 @@ function capRendered(text: string, budgetChars: number): string {
   return `${text.slice(0, budgetChars)}…(truncated to the snapshot character budget)`
 }
 
-export function renderSnapshot(view: SnapshotView, delta: boolean): string {
+function renderItem(item: InventoryItem): string {
+  const state = [
+    item.disabled === true ? 'disabled' : undefined,
+    item.checked === undefined ? undefined : item.checked ? 'checked' : 'unchecked',
+    item.inViewport ? undefined : 'outside viewport',
+  ].filter((value) => value !== undefined).join('/')
+  const stateText = state === '' ? '' : ` [${state}]`
+  const hrefText = item.href !== undefined ? ` → ${item.href}` : ''
+  return `  [${item.index}] ${item.role} "${item.name}"${stateText}${hrefText}`
+}
+
+function renderForm(form: FormFieldView, includeIdentity: boolean): string {
+  const identity = includeIdentity ? `${form.label} (${form.kind}) ` : ''
+  const state = form.checked === undefined
+    ? `value="${form.masked ? '••••' : form.value}"`
+    : `checked=${String(form.checked)}`
+  return `  [${form.index}] ${identity}${state}${form.required === true ? ' required' : ''}`
+}
+
+function appendTruncationNotes(lines: string[], view: SnapshotView): void {
+  const notes: string[] = []
+  if (view.truncated.mainChars > 0) notes.push(`Main content truncated by ${view.truncated.mainChars} characters`)
+  if (view.truncated.itemsDropped > 0) notes.push(`${view.truncated.itemsDropped} additional elements omitted`)
+  if (view.truncated.formsDropped > 0) notes.push(`${view.truncated.formsDropped} additional form fields omitted`)
+  if (notes.length > 0) lines.push(`\n(${notes.join('; ')}. Use browser_get_text or specify region for more content.)`)
+}
+
+export function renderSnapshot(view: SnapshotView, delta: boolean, maxChars: number = view.budgetChars): string {
   const lines: string[] = []
   if (delta) {
     lines.push(`Page change v${view.version} (${view.url})`)
-    if (view.changed.includes(-1)) lines.push('Main content, title, or URL changed.')
     const elementChanges = view.changed.filter((id) => id !== -1)
-    if (elementChanges.length > 0) lines.push(`Changed elements: ${elementChanges.join(', ')}`)
+    const changedIds = new Set(elementChanges)
+    const changedItems = view.items.filter((item) => changedIds.has(item.index))
+    const changedForms = view.forms.filter((form) => changedIds.has(form.index))
+
+    lines.push(`Status: ${view.ready}${view.reindexed ? ' (element indices were reassigned; use the indices in this snapshot)' : ''}`)
+    if (view.changed.includes(-1)) {
+      lines.push(`Title: ${view.title || '(untitled)'}`)
+      if (view.main.length > 0) {
+        lines.push('')
+        lines.push('Changed main content:')
+        lines.push(view.main)
+      }
+    }
+    if (changedItems.length > 0) {
+      lines.push('')
+      lines.push('Changed interactive elements:')
+      for (const item of changedItems) lines.push(renderItem(item))
+    }
+    if (changedForms.length > 0) {
+      lines.push('')
+      lines.push('Changed form fields:')
+      const renderedItems = new Set(changedItems.map((item) => item.index))
+      for (const form of changedForms) lines.push(renderForm(form, !renderedItems.has(form.index)))
+    }
     if (view.removed.length > 0) lines.push(`Removed elements: ${view.removed.join(', ')}`)
     if (view.changed.length === 0 && view.removed.length === 0) lines.push('(No visible changes.)')
-    lines.push('Call browser_snapshot again without delta for a full snapshot.')
-    return capRendered(lines.join('\n'), view.budgetChars)
+    appendTruncationNotes(lines, view)
+    return capRendered(lines.join('\n'), maxChars)
   }
   lines.push(`Title: ${view.title || '(untitled)'}`)
   lines.push(`URL: ${view.url}`)
@@ -277,30 +335,16 @@ export function renderSnapshot(view: SnapshotView, delta: boolean): string {
   if (view.items.length > 0) {
     lines.push('')
     lines.push('Interactive elements:')
-    for (const item of view.items) {
-      const state = [
-        item.disabled === true ? 'disabled' : undefined,
-        item.checked === true ? 'checked' : undefined,
-        item.inViewport ? undefined : 'outside viewport',
-      ].filter((x) => x !== undefined).join('/')
-      const stateText = state === '' ? '' : ` [${state}]`
-      const hrefText = item.href !== undefined ? ` → ${item.href}` : ''
-      lines.push(`  [${item.index}] ${item.role} "${item.name}"${stateText}${hrefText}`)
-    }
+    for (const item of view.items) lines.push(renderItem(item))
   }
   if (view.forms.length > 0) {
     lines.push('')
     lines.push('Form fields:')
     const renderedItems = new Set(view.items.map((item) => item.index))
     for (const form of view.forms) {
-      const identity = renderedItems.has(form.index) ? '' : `${form.label} (${form.kind}) `
-      lines.push(`  [${form.index}] ${identity}value="${form.masked ? '••••' : form.value}"${form.required === true ? ' required' : ''}`)
+      lines.push(renderForm(form, !renderedItems.has(form.index)))
     }
   }
-  const notes: string[] = []
-  if (view.truncated.mainChars > 0) notes.push(`Main content truncated by ${view.truncated.mainChars} characters`)
-  if (view.truncated.itemsDropped > 0) notes.push(`${view.truncated.itemsDropped} additional elements omitted`)
-  if (view.truncated.formsDropped > 0) notes.push(`${view.truncated.formsDropped} additional form fields omitted`)
-  if (notes.length > 0) lines.push(`\n(${notes.join('; ')}. Use browser_get_text or specify region for more content.)`)
-  return capRendered(lines.join('\n'), view.budgetChars)
+  appendTruncationNotes(lines, view)
+  return capRendered(lines.join('\n'), maxChars)
 }
