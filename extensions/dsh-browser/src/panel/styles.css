@@ -1292,13 +1292,16 @@ textarea:focus-visible {
 .settings {
   display: flex;
   width: 100%;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px 16px 24px;
   background: var(--canvas);
+  scrollbar-gutter: stable;
 }
 
 .settings-heading {
