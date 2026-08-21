@@ -5,6 +5,7 @@ import { isApprovalDecision, type ApprovalRequest } from '../src/security/approv
 import type { TabAffinityState } from '../src/background/tab-affinity.ts'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -85,6 +86,7 @@ describe('panel approval protocol', () => {
   })
 
   it('waits for a correlated acknowledgement before completing a tab rebind', async () => {
+    vi.useFakeTimers()
     let receive: ((message: unknown) => void) | undefined
     const postMessage = vi.fn()
     const port = {
@@ -97,10 +99,14 @@ describe('panel approval protocol', () => {
     const api = connectPanel()
 
     const pending = api.rebindTabAffinity()
+    const settled = vi.fn()
+    void pending.then(() => { settled('resolved') }, () => { settled('rejected') })
     expect(postMessage).toHaveBeenCalledWith({
       type: 'tab-affinity.rebind',
       id: '12345678-1234-4234-8234-123456789abe',
     })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(settled).not.toHaveBeenCalled()
 
     receive?.({
       type: 'tab-affinity.rebind.result',

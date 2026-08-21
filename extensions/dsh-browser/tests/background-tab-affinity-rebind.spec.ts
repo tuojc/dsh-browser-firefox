@@ -20,7 +20,7 @@ function panelPort() {
     onMessage,
     onDisconnect,
   } as unknown as chrome.runtime.Port
-  return { onMessage, port, postMessage }
+  return { onDisconnect, onMessage, port, postMessage }
 }
 
 function tab(tabId: number): chrome.tabs.Tab {
@@ -106,6 +106,7 @@ async function connectPanelForTest() {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.resetModules()
   vi.unstubAllGlobals()
 })
@@ -153,6 +154,69 @@ describe('background tab-affinity rebind protocol', () => {
     })
     expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'tab-affinity' }))
 
+    onMessage.emit({ type: 'request-status' })
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tab-affinity',
+      state: expect.objectContaining({ status: 'following', controlled: expect.objectContaining({ tabId: 1 }) }),
+    }))
+  })
+
+  it('owns the deadline in the background and ignores a query that resolves after timeout', async () => {
+    const { onMessage, postMessage, query } = await connectPanelForTest()
+    onMessage.emit({ type: 'tab-affinity.rebind', id: 'initial-bind' })
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith({ type: 'tab-affinity.rebind.result', id: 'initial-bind', ok: true })
+    })
+    postMessage.mockClear()
+
+    let finishQuery!: (tabs: chrome.tabs.Tab[]) => void
+    query.mockImplementationOnce(async () => await new Promise<chrome.tabs.Tab[]>((resolve) => {
+      finishQuery = resolve
+    }))
+    vi.useFakeTimers()
+    onMessage.emit({ type: 'tab-affinity.rebind', id: 'slow-rebind' })
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tab-affinity.rebind.result',
+      id: 'slow-rebind',
+      ok: false,
+      error: expect.objectContaining({ code: 'timeout' }),
+    }))
+    postMessage.mockClear()
+
+    finishQuery([tab(2)])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'tab-affinity' }))
+
+    onMessage.emit({ type: 'request-status' })
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tab-affinity',
+      state: expect.objectContaining({ status: 'following', controlled: expect.objectContaining({ tabId: 1 }) }),
+    }))
+  })
+
+  it('cancels an in-flight rebind when its panel disconnects', async () => {
+    const { onDisconnect, onMessage, postMessage, query } = await connectPanelForTest()
+    onMessage.emit({ type: 'tab-affinity.rebind', id: 'initial-bind' })
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith({ type: 'tab-affinity.rebind.result', id: 'initial-bind', ok: true })
+    })
+    postMessage.mockClear()
+
+    let finishQuery!: (tabs: chrome.tabs.Tab[]) => void
+    query.mockImplementationOnce(async () => await new Promise<chrome.tabs.Tab[]>((resolve) => {
+      finishQuery = resolve
+    }))
+    onMessage.emit({ type: 'tab-affinity.rebind', id: 'disconnected-rebind' })
+    await vi.waitFor(() => { expect(query).toHaveBeenCalledTimes(4) })
+    onDisconnect.emit()
+    finishQuery([tab(2)])
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'tab-affinity' }))
     onMessage.emit({ type: 'request-status' })
     expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'tab-affinity',

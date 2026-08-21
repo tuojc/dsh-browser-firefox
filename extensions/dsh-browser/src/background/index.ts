@@ -157,6 +157,44 @@ let affinityPersistence = Promise.resolve()
 /** The next prompt waits until an accepted follow has refreshed dsh context. */
 let followedPageRefresh: Promise<void> = Promise.resolve()
 let activeFollowRefresh: AbortController | null = null
+const TAB_AFFINITY_REBIND_TIMEOUT_MS = 10_000
+
+class TabAffinityRebindError extends Error {
+  constructor(readonly code: 'no-active-tab' | 'timeout' | 'cancelled', message: string) {
+    super(message)
+    this.name = 'TabAffinityRebindError'
+  }
+}
+
+function rebindAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new TabAffinityRebindError('cancelled', getUiLocale() === 'zh' ? '标签页绑定已取消' : 'Tab binding was cancelled')
+}
+
+function throwIfRebindAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw rebindAbortReason(signal)
+}
+
+/** Reject promptly on cancellation while safely consuming a late Chrome promise. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(rebindAbortReason(signal))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => { reject(rebindAbortReason(signal)) }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        if (signal.aborted) reject(rebindAbortReason(signal))
+        else resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
 
 async function loadSettings(): Promise<Settings> {
   const stored = await chrome.storage.local.get(STORAGE_KEY)
@@ -335,18 +373,22 @@ function observeActiveTab(tab: chrome.tabs.Tab): void {
   if (summary !== null) observeActiveSummary(summary)
 }
 
-async function syncActiveTab(windowId?: number): Promise<chrome.tabs.Tab | undefined> {
+async function syncActiveTab(windowId?: number, signal?: AbortSignal): Promise<chrome.tabs.Tab | undefined> {
   const queryRevision = focusedWindow.beginQuery()
   const query = windowId === undefined
     ? { active: true, lastFocusedWindow: true }
     : { active: true, windowId }
   try {
-    const [tab] = await chrome.tabs.query(query)
+    const tabs = chrome.tabs.query(query)
+    const [tab] = signal === undefined ? await tabs : await abortable(tabs, signal)
+    if (signal !== undefined) throwIfRebindAborted(signal)
     if (tab === undefined) return undefined
     if (!focusedWindow.commitQuery(tab.windowId, queryRevision)) return undefined
+    if (signal !== undefined) throwIfRebindAborted(signal)
     observeActiveTab(tab)
     return tab
   } catch {
+    if (signal !== undefined && signal.aborted) throw rebindAbortReason(signal)
     return undefined
   }
 }
@@ -552,12 +594,13 @@ async function resolveTabAffinityResponse(response: {
 }
 
 /** Move browser control to the current tab only after a fresh, valid query. */
-async function rebindTabAffinityToActive(): Promise<void> {
-  await affinityReady
-  const tab = await syncActiveTab()
+async function rebindTabAffinityToActive(signal: AbortSignal): Promise<void> {
+  await abortable(affinityReady, signal)
+  const tab = await syncActiveTab(undefined, signal)
+  throwIfRebindAborted(signal)
   const summary = tab === undefined ? null : summarizeTab(tab)
   if (summary === null) {
-    throw new Error(getUiLocale() === 'zh'
+    throw new TabAffinityRebindError('no-active-tab', getUiLocale() === 'zh'
       ? '无法确定当前标签页，原会话和标签页绑定保持不变'
       : 'The current tab could not be determined; the existing session and tab binding were left unchanged')
   }
@@ -722,6 +765,10 @@ async function gatewayRpc(method: string, payload: unknown): Promise<unknown> {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'dsh-panel') return
+  const tabAffinityRebinds = new Map<string, {
+    controller: AbortController
+    timer: ReturnType<typeof setTimeout>
+  }>()
   panelPorts.add(port)
   if (bridge === null) void startBridge()
   try { port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps }) } catch { /* port closed */ }
@@ -812,24 +859,38 @@ chrome.runtime.onConnect.addListener((port) => {
       case 'tab-affinity.rebind': {
         const request = message as { id?: unknown }
         if (typeof request.id !== 'string') break
-        void rebindTabAffinityToActive().then(
+        const requestId = request.id
+        if (tabAffinityRebinds.has(requestId)) break
+        const controller = new AbortController()
+        const timer = setTimeout(() => {
+          controller.abort(new TabAffinityRebindError('timeout', getUiLocale() === 'zh'
+            ? '绑定当前标签页超时，请重试'
+            : 'Binding the current tab timed out. Try again.'))
+        }, TAB_AFFINITY_REBIND_TIMEOUT_MS)
+        tabAffinityRebinds.set(requestId, { controller, timer })
+        void rebindTabAffinityToActive(controller.signal).then(
           () => {
-            try { port.postMessage({ type: 'tab-affinity.rebind.result', id: request.id, ok: true }) } catch { /* port closed */ }
+            try { port.postMessage({ type: 'tab-affinity.rebind.result', id: requestId, ok: true }) } catch { /* port closed */ }
           },
           (error: unknown) => {
             try {
               port.postMessage({
                 type: 'tab-affinity.rebind.result',
-                id: request.id,
+                id: requestId,
                 ok: false,
                 error: {
-                  code: 'no-active-tab',
+                  code: error instanceof TabAffinityRebindError ? error.code : 'no-active-tab',
                   message: error instanceof Error ? error.message : String(error),
                 },
               })
             } catch { /* port closed */ }
           },
-        )
+        ).finally(() => {
+          const current = tabAffinityRebinds.get(requestId)
+          if (current?.controller !== controller) return
+          clearTimeout(current.timer)
+          tabAffinityRebinds.delete(requestId)
+        })
         break
       }
       case 'request-status':
@@ -851,6 +912,13 @@ chrome.runtime.onConnect.addListener((port) => {
     }
   })
   port.onDisconnect.addListener(() => {
+    for (const operation of tabAffinityRebinds.values()) {
+      clearTimeout(operation.timer)
+      operation.controller.abort(new TabAffinityRebindError('cancelled', getUiLocale() === 'zh'
+        ? '后台连接已断开，标签页绑定已取消'
+        : 'The background connection was lost, so tab binding was cancelled'))
+    }
+    tabAffinityRebinds.clear()
     panelPorts.delete(port)
     interactionResponses.removePort(port)
     if (panelPorts.size === 0) {

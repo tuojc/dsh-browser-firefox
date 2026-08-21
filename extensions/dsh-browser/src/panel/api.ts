@@ -102,7 +102,6 @@ export function connectPanel(): PanelApi {
   const pendingRebinds = new Map<string, {
     resolve: () => void
     reject: (error: Error) => void
-    timer: ReturnType<typeof setTimeout>
   }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
   const eventListeners = new Set<(frame: ServerFrame) => void>()
@@ -158,7 +157,6 @@ export function connectPanel(): PanelApi {
         const entry = pendingRebinds.get(msg.id)
         if (entry === undefined) return
         pendingRebinds.delete(msg.id)
-        clearTimeout(entry.timer)
         if (msg.ok) entry.resolve()
         else entry.reject(new Error(msg.error?.message
           ?? (getUiLocale() === 'zh' ? '无法绑定当前标签页' : 'Failed to bind the current tab')))
@@ -180,7 +178,6 @@ export function connectPanel(): PanelApi {
     }
     pendingResponses.clear()
     for (const entry of pendingRebinds.values()) {
-      clearTimeout(entry.timer)
       entry.reject(error)
     }
     pendingRebinds.clear()
@@ -238,15 +235,10 @@ export function connectPanel(): PanelApi {
     rebindTabAffinity() {
       const id = crypto.randomUUID()
       return new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pendingRebinds.delete(id)
-          reject(new Error(getUiLocale() === 'zh' ? '绑定当前标签页超时，请重试' : 'Binding the current tab timed out. Try again.'))
-        }, 10_000)
-        pendingRebinds.set(id, { resolve, reject, timer })
+        pendingRebinds.set(id, { resolve, reject })
         try {
           port.postMessage({ type: 'tab-affinity.rebind', id })
         } catch (cause) {
-          clearTimeout(timer)
           pendingRebinds.delete(id)
           reject(cause instanceof Error ? cause : new Error(String(cause)))
         }
