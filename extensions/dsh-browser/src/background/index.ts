@@ -783,6 +783,18 @@ chrome.runtime.onConnect.addListener((port) => {
         void decision.catch(() => {})
         break
       }
+      case 'tab-affinity.rebind': {
+        void syncActiveTab().then((tab) => {
+          const summary = tab === undefined ? null : summarizeTab(tab)
+          if (summary !== null) {
+            tabAffinity.rebindActive(summary)
+            resetTabSnapshot(summary.tabId)
+            persistTabAffinity()
+            broadcastTabAffinity()
+          }
+        })
+        break
+      }
       case 'request-status':
         try {
           port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps })

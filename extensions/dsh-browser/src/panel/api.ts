@@ -77,6 +77,7 @@ export interface PanelApi {
   onSessionResumeHint(callback: (sessionId: string | null) => void): () => void
   respondToApproval(id: string, decision: ApprovalDecision): void
   resolveTabAffinity(revision: number, decision: TabAffinityDecision, sessionId: string | null): void
+  rebindTabAffinity(): void
   setActiveSession(sessionId: string): void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
@@ -206,6 +207,9 @@ export function connectPanel(): PanelApi {
     },
     resolveTabAffinity(revision, decision, sessionId) {
       port.postMessage({ type: 'tab-affinity.response', revision, decision, sessionId })
+    },
+    rebindTabAffinity() {
+      port.postMessage({ type: 'tab-affinity.rebind' })
     },
     setActiveSession(sessionId) {
       port.postMessage({ type: 'session.active', sessionId })

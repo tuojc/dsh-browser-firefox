@@ -70,6 +70,14 @@ function SettingsIcon(): React.JSX.Element {
   )
 }
 
+function PlusIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 4.5v11M4.5 10h11" />
+    </svg>
+  )
+}
+
 function ChevronDownIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -131,30 +139,20 @@ function TabAffinityBanner({
   copy: PanelCopy
   onDecision: (decision: TabAffinityDecision) => void
 }): React.JSX.Element | null {
-  if (state === null || state.status === 'unbound' || state.status === 'following') return null
+  if (state === null || state.status !== 'lost') return null
   const controlled = tabLabel(state.controlled, copy.tabHandoff.closedTab)
   const active = tabLabel(state.active, copy.tabHandoff.unknownTab)
-  const lost = state.status === 'lost'
-  const handoff = state.status === 'handoff'
-  const title = lost
-    ? copy.tabHandoff.lostTitle
-    : handoff
-      ? copy.tabHandoff.questionTitle
-      : copy.tabHandoff.backgroundTitle(controlled)
-  const body = lost
-    ? copy.tabHandoff.lostBody
-    : handoff
-      ? copy.tabHandoff.questionBody(controlled, active)
-      : copy.tabHandoff.backgroundBody(active)
+  const title = copy.tabHandoff.lostTitle
+  const body = copy.tabHandoff.lostBody
 
   return (
-    <section className={`tab-affinity ${state.status}`} role={handoff || lost ? 'alert' : 'status'}>
+    <section className="tab-affinity lost" role="alert">
       <div className="tab-affinity-heading">
         <span className="eyebrow">{copy.tabHandoff.eyebrow}</span>
         <strong>{title}</strong>
       </div>
       <div className="tab-affinity-route" aria-hidden="true">
-        <span className={`tab-affinity-node ${lost ? 'closed' : 'controlled'}`}>
+        <span className="tab-affinity-node closed">
           <small>{copy.tabHandoff.assistant}</small>
           <span title={controlled}>{controlled}</span>
         </span>
@@ -166,10 +164,9 @@ function TabAffinityBanner({
       </div>
       <p>{body}</p>
       <div className="tab-affinity-actions">
-        {handoff && <button className="keep" onClick={() => onDecision('keep')}>{copy.tabHandoff.keep}</button>}
         {state.active !== null && (
           <button className="follow" onClick={() => onDecision('follow')}>
-            {lost ? copy.tabHandoff.useCurrent : handoff ? copy.tabHandoff.follow : copy.tabHandoff.followCurrent}
+            {copy.tabHandoff.useCurrent}
           </button>
         )}
       </div>
@@ -700,9 +697,10 @@ export function App(): React.JSX.Element {
     }
   }
 
-  /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
+  /** 新建会话：丢弃当前会话指针，走正常的隐式创建，并重新绑定当前活跃标签页。 */
   async function startNewSession(): Promise<void> {
     if (sessionSwitchBlocked || sessionChangingRef.current) return
+    api.rebindTabAffinity()
     sessionRef.current = null
     setSessionTitle(null)
     prepareSessionSwitch(false)
@@ -951,8 +949,15 @@ export function App(): React.JSX.Element {
           <span>{sessionMenuTitle}</span>
           <ChevronDownIcon />
         </button>
-        <button className="icon-button settings-trigger" onClick={() => setShowSettings(true)}
-          aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
+        <div className="topbar-actions">
+          <button className="icon-button new-session-trigger" disabled={state !== 'connected' || sessionSwitchBlocked}
+            onClick={() => { void startNewSession() }}
+            aria-label={copy.app.newSession} title={copy.app.newSession}>
+            <PlusIcon />
+          </button>
+          <button className="icon-button settings-trigger" onClick={() => setShowSettings(true)}
+            aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
+        </div>
       </header>
       <TabAffinityBanner state={tabAffinity} copy={copy} onDecision={decideTabAffinity} />
       {showSessionPicker && (
