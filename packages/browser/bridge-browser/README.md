@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 The **browser-operation bridge** for dsh: mounts a token-authenticated WebSocket carrier (`/ext/bridge`) that the Chrome extension connects to, proxies gateway RPCs through the same fetch handler the `/api` surface uses, pumps session events per connection, and registers the text-only `browser_*` tool set that reads and operates the user's active tab through the extension — click elements, fill forms, scroll, and navigate in the real browser, login state preserved. The side panel is the conversation entry; the tools are the product.
 
-**Text-only by design**: DeepSeek models have no vision, so page snapshots are structured text (title, main content, numbered interactive inventory, form fields with masked sensitive values) and every action addresses elements by stable inventory numbers. No screenshots exist anywhere in the pipeline.
+**Text-only browser tools, multimodal chat passthrough**: page snapshots stay structured text (title, main content, numbered interactive inventory, and masked form fields), and every browser action uses stable inventory numbers. The generic RPC carrier also passes dsh 0.1.1 image prompts and durable attachment reads; deferred new sessions expose image limits only when the host actually mounts the attachment service.
 
 ## Config
 

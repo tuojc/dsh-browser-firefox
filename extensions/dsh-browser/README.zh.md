@@ -4,7 +4,7 @@
 
 dsh 的**浏览器操作端**：让模型直接读取并操作你在浏览器里打开的页面——抓取内容、点击元素、填写表单、滚动与导航，全部在真实页面执行、登录态保留。侧边栏面板是与模型对话的入口。
 
-**纯文本模式**：DeepSeek 模型不支持图片输入，页面以结构化文本呈现（带编号的交互元素清单），模型用编号精确操作任意元素；整条管线**刻意不产生任何图像**。
+**两条明确分离的通道**：浏览器页面仍以结构化文本呈现（带编号的交互元素清单），浏览器工具不会截图；另一方面，dsh 0.1.1 宿主可声明多模态图片限制，侧栏据此接收 PNG、JPEG、WebP 和 GIF，并渲染会话中的持久图片附件。
 
 ## 模型能做什么
 
@@ -18,6 +18,7 @@ dsh 的**浏览器操作端**：让模型直接读取并操作你在浏览器里
 | 导航 | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | 受控标签页内跳转，登录态保留 |
 | 读区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
 | 等待 | `browser_wait` | 页面加载与渲染稳定检测 |
+| 图片对话 | `session.prompt` / `session.attachment` | 按宿主能力启用图片选择、纯图片发送和持久历史预览 |
 
 ## 架构
 
@@ -31,7 +32,7 @@ side panel (React) ◄─port─► background SW ◄─WS─► dsh bridge plug
 
 - **background**（`src/background/`）：桥连接（token 认证 + 指数退避重连 + 保活）、网关 RPC 客户端，以及**失败关闭地分发工具到用户受控标签页**。
 - **content script**（`src/content/`）：纯文本快照（可读性主文 + 编号交互清单 + 表单字段）、**稳定编号**（`data-dsh-el`）、delta 变化、点击/输入/按键/滚动/导航动作、敏感字段掩码。
-- **panel**（`src/panel/`）：React 对话界面（可续接会话/历史/实时事件/设置），消息以已消毒的 Markdown 渲染；`ask_user_question` 请求会显示成可直接作答的卡片，手动切页时显示控制权交接条，运行中的回合提供标准停止按钮。
+- **panel**（`src/panel/`）：React 对话界面（可续接会话/历史/实时事件/设置）；图片选择和预检由宿主声明的限制控制，持久图片通过会话授权读取；消息以已消毒的 Markdown 渲染，`ask_user_question` 请求会显示成可直接作答的卡片，手动切页时显示控制权交接条，运行中的回合提供标准停止按钮。
 - **协议**：`@yuxianglin/dsh-bridge-browser` workspace 包中的 `protocol.ts` 是两端共享的真源，具体通过该包的源码 export 共享。
 
 ## 构建
@@ -88,7 +89,7 @@ pnpm --filter dsh-browser-extension run test
 
 如果只开发扩展，请先 clone 仓库，在仓库根目录运行 `pnpm --filter dsh-browser-extension run build`，然后直接加载 `extensions/dsh-browser/dist/`。代码更新后需要重新构建，并在 `chrome://extensions` 中重新加载扩展。
 
-## 纯文本优化（为什么这样做）
+## 为什么浏览器操作仍采用纯文本
 
 - **快照即视图**：模型对页面的全部认知 = 结构化文本（标题/URL/正文/编号元素/表单），默认预算 32k 字符（插件可配，经 `hello.ok` 协商给扩展）。
 - **页面文字是不可信输入**：快照和局部文本读取会放进带随机 nonce 的信任边界，并明确要求模型不得把网页中的命令当成指令。这只是纵深防御；扩展侧的操作审批才是强制安全边界。
