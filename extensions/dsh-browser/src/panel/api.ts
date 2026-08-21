@@ -16,12 +16,18 @@ import { getUiLocale } from '../i18n.ts'
 /** Panel-side subset of the extension settings. */
 export type PanelSettings = Settings
 
+interface RpcFailurePayload {
+  code?: unknown
+  message?: unknown
+  details?: unknown
+}
+
 interface RpcResultMessage {
   type: 'rpc.result'
   id: string
   ok: boolean
   result?: unknown
-  error?: { code: string; message: string }
+  error?: RpcFailurePayload
 }
 
 interface RespondResultMessage {
@@ -72,6 +78,26 @@ interface SessionResumeHintMessage {
 
 type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage | TabAffinityMessage | TabAffinityRebindResultMessage | SessionResumeHintMessage
 
+/** Structured gateway failure retained for product-level error handling. */
+export class PanelRpcError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details: unknown = {},
+  ) {
+    super(message)
+    this.name = 'PanelRpcError'
+  }
+}
+
+function panelRpcError(failure: RpcFailurePayload | undefined, fallbackMessage: string): PanelRpcError {
+  return new PanelRpcError(
+    typeof failure?.code === 'string' ? failure.code : 'rpc-failed',
+    typeof failure?.message === 'string' ? failure.message : fallbackMessage,
+    failure?.details ?? {},
+  )
+}
+
 /** The panel API surface. */
 export interface PanelApi {
   rpc<T = unknown>(method: string, payload?: unknown): Promise<T>
@@ -121,11 +147,13 @@ export function connectPanel(): PanelApi {
         // The bridge relays the gateway's ServerResponse envelope verbatim
         // ({ type, rpcId, result: { ok, value | error } }); unwrap the value
         // so callers get the business payload, and surface business errors.
-        const envelope = msg.result as { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } } | undefined
+        const envelope = msg.result as { result?: { ok?: boolean; value?: unknown; error?: RpcFailurePayload } } | undefined
         const business = envelope?.result
         if (msg.ok && business?.ok !== false) entry.resolve(business?.value)
-        else entry.reject(new Error(business?.error?.message ?? msg.error?.message
-          ?? (getUiLocale() === 'zh' ? 'RPC 请求失败' : 'RPC request failed')))
+        else entry.reject(panelRpcError(
+          business?.ok === false ? business.error : msg.error,
+          getUiLocale() === 'zh' ? 'RPC 请求失败' : 'RPC request failed',
+        ))
         break
       }
       case 'respond.result': {

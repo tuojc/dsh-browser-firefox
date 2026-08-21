@@ -34,13 +34,14 @@ import { approvalReadyForSession, approvalSessionToFocus } from './approvals.ts'
 import {
   browserTimeZone,
   draftImageDataUrl,
-  ImageInputError,
   parseImageAttachmentLimits,
   prepareImageFiles,
   promptContent,
   type DraftImage,
   type ImageAttachmentLimits,
 } from './attachments.ts'
+import { imageErrorMessage } from './image-errors.ts'
+import { restoreSubmittedImages, restoreSubmittedText } from './composer.ts'
 import {
   latestSessionTitle,
   projectedSessionTitle,
@@ -300,25 +301,6 @@ interface HistoryPage {
   projections?: {
     asOfSeq: number
     values: Record<string, unknown>
-  }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024) * 10) / 10} MB`
-  return `${Math.ceil(bytes / 1024)} KB`
-}
-
-function imageInputErrorMessage(cause: unknown, copy: PanelCopy): string {
-  if (!(cause instanceof ImageInputError)) return cause instanceof Error ? cause.message : String(cause)
-  const name = cause.imageName ?? copy.app.image
-  switch (cause.code) {
-    case 'unsupported-type': return copy.app.imageUnsupported(name)
-    case 'too-many': return copy.app.imageTooMany(cause.limit ?? 0)
-    case 'image-too-large': return copy.app.imageTooLarge(name, formatBytes(cause.limit ?? 0))
-    case 'message-too-large': return copy.app.imageMessageTooLarge(formatBytes(cause.limit ?? 0))
-    case 'dimension-too-large': return copy.app.imageDimensionTooLarge(name, cause.limit ?? 0)
-    case 'too-many-pixels': return copy.app.imagePixelsTooLarge(name, cause.limit ?? 0)
-    case 'decode-failed': return copy.app.imageDecodeFailed(name)
   }
 }
 
@@ -875,7 +857,7 @@ export function App(): React.JSX.Element {
       const prepared = await prepareImageFiles(files, existing, limits)
       if (sessionRef.current === sessionId) setDraftImages([...existing, ...prepared])
     } catch (cause) {
-      if (sessionRef.current === sessionId) setError(imageInputErrorMessage(cause, copy))
+      if (sessionRef.current === sessionId) setError(imageErrorMessage(cause, copy, limits))
     } finally {
       addingImagesRef.current = false
       setAddingImages(false)
@@ -909,11 +891,11 @@ export function App(): React.JSX.Element {
       })
     } catch (cause) {
       if (sessionRef.current === id) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(imageErrorMessage(cause, copy, imageLimits ?? undefined))
         setWorking(false)
         if (textOverride === undefined) {
-          setInput((current) => current === '' ? text : current)
-          setDraftImages((current) => current.length === 0 ? submittedImages : current)
+          setInput((current) => restoreSubmittedText(current, text))
+          setDraftImages((current) => restoreSubmittedImages(current, submittedImages))
         }
       }
     } finally {

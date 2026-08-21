@@ -10,6 +10,9 @@ import {
   type ImageAttachmentLimits,
   type ImageAttachmentRef,
 } from '../src/panel/attachments.ts'
+import { PanelRpcError } from '../src/panel/api.ts'
+import { imageErrorMessage } from '../src/panel/image-errors.ts'
+import { PANEL_COPY } from '../src/panel/strings.ts'
 
 const LIMITS: ImageAttachmentLimits = {
   maxImageBytes: 1024,
@@ -83,6 +86,32 @@ describe('prompt image preparation', () => {
     expect(promptContent('', [image])).toEqual([
       { type: 'image', mediaType: 'image/png', data: 'AQID', name: 'page.png' },
     ])
+  })
+})
+
+describe('authoritative image rejection copy', () => {
+  it('localizes a text-only model rejection using the stable Host reason', () => {
+    const error = new PanelRpcError(
+      'attachment-error',
+      'Model "deepseek-v4-pro" does not support image input.',
+      { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' },
+    )
+
+    expect(imageErrorMessage(error, PANEL_COPY.en, LIMITS))
+      .toBe('The current model does not support images; switch to a model that does.')
+    expect(imageErrorMessage(error, PANEL_COPY.zh, LIMITS))
+      .toBe('当前模型不支持图片，请切换到支持图片的模型。')
+  })
+
+  it('uses projected Host limits for a server-side admission rejection', () => {
+    const error = new PanelRpcError(
+      'attachment-error',
+      'too many images',
+      { reason: 'TOO_MANY_IMAGES' },
+    )
+
+    expect(imageErrorMessage(error, PANEL_COPY.en, LIMITS))
+      .toBe('You can attach up to 2 images to one message.')
   })
 })
 

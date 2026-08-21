@@ -151,6 +151,9 @@ export interface PanelCopy {
     imageDimensionTooLarge: (name: string, max: number) => string
     imagePixelsTooLarge: (name: string, max: number) => string
     imageDecodeFailed: (name: string) => string
+    imageModelUnsupported: string
+    imageSubagentUnsupported: string
+    imageSendFailed: (reason: string) => string
   }
 }
 
@@ -321,6 +324,9 @@ const EN: PanelCopy = {
     imageDimensionTooLarge: (name, max) => `${name} exceeds the maximum width or height of ${max}px.`,
     imagePixelsTooLarge: (name, max) => `${name} exceeds the ${max.toLocaleString()}-pixel limit.`,
     imageDecodeFailed: (name) => `${name} could not be decoded as an image.`,
+    imageModelUnsupported: 'The current model does not support images; switch to a model that does.',
+    imageSubagentUnsupported: 'Subagent sessions do not support images yet.',
+    imageSendFailed: (reason) => `Sending images failed (${reason}). Your draft has been restored; try again.`,
   },
 }
 
@@ -491,6 +497,9 @@ const ZH: PanelCopy = {
     imageDimensionTooLarge: (name, max) => `${name} 的宽或高超过 ${max}px。`,
     imagePixelsTooLarge: (name, max) => `${name} 超过 ${max.toLocaleString()} 像素的限制。`,
     imageDecodeFailed: (name) => `无法将 ${name} 解码为图片。`,
+    imageModelUnsupported: '当前模型不支持图片，请切换到支持图片的模型。',
+    imageSubagentUnsupported: '子智能体会话暂不支持图片。',
+    imageSendFailed: (reason) => `图片发送失败（${reason}）。草稿已恢复，请重试。`,
   },
 }
 
