@@ -134,6 +134,26 @@ export interface PanelCopy {
     sendMessage: string
     stopTurn: string
     stoppingTurn: string
+    addImages: string
+    imageUnavailable: string
+    removeImage: (name: string) => string
+    image: string
+    imageLoading: string
+    imageLoadFailed: string
+    openImage: string
+    openNamedImage: (name: string) => string
+    imagePreview: string
+    closeImage: string
+    imageUnsupported: (name: string) => string
+    imageTooMany: (max: number) => string
+    imageTooLarge: (name: string, max: string) => string
+    imageMessageTooLarge: (max: string) => string
+    imageDimensionTooLarge: (name: string, max: number) => string
+    imagePixelsTooLarge: (name: string, max: number) => string
+    imageDecodeFailed: (name: string) => string
+    imageModelUnsupported: string
+    imageSubagentUnsupported: string
+    imageSendFailed: (reason: string) => string
   }
 }
 
@@ -287,6 +307,26 @@ const EN: PanelCopy = {
     sendMessage: 'Send message',
     stopTurn: 'Stop generating',
     stoppingTurn: 'Stopping…',
+    addImages: 'Add images',
+    imageUnavailable: 'This dsh host does not advertise image input',
+    removeImage: (name) => `Remove ${name}`,
+    image: 'Image',
+    imageLoading: 'Loading…',
+    imageLoadFailed: 'Could not load · Retry',
+    openImage: 'Open original image',
+    openNamedImage: (name) => `Open ${name}`,
+    imagePreview: 'Image preview',
+    closeImage: 'Close image preview',
+    imageUnsupported: (name) => `${name} is not an image format supported by this dsh host.`,
+    imageTooMany: (max) => `You can attach up to ${max} images to one message.`,
+    imageTooLarge: (name, max) => `${name} is larger than the per-image limit of ${max}.`,
+    imageMessageTooLarge: (max) => `The images in this message exceed the combined limit of ${max}.`,
+    imageDimensionTooLarge: (name, max) => `${name} exceeds the maximum width or height of ${max}px.`,
+    imagePixelsTooLarge: (name, max) => `${name} exceeds the ${max.toLocaleString()}-pixel limit.`,
+    imageDecodeFailed: (name) => `${name} could not be decoded as an image.`,
+    imageModelUnsupported: 'The current model does not support images; switch to a model that does.',
+    imageSubagentUnsupported: 'Subagent sessions do not support images yet.',
+    imageSendFailed: (reason) => `Sending images failed (${reason}). Your draft has been restored; try again.`,
   },
 }
 
@@ -440,6 +480,26 @@ const ZH: PanelCopy = {
     sendMessage: '发送消息',
     stopTurn: '停止生成',
     stoppingTurn: '正在停止…',
+    addImages: '添加图片',
+    imageUnavailable: '当前 dsh 宿主未声明图片输入能力',
+    removeImage: (name) => `移除 ${name}`,
+    image: '图片',
+    imageLoading: '加载中…',
+    imageLoadFailed: '加载失败 · 重试',
+    openImage: '查看原图',
+    openNamedImage: (name) => `查看 ${name}`,
+    imagePreview: '图片预览',
+    closeImage: '关闭图片预览',
+    imageUnsupported: (name) => `${name} 不是当前 dsh 宿主支持的图片格式。`,
+    imageTooMany: (max) => `每条消息最多可添加 ${max} 张图片。`,
+    imageTooLarge: (name, max) => `${name} 超过单张图片 ${max} 的限制。`,
+    imageMessageTooLarge: (max) => `本条消息的图片总大小超过 ${max}。`,
+    imageDimensionTooLarge: (name, max) => `${name} 的宽或高超过 ${max}px。`,
+    imagePixelsTooLarge: (name, max) => `${name} 超过 ${max.toLocaleString()} 像素的限制。`,
+    imageDecodeFailed: (name) => `无法将 ${name} 解码为图片。`,
+    imageModelUnsupported: '当前模型不支持图片，请切换到支持图片的模型。',
+    imageSubagentUnsupported: '子智能体会话暂不支持图片。',
+    imageSendFailed: (reason) => `图片发送失败（${reason}）。草稿已恢复，请重试。`,
   },
 }
 

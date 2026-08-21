@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Provisional entries older than this are dropped on the next create. */
@@ -37,9 +38,15 @@ interface ProvisionalEntry {
  *
  * @param api - Gateway API implementation.
  * @param enabled - Whether deferral is active; false returns the API untouched.
+ * @param imageLimits - actual host image capability, used for the synthetic
+ * empty history before the deferred Session exists.
  * @returns the original API when disabled, otherwise the wrapped API.
  */
-export function withSessionDeferral(api: ApiProxy, enabled: boolean): ApiProxy {
+export function withSessionDeferral(
+  api: ApiProxy,
+  enabled: boolean,
+  imageLimits?: ImageAttachmentLimits,
+): ApiProxy {
   if (!enabled) return api
 
   const provisional = new Map<SessionId, ProvisionalEntry>()
@@ -67,7 +74,19 @@ export function withSessionDeferral(api: ApiProxy, enabled: boolean): ApiProxy {
       },
       async history(request: HistoryRequest) {
         if (!provisional.has(request.payload.sessionId)) return api.sessions.history(request)
-        return { rpcId: request.rpcId, result: { ok: true, value: { events: [], hasMore: false } } }
+        return {
+          rpcId: request.rpcId,
+          result: {
+            ok: true,
+            value: {
+              events: [],
+              hasMore: false,
+              ...(imageLimits === undefined
+                ? {}
+                : { projections: { asOfSeq: -1, values: { imageLimits } } }),
+            },
+          },
+        }
       },
       async prompt(request: PromptRequest) {
         const entry = provisional.get(request.payload.sessionId)

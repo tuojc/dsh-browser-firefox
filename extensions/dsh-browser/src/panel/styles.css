@@ -668,6 +668,105 @@ textarea:focus-visible {
   color: var(--ink);
 }
 
+.message-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message-images {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.message-images.end {
+  justify-content: flex-end;
+}
+
+.message-image {
+  display: grid;
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(126, 139, 173, 0.24);
+  border-radius: 11px;
+  background: var(--canvas-deep);
+  color: var(--faint);
+  cursor: zoom-in;
+  font: inherit;
+  font-size: 10px;
+}
+
+.message-image.single {
+  max-width: 100%;
+}
+
+.message-image.tile {
+  width: 64px;
+  height: 64px;
+}
+
+.message-image:disabled {
+  cursor: wait;
+}
+
+.message-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.message-image-error {
+  width: 96px;
+  min-height: 48px;
+  padding: 6px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--canvas-deep);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.image-lightbox {
+  position: fixed;
+  z-index: 300;
+  inset: 0;
+  display: grid;
+  padding: 42px 18px 18px;
+  place-items: center;
+  background: rgba(12, 18, 31, 0.82);
+}
+
+.image-lightbox > img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  object-fit: contain;
+  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.35);
+}
+
+.image-lightbox > button {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(15, 23, 40, 0.8);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
 .row.tool {
   position: relative;
   padding-left: 37px;
@@ -1222,6 +1321,47 @@ textarea:focus-visible {
   box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.1), var(--shadow);
 }
 
+.draft-images {
+  display: flex;
+  overflow-x: auto;
+  gap: 7px;
+  padding: 10px 12px 0;
+}
+
+.draft-image {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+}
+
+.draft-image > img {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.draft-image > button {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  padding: 0 0 1px;
+  place-items: center;
+  border: 1px solid #ffffff;
+  border-radius: 50%;
+  background: var(--navy);
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .composer textarea {
   display: block;
   width: 100%;
@@ -1257,13 +1397,24 @@ textarea:focus-visible {
   padding: 4px 6px 6px 13px;
 }
 
-.composer-actions > span {
+.composer-actions-start {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.composer-actions-start > span {
   overflow: hidden;
   color: var(--faint);
   font-size: 9.5px;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.image-file-input {
+  display: none;
 }
 
 .composer-actions button {
@@ -1296,6 +1447,28 @@ textarea:focus-visible {
   border-color: var(--blue-hover);
   background: var(--blue-hover);
   transform: translateY(-1px);
+}
+
+.composer-actions button.attachment-button {
+  width: 27px;
+  height: 27px;
+  border-color: transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.composer-actions button.attachment-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--canvas-deep);
+  color: var(--blue-ink);
+}
+
+.composer-actions button.attachment-button:disabled {
+  border-color: transparent;
+  background: transparent;
+  color: var(--faint);
 }
 
 .composer-actions button.stop-button {

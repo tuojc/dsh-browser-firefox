@@ -21,6 +21,7 @@ import { getUiLocale } from '../i18n.ts'
 import { PANEL_COPY, type PanelCopy } from './strings.ts'
 import { QuestionCard } from './QuestionCard.tsx'
 import { UpdateCard } from './UpdateCard.tsx'
+import { MessageImages } from './MessageImages.tsx'
 import type { QuestionAnswer } from './questions.ts'
 import {
   hasPendingQuestion,
@@ -30,6 +31,22 @@ import {
 } from './pending-questions.ts'
 import { normalizeTrustedOrigin } from '../security/trusted-origins.ts'
 import { approvalReadyForSession, approvalSessionToFocus } from './approvals.ts'
+import {
+  browserTimeZone,
+  draftImageDataUrl,
+  parseImageAttachmentLimits,
+  prepareImageFiles,
+  promptContent,
+  type DraftImage,
+  type ImageAttachmentLimits,
+} from './attachments.ts'
+import { imageErrorMessage } from './image-errors.ts'
+import {
+  canAcceptImageSelection,
+  emptyComposerDraft,
+  restoreSubmittedDraft,
+  type ComposerDraft,
+} from './composer.ts'
 import {
   latestSessionTitle,
   projectedSessionTitle,
@@ -90,6 +107,14 @@ function SendIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9" />
+    </svg>
+  )
+}
+
+function AttachmentIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m7.25 10.75 4.9-4.9a2.3 2.3 0 0 1 3.25 3.25l-6.2 6.2a3.55 3.55 0 1 1-5.02-5.02l6.2-6.2" />
     </svg>
   )
 }
@@ -248,12 +273,41 @@ function ApprovalDialog({
  * the array but reuse row objects), so markdown is re-parsed only when a
  * row's text actually changes — typing must not re-render every message.
  */
-const MessageBody = memo(function MessageBody({ row }: { row: Row }): React.JSX.Element {
+const MessageBody = memo(function MessageBody({
+  row,
+  sessionId,
+  api,
+  copy,
+}: {
+  row: Row
+  sessionId: string
+  api: PanelApi
+  copy: PanelCopy
+}): React.JSX.Element {
   if (row.kind === 'user' || row.kind === 'assistant') {
-    return <div className="body md" dangerouslySetInnerHTML={{ __html: renderMarkdown(row.text) }} />
+    return (
+      <div className="body message-body md">
+        <MessageImages
+          images={row.images ?? []}
+          sessionId={sessionId}
+          api={api}
+          align={row.kind === 'user' ? 'end' : 'start'}
+          copy={copy}
+        />
+        {row.text.trim() !== '' && <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(row.text) }} />}
+      </div>
+    )
   }
   return <pre>{row.text}</pre>
 })
+
+interface HistoryPage {
+  events: { event: SessionEventView }[]
+  projections?: {
+    asOfSeq: number
+    values: Record<string, unknown>
+  }
+}
 
 const ToolActivity = memo(function ToolActivity({ row, copy }: { row: Row; copy: PanelCopy }): React.JSX.Element {
   const running = row.status === 'running'
@@ -279,7 +333,11 @@ export function App(): React.JSX.Element {
   const [caps, setCaps] = useState<BridgeCaps | null>(null)
   const [settings, setSettings] = useState<PanelSettings | null>(null)
   const [rows, setRows] = useState<Row[]>([])
-  const [input, setInput] = useState('')
+  const [draft, setDraft] = useState<ComposerDraft<DraftImage>>(() => emptyComposerDraft())
+  const input = draft.text
+  const draftImages = draft.images
+  const [imageLimits, setImageLimits] = useState<ImageAttachmentLimits | null>(null)
+  const [addingImages, setAddingImages] = useState(false)
   const [busy, setBusy] = useState(false)
   const [working, setWorking] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -300,6 +358,14 @@ export function App(): React.JSX.Element {
   const questionsRef = useRef<PendingQuestion[]>([])
   const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
+  const addingImagesRef = useRef(false)
+  const sendingRef = useRef(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const imageProjectionRef = useRef<{
+    sessionId: string | null
+    seq: number
+    limits: ImageAttachmentLimits | null
+  }>({ sessionId: null, seq: Number.NEGATIVE_INFINITY, limits: null })
   const sessionChangingRef = useRef(false)
   const sessionTransitionRef = useRef(0)
   const sessionInitializationRef = useRef(false)
@@ -311,7 +377,7 @@ export function App(): React.JSX.Element {
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
   const question = questions[0] ?? null
   const questionSubmitting = question !== null && hasPendingQuestion(questionSubmissions, question)
-  const sessionSwitchBlocked = sessionChanging || busy || working || stopping
+  const sessionSwitchBlocked = sessionChanging || busy || addingImages || working || stopping
     || questions.length > 0 || approvalQueue.length > 0
   const sessionReady = sessionAcceptsPrompts(
     state === 'connected',
@@ -388,6 +454,9 @@ export function App(): React.JSX.Element {
         sessionRef.current = null
         sessionRuntimeRef.current.clear()
         setRows([])
+        setDraft((current) => ({ ...current, images: [] }))
+        setImageLimits(null)
+        imageProjectionRef.current = { sessionId: null, seq: Number.NEGATIVE_INFINITY, limits: null }
         setSessionTitle(null)
         setWorking(false)
         setStopping(false)
@@ -435,6 +504,28 @@ export function App(): React.JSX.Element {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [rows, working])
 
+  function applyImageProjection(sessionId: string, seq: number, value: unknown): void {
+    if (sessionRef.current !== sessionId || !Number.isSafeInteger(seq)) return
+    const previous = imageProjectionRef.current
+    if (previous.sessionId === sessionId && seq <= previous.seq) return
+    const limits = parseImageAttachmentLimits(value)
+    imageProjectionRef.current = { sessionId, seq, limits }
+    setImageLimits(limits)
+  }
+
+  function applyHistoryImageProjection(sessionId: string, projections: HistoryPage['projections']): void {
+    if (projections === undefined) {
+      applyImageProjection(sessionId, -1, undefined)
+      return
+    }
+    const values = projections.values
+    applyImageProjection(
+      sessionId,
+      projections.asOfSeq,
+      typeof values === 'object' && values !== null ? values.imageLimits : undefined,
+    )
+  }
+
   /** Live frame handling: session events append rows; turn/end reconciles with history. */
   async function onFrame(frame: ServerFrame): Promise<void> {
     if (frame.t !== 'event') return
@@ -451,6 +542,22 @@ export function App(): React.JSX.Element {
     const resolvedQuestion = resolvedQuestionFromFrame(frame.frame)
     if (resolvedQuestion !== null) {
       removeQuestion(resolvedQuestion)
+      return
+    }
+    if (frame.frame.method === 'session/projection'
+      && typeof frame.frame.payload === 'object'
+      && frame.frame.payload !== null) {
+      const projection = frame.frame.payload as {
+        sessionId?: unknown
+        key?: unknown
+        value?: unknown
+        seq?: unknown
+      }
+      if (typeof projection.sessionId === 'string'
+        && projection.key === 'imageLimits'
+        && typeof projection.seq === 'number') {
+        applyImageProjection(projection.sessionId, projection.seq, projection.value)
+      }
       return
     }
     const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
@@ -481,7 +588,7 @@ export function App(): React.JSX.Element {
     if (payload.sessionId !== sessionRef.current) return
     const row = rowFromEvent(payload.event)
     if (row !== null) {
-      setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq()))
+      setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq(), row.images))
       return
     }
     if (payload.event.type === 'tool/call') {
@@ -550,13 +657,14 @@ export function App(): React.JSX.Element {
     setQuestionBusy(target, false)
   }
 
-  async function readHistory(id: string): Promise<SessionEventView[]> {
-    const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
-    return result.events.map((entry) => entry.event)
+  async function readHistory(id: string): Promise<HistoryPage> {
+    return api.rpc<HistoryPage>('session.history', { sessionId: id })
   }
 
-  function applyHistory(id: string, events: SessionEventView[]): void {
+  function applyHistory(id: string, history: HistoryPage): void {
     if (sessionRef.current !== id) return
+    const events = history.events.map((entry) => entry.event)
+    applyHistoryImageProjection(id, history.projections)
     const historyTitle = latestSessionTitle(events)
     if (historyTitle !== undefined) setSessionTitle(historyTitle)
     setRows(mergeHistoryRows(events, nextSeq, locale))
@@ -600,7 +708,7 @@ export function App(): React.JSX.Element {
         const candidates = sessionResumeCandidates(hinted, entries)
         for (const id of candidates) {
           try {
-            const events = await readHistory(id)
+            const history = await readHistory(id)
             if (sessionTransitionRef.current !== transition) return
             const entry = entries.find((candidate) => candidate.sessionId === id)
             const runtime = sessionRuntimeRef.current.snapshot(id, entry?.running ?? false)
@@ -608,7 +716,7 @@ export function App(): React.JSX.Element {
             sessionRef.current = id
             api.setActiveSession(id)
             setSessionTitle(entry === undefined ? null : projectedSessionTitle(entry) ?? sessionDisplayTitle(entry))
-            applyHistory(id, events)
+            applyHistory(id, history)
             return
           } catch {
             // Stale hints are expected after a bridge restart; try the next durable session.
@@ -673,11 +781,11 @@ export function App(): React.JSX.Element {
     const sessionId = request.sessionId
     if (sessionId === undefined || sessionChangingRef.current || sessionRef.current === sessionId) return
     const transition = beginSessionTransition()
-    let events: SessionEventView[] | undefined
+    let history: HistoryPage | undefined
     let historyError: unknown
     try {
       try {
-        events = await readHistory(sessionId)
+        history = await readHistory(sessionId)
       } catch (cause) {
         historyError = cause
       }
@@ -688,7 +796,7 @@ export function App(): React.JSX.Element {
       sessionRef.current = sessionId
       api.setActiveSession(sessionId)
       setSessionTitle(sessionId)
-      if (events !== undefined) applyHistory(sessionId, events)
+      if (history !== undefined) applyHistory(sessionId, history)
       else setError(historyError instanceof Error ? historyError.message : String(historyError))
     } finally {
       finishSessionTransition(transition)
@@ -730,7 +838,9 @@ export function App(): React.JSX.Element {
 
   function prepareSessionSwitch(nextWorking: boolean, nextQuestions: PendingQuestion[] = []): void {
     setRows([])
-    setInput('')
+    setDraft(emptyComposerDraft())
+    setImageLimits(null)
+    imageProjectionRef.current = { sessionId: null, seq: Number.NEGATIVE_INFINITY, limits: null }
     setWorking(nextWorking)
     setStopping(false)
     stoppingRef.current = false
@@ -741,27 +851,60 @@ export function App(): React.JSX.Element {
     setShowSessionPicker(false)
   }
 
-  const sendingRef = useRef(false)
+  async function addImageFiles(files: readonly File[]): Promise<void> {
+    const limits = imageLimits
+    const sessionId = sessionRef.current
+    if (files.length === 0 || limits === null || sessionId === null
+      || !canAcceptImageSelection(addingImagesRef.current, sendingRef.current)) return
+    addingImagesRef.current = true
+    setAddingImages(true)
+    setError(null)
+    const existing = draftImages
+    try {
+      const prepared = await prepareImageFiles(files, existing, limits)
+      if (sessionRef.current === sessionId) {
+        setDraft((current) => ({ ...current, images: [...current.images, ...prepared] }))
+      }
+    } catch (cause) {
+      if (sessionRef.current === sessionId) setError(imageErrorMessage(cause, copy, limits))
+    } finally {
+      addingImagesRef.current = false
+      setAddingImages(false)
+    }
+  }
+
   async function send(textOverride?: string): Promise<void> {
     const text = (textOverride ?? input).trim()
+    const submittedImages = textOverride === undefined ? draftImages : []
     const id = sessionRef.current
     // busy state 是异步的：连续回车可能都通过 state 检查——用 ref 同步锁。
-    if (text === '' || busy || sendingRef.current || sessionChangingRef.current || id === null) return
+    if ((text === '' && submittedImages.length === 0)
+      || busy || addingImagesRef.current || sendingRef.current || sessionChangingRef.current || id === null) return
     sendingRef.current = true
-    setInput('')
+    const submittedDraft: ComposerDraft<DraftImage> = { text, images: submittedImages }
+    if (textOverride === undefined) {
+      setDraft(emptyComposerDraft())
+    }
     setBusy(true)
     setWorking(true)
     setError(null)
     // 不渲染乐观行：live user/message 事件即时回显，避免同一消息出现两行。
     try {
+      const clientTimeZone = browserTimeZone()
       await api.rpc('session.prompt', {
         sessionId: id,
         mode: 'queue',
-        content: [{ type: 'text', text }],
+        content: promptContent(text, submittedImages),
+        ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
       })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-      setWorking(false)
+      if (sessionRef.current === id) {
+        setError(imageErrorMessage(cause, copy, imageLimits ?? undefined))
+        setWorking(false)
+        if (textOverride === undefined) {
+          setDraft((current) => restoreSubmittedDraft(current, submittedDraft))
+        }
+      }
     } finally {
       setBusy(false)
       sendingRef.current = false
@@ -1020,7 +1163,9 @@ export function App(): React.JSX.Element {
         {rows.map((row) => (
           <div key={row.seq} className={`row ${row.kind}`}>
             {row.kind === 'assistant' && <span className="assistant-avatar"><img src={whaleUrl} alt={copy.app.assistant} /></span>}
-            {row.kind === 'tool' ? <ToolActivity row={row} copy={copy} /> : <MessageBody row={row} />}
+            {row.kind === 'tool'
+              ? <ToolActivity row={row} copy={copy} />
+              : <MessageBody row={row} sessionId={sessionRef.current ?? ''} api={api} copy={copy} />}
           </div>
         ))}
         {working && question === null && rows[rows.length - 1]?.status !== 'running' && (
@@ -1044,9 +1189,33 @@ export function App(): React.JSX.Element {
       {error !== null && <div className="error">{error}</div>}
       <footer className="composer">
         <div className="composer-box">
+          {draftImages.length > 0 && (
+            <div className="draft-images" aria-label={copy.app.addImages}>
+              {draftImages.map((image) => {
+                const name = image.name ?? copy.app.image
+                return (
+                  <span className="draft-image" key={image.id}>
+                    <img src={draftImageDataUrl(image)} alt={name} />
+                    <button
+                      type="button"
+                      disabled={busy || addingImages}
+                      aria-label={copy.app.removeImage(name)}
+                      title={copy.app.removeImage(name)}
+                      onClick={() => setDraft((current) => ({
+                        ...current,
+                        images: current.images.filter((item) => item.id !== image.id),
+                      }))}
+                    >×</button>
+                  </span>
+                )
+              })}
+            </div>
+          )}
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              if (!sendingRef.current) setDraft((current) => ({ ...current, text: e.target.value }))
+            }}
             onKeyDown={(e) => {
               // isComposing：输入法组词中的回车是确认选字，不是发送。
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1055,11 +1224,35 @@ export function App(): React.JSX.Element {
               }
             }}
             placeholder={state === 'connected' ? copy.app.connectedPlaceholder : copy.app.disconnectedPlaceholder}
-            disabled={!sessionReady}
+            disabled={!sessionReady || busy}
             rows={2}
           />
           <div className="composer-actions">
-            <span>{copy.app.composerHelp}</span>
+            <span className="composer-actions-start">
+              <input
+                ref={fileInputRef}
+                className="image-file-input"
+                type="file"
+                accept={imageLimits?.mediaTypes.join(',')}
+                multiple
+                tabIndex={-1}
+                onChange={(event) => {
+                  const files = [...(event.target.files ?? [])]
+                  event.target.value = ''
+                  void addImageFiles(files)
+                }}
+              />
+              <button
+                type="button"
+                className="attachment-button"
+                disabled={!sessionReady || busy || addingImages || imageLimits === null
+                  || draftImages.length >= imageLimits.maxImagesPerMessage}
+                aria-label={copy.app.addImages}
+                title={imageLimits === null ? copy.app.imageUnavailable : copy.app.addImages}
+                onClick={() => fileInputRef.current?.click()}
+              ><AttachmentIcon /></button>
+              <span>{copy.app.composerHelp}</span>
+            </span>
             {working ? (
               <button
                 className="stop-button"
@@ -1071,7 +1264,9 @@ export function App(): React.JSX.Element {
                 <span className="stop-glyph" aria-hidden="true" />
               </button>
             ) : (
-              <button onClick={() => void send()} disabled={!sessionReady || busy || input.trim() === ''} aria-label={copy.app.sendMessage}><SendIcon /></button>
+              <button onClick={() => void send()}
+                disabled={!sessionReady || busy || addingImages || (input.trim() === '' && draftImages.length === 0)}
+                aria-label={copy.app.sendMessage}><SendIcon /></button>
             )}
           </div>
         </div>
