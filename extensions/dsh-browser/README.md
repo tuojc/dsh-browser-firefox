@@ -80,7 +80,7 @@ The recommended zero-configuration command does not require Git or a local clone
 
    Both commands load the same bundle from the local `web` profile. Port 3080 is used by default; append `--port <port>` when it is occupied.
 
-   Loading or reloading the extension before dsh starts is safe: local discovery waits for the bridge before opening a WebSocket, and opening the side panel triggers another discovery attempt.
+   Loading or reloading the extension is passive: it does not probe local ports or open a WebSocket until the side panel is opened. A healthy connection established by the user may remain available for background approvals after the panel closes, but it will not reconnect without an open panel if it drops or another browser replaces it.
 
 3. **Use it**: open a normal `http://` or `https://` page and click the DeepSeek whale icon. The extension auto-discovers local dsh and loopback connections require no address or token; settings are only needed for remote deployment. Chat directly or click "Read page" first.
 
@@ -101,11 +101,11 @@ For extension-only development, clone the repository, run `pnpm --filter dsh-bro
 
 ## Permissions
 
-`sidePanel` (sidebar), `storage` (settings and recent-session continuity), `notifications` (optional reminders for approvals received while the panel is closed), `tabs` + `activeTab` + `scripting` (observe tab changes and inject/message the explicitly controlled tab, including lazy recovery for pages opened before install), `webNavigation` (enumerate and bind messages to that tab's frame documents), `alarms` (SW keepalive), and `http/https` (content-script injection on normal pages). The extension never changes the visible tab or silently follows a manual switch; background operation happens only after the user chooses to stay on the original tab.
+`sidePanel` (sidebar), `storage` (settings and recent-session continuity), `notifications` (optional reminders for approvals received while the panel is closed), `tabs` + `activeTab` + `scripting` (observe tab changes and inject/message the explicitly controlled tab, including lazy recovery for pages opened before install), `webNavigation` (enumerate and bind messages to that tab's frame documents), `alarms` (SW keepalive, armed only after a panel first claims the bridge), and `http/https` (content-script injection on normal pages). The extension never changes the visible tab or silently follows a manual switch; background operation happens only after the user chooses to stay on the original tab.
 
 ## Known limitations
 
-- Only one extension connection at a time (a second window replaces the first).
+- Only one extension connection at a time. An unopened browser profile never claims it; if another open panel replaces a live connection, the replaced client yields instead of starting a reconnect fight.
 - Tab affinity is global to that extension connection rather than per chat session.
 - Accessible cross-origin iframes are snapshotted and operated with stable `(frame, index)` addresses. Restricted or short-lived frames are reported as unavailable without failing the whole page snapshot.
 - Captcha/image-only controls cannot be handled — the tool result reports "elements with no accessible name" and asks the user to complete that step manually.
