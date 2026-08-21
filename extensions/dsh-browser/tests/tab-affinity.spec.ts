@@ -53,6 +53,18 @@ describe('TabAffinityController', () => {
     expect(affinity.snapshot().status).toBe('handoff')
   })
 
+  it('supports explicit rebindActive when starting new chat', () => {
+    const affinity = new TabAffinityController()
+    affinity.observeActive(tab(1))
+    affinity.bindInitial(tab(1))
+    affinity.observeActive(tab(2))
+    affinity.decide('keep', affinity.snapshot().revision)
+
+    expect(affinity.rebindActive(tab(2))).toBe(true)
+    expect(affinity.snapshot()).toMatchObject({ status: 'following', controlled: { tabId: 2 }, active: { tabId: 2 } })
+    expect(affinity.resolveTarget()).toMatchObject({ kind: 'target', tab: { tabId: 2 } })
+  })
+
   it('does not silently rebind after the controlled tab closes', () => {
     const affinity = new TabAffinityController()
     affinity.observeActive(tab(1))

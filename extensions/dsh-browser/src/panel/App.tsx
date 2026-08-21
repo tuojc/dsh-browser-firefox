@@ -70,6 +70,14 @@ function SettingsIcon(): React.JSX.Element {
   )
 }
 
+function PlusIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 4.5v11M4.5 10h11" />
+    </svg>
+  )
+}
+
 function ChevronDownIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -618,19 +626,6 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function ensureSession(): Promise<void> {
-    const transition = beginSessionTransition()
-    try {
-      await createSession(transition)
-    } catch (cause) {
-      if (sessionTransitionRef.current === transition) {
-        setError(cause instanceof Error ? cause.message : String(cause))
-      }
-    } finally {
-      finishSessionTransition(transition)
-    }
-  }
-
   /** 打开历史会话选择器：拉取持久化会话列表（已过滤空白会话），供恢复。 */
   async function openSessionPicker(): Promise<void> {
     if (showSessionPicker) {
@@ -700,13 +695,24 @@ export function App(): React.JSX.Element {
     }
   }
 
-  /** 新建会话：丢弃当前会话指针，走正常的隐式创建。 */
+  /** 新建会话：后台确认重绑当前标签页后，再丢弃当前会话并创建新会话。 */
   async function startNewSession(): Promise<void> {
     if (sessionSwitchBlocked || sessionChangingRef.current) return
-    sessionRef.current = null
-    setSessionTitle(null)
-    prepareSessionSwitch(false)
-    await ensureSession()
+    const transition = beginSessionTransition()
+    try {
+      await api.rebindTabAffinity()
+      if (sessionTransitionRef.current !== transition) return
+      sessionRef.current = null
+      setSessionTitle(null)
+      prepareSessionSwitch(false)
+      await createSession(transition)
+    } catch (cause) {
+      if (sessionTransitionRef.current === transition) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    } finally {
+      finishSessionTransition(transition)
+    }
   }
 
   function beginSessionTransition(): number {
@@ -951,8 +957,15 @@ export function App(): React.JSX.Element {
           <span>{sessionMenuTitle}</span>
           <ChevronDownIcon />
         </button>
-        <button className="icon-button settings-trigger" onClick={() => setShowSettings(true)}
-          aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
+        <div className="topbar-actions">
+          <button className="icon-button new-session-trigger" disabled={state !== 'connected' || sessionSwitchBlocked}
+            onClick={() => { void startNewSession() }}
+            aria-label={copy.app.newSession} title={copy.app.newSession}>
+            <PlusIcon />
+          </button>
+          <button className="icon-button settings-trigger" onClick={() => setShowSettings(true)}
+            aria-label={copy.app.openSettings} title={copy.app.settings}><SettingsIcon /></button>
+        </div>
       </header>
       <TabAffinityBanner state={tabAffinity} copy={copy} onDecision={decideTabAffinity} />
       {showSessionPicker && (

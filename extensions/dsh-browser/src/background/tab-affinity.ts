@@ -95,6 +95,17 @@ export class TabAffinityController {
     return true
   }
 
+  /** Explicitly rebind to the active tab (e.g. when starting a new session). */
+  rebindActive(tab: AffinityTab): boolean {
+    this.active = { ...tab }
+    this.controlled = { ...tab }
+    this.keptActiveTabId = null
+    this.hasBound = true
+    this.lost = false
+    this.revision += 1
+    return true
+  }
+
   /** Rehydrate a still-live controlled tab after an MV3 worker restart. */
   restoreControlled(tab: AffinityTab): boolean {
     if (this.controlled !== null || this.hasBound || this.lost) return false
@@ -158,7 +169,7 @@ export class TabAffinityController {
       this.revision += 1
       return true
     }
-    if (this.active === null || (currentStatus !== 'handoff' && currentStatus !== 'background' && currentStatus !== 'lost')) {
+    if (this.active === null || (currentStatus !== 'background' && currentStatus !== 'lost' && currentStatus !== 'handoff')) {
       return false
     }
     this.controlled = { ...this.active }
@@ -173,8 +184,8 @@ export class TabAffinityController {
   resolveTarget(): TabTargetResolution {
     switch (this.status()) {
       case 'unbound': return { kind: 'initial' }
-      case 'handoff': return { kind: 'handoff' }
       case 'lost': return { kind: 'lost' }
+      case 'handoff': return { kind: 'handoff' }
       case 'following':
       case 'background':
         return { kind: 'target', tab: { ...this.controlled! } }

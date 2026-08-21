@@ -58,12 +58,19 @@ interface TabAffinityMessage {
   state: TabAffinityState
 }
 
+interface TabAffinityRebindResultMessage {
+  type: 'tab-affinity.rebind.result'
+  id: string
+  ok: boolean
+  error?: { code: string; message: string }
+}
+
 interface SessionResumeHintMessage {
   type: 'session.resume-hint'
   sessionId: string | null
 }
 
-type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage | TabAffinityMessage | SessionResumeHintMessage
+type BackgroundMessage = RpcResultMessage | RespondResultMessage | StatusMessage | EventMessage | ApprovalRequestMessage | ApprovalResolvedMessage | TabAffinityMessage | TabAffinityRebindResultMessage | SessionResumeHintMessage
 
 /** The panel API surface. */
 export interface PanelApi {
@@ -77,6 +84,7 @@ export interface PanelApi {
   onSessionResumeHint(callback: (sessionId: string | null) => void): () => void
   respondToApproval(id: string, decision: ApprovalDecision): void
   resolveTabAffinity(revision: number, decision: TabAffinityDecision, sessionId: string | null): void
+  rebindTabAffinity(): Promise<void>
   setActiveSession(sessionId: string): void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
@@ -90,6 +98,10 @@ export function connectPanel(): PanelApi {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
     timer: ReturnType<typeof setTimeout>
+  }>()
+  const pendingRebinds = new Map<string, {
+    resolve: () => void
+    reject: (error: Error) => void
   }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
   const eventListeners = new Set<(frame: ServerFrame) => void>()
@@ -141,6 +153,15 @@ export function connectPanel(): PanelApi {
       case 'tab-affinity':
         for (const listener of tabAffinityListeners) listener(msg.state)
         break
+      case 'tab-affinity.rebind.result': {
+        const entry = pendingRebinds.get(msg.id)
+        if (entry === undefined) return
+        pendingRebinds.delete(msg.id)
+        if (msg.ok) entry.resolve()
+        else entry.reject(new Error(msg.error?.message
+          ?? (getUiLocale() === 'zh' ? '无法绑定当前标签页' : 'Failed to bind the current tab')))
+        break
+      }
       case 'session.resume-hint':
         for (const listener of sessionResumeHintListeners) listener(msg.sessionId)
         break
@@ -156,6 +177,10 @@ export function connectPanel(): PanelApi {
       entry.reject(error)
     }
     pendingResponses.clear()
+    for (const entry of pendingRebinds.values()) {
+      entry.reject(error)
+    }
+    pendingRebinds.clear()
   })
 
   return {
@@ -206,6 +231,18 @@ export function connectPanel(): PanelApi {
     },
     resolveTabAffinity(revision, decision, sessionId) {
       port.postMessage({ type: 'tab-affinity.response', revision, decision, sessionId })
+    },
+    rebindTabAffinity() {
+      const id = crypto.randomUUID()
+      return new Promise<void>((resolve, reject) => {
+        pendingRebinds.set(id, { resolve, reject })
+        try {
+          port.postMessage({ type: 'tab-affinity.rebind', id })
+        } catch (cause) {
+          pendingRebinds.delete(id)
+          reject(cause instanceof Error ? cause : new Error(String(cause)))
+        }
+      })
     },
     setActiveSession(sessionId) {
       port.postMessage({ type: 'session.active', sessionId })

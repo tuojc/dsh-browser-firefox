@@ -5,6 +5,7 @@ import { isApprovalDecision, type ApprovalRequest } from '../src/security/approv
 import type { TabAffinityState } from '../src/background/tab-affinity.ts'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -82,6 +83,59 @@ describe('panel approval protocol', () => {
       decision: 'follow',
       sessionId: 'session-1',
     })
+  })
+
+  it('waits for a correlated acknowledgement before completing a tab rebind', async () => {
+    vi.useFakeTimers()
+    let receive: ((message: unknown) => void) | undefined
+    const postMessage = vi.fn()
+    const port = {
+      postMessage,
+      onMessage: { addListener: vi.fn((listener: (message: unknown) => void) => { receive = listener }) },
+      onDisconnect: { addListener: vi.fn() },
+    }
+    vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('12345678-1234-4234-8234-123456789abe')
+    const api = connectPanel()
+
+    const pending = api.rebindTabAffinity()
+    const settled = vi.fn()
+    void pending.then(() => { settled('resolved') }, () => { settled('rejected') })
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'tab-affinity.rebind',
+      id: '12345678-1234-4234-8234-123456789abe',
+    })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(settled).not.toHaveBeenCalled()
+
+    receive?.({
+      type: 'tab-affinity.rebind.result',
+      id: '12345678-1234-4234-8234-123456789abe',
+      ok: true,
+    })
+    await expect(pending).resolves.toBeUndefined()
+  })
+
+  it('keeps a failed tab rebind visible to the caller', async () => {
+    let receive: ((message: unknown) => void) | undefined
+    const port = {
+      postMessage: vi.fn(),
+      onMessage: { addListener: vi.fn((listener: (message: unknown) => void) => { receive = listener }) },
+      onDisconnect: { addListener: vi.fn() },
+    }
+    vi.stubGlobal('chrome', { runtime: { connect: vi.fn(() => port) } })
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('12345678-1234-4234-8234-123456789abf')
+    const api = connectPanel()
+
+    const pending = api.rebindTabAffinity()
+    receive?.({
+      type: 'tab-affinity.rebind.result',
+      id: '12345678-1234-4234-8234-123456789abf',
+      ok: false,
+      error: { code: 'no-active-tab', message: 'current tab unavailable' },
+    })
+
+    await expect(pending).rejects.toThrow('current tab unavailable')
   })
 
   it('delivers a resume hint and records the panel session', () => {
