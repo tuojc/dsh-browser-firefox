@@ -2,8 +2,9 @@
  * Background service worker entry: owns the bridge connection, the gateway
  * RPC client, controlled-tab tool dispatch, and the panel port service.
  *
- * MV3 survival: the service worker is kept alive by the panel's open port
- * plus a half-minute `alarms` keepalive that re-arms the reconnect loop.
+ * MV3 survival: after the user opens the panel, its port plus a half-minute
+ * `alarms` keepalive re-arm the reconnect loop. Merely loading the extension
+ * never probes or claims the single-connection bridge.
  *
  * Panel port protocol (chrome.runtime.connect, name "dsh-panel"):
  *   panel → bg: { type: 'rpc', id, method, payload }
@@ -90,12 +91,14 @@ const DISCOVERY_PORTS = [3080, 3081, 3090]
 const LEGACY_LOCAL_URL = 'ws://127.0.0.1:3080'
 
 /** 探测本机 dsh 的桥地址：fetch /ext/bridge-config 直到成功。 */
-async function discoverBridge(): Promise<string | undefined> {
+async function discoverBridge(shouldContinue: () => boolean = () => true): Promise<string | undefined> {
   for (const port of DISCOVERY_PORTS) {
+    if (!shouldContinue()) return undefined
     try {
       const response = await fetch(`http://127.0.0.1:${port}/ext/bridge-config`, {
         signal: AbortSignal.timeout(1_500),
       })
+      if (!shouldContinue()) return undefined
       if (!response.ok) continue
       const body = await response.json() as { wsUrl?: unknown }
       if (typeof body.wsUrl === 'string' && body.wsUrl.startsWith('ws://')) return body.wsUrl
@@ -136,6 +139,9 @@ let caps: BridgeCaps | null = null
 let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 const panelPorts = new Set<chrome.runtime.Port>()
+const BRIDGE_KEEPALIVE_ALARM = 'bridge-keepalive'
+/** Invalidates an asynchronous discovery attempt when its panel lease ends. */
+let bridgeStartRevision = 0
 const interactionResponses = new InteractionResponseRouter()
 const transientEvents = new TransientEventCache()
 const tabAffinity = new TabAffinityController()
@@ -185,6 +191,19 @@ function normalizeSettings(candidate: Settings): Settings {
     approvalNotifications: candidate.approvalNotifications !== false,
     autoResumeSession: candidate.autoResumeSession !== false,
   }
+}
+
+/** Settings load is shared by every lazy connection trigger. */
+const settingsReady = loadSettings().then((loaded) => {
+  settings = loaded
+})
+
+function armBridgeKeepalive(): void {
+  chrome.alarms.create(BRIDGE_KEEPALIVE_ALARM, { periodInMinutes: 0.5 })
+}
+
+function disarmBridgeKeepalive(): void {
+  void Promise.resolve(chrome.alarms.clear(BRIDGE_KEEPALIVE_ALARM)).catch(() => {})
 }
 
 function broadcastStatus(): void {
@@ -629,10 +648,15 @@ function cancelAllToolCalls(): void {
 
 /** (Re)start the bridge with the current settings. 零配置：地址留空时自动探测；回环连接无需 token。 */
 async function startBridge(): Promise<void> {
+  const revision = ++bridgeStartRevision
+  if (panelPorts.size === 0) return
   let url = settings.bridgeUrl
   if (url === '') {
-    url = await discoverBridge() ?? ''
+    url = await discoverBridge(() => revision === bridgeStartRevision && panelPorts.size > 0) ?? ''
   }
+  // Discovery is asynchronous. A panel may have closed or a newer settings
+  // update may have started while its fetches were in flight.
+  if (revision !== bridgeStartRevision || panelPorts.size === 0) return
   if (url === '') {
     bridge?.stop()
     bridge = null
@@ -658,6 +682,7 @@ async function startBridge(): Promise<void> {
           transientEvents.clear()
         }
         broadcastStatus()
+        if (state === 'stopped' && panelPorts.size === 0) disarmBridgeKeepalive()
       },
       onFrame: (frame) => {
         if (frame.t === 'event') {
@@ -675,7 +700,7 @@ async function startBridge(): Promise<void> {
         broadcastStatus()
         void pushBudgetToControlledTab(negotiated)
       },
-    }, probeBridge)
+    }, probeBridge, () => panelPorts.size > 0)
     bridge = client
     rpc = createRpc(client)
   }
@@ -696,8 +721,13 @@ async function gatewayRpc(method: string, payload: unknown): Promise<unknown> {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'dsh-panel') return
+  const wasIdle = panelPorts.size === 0
   panelPorts.add(port)
-  if (bridge === null) void startBridge()
+  if (wasIdle) armBridgeKeepalive()
+  void settingsReady.then(() => {
+    if (!panelPorts.has(port)) return
+    if (bridge === null || bridge.state === 'stopped') return startBridge()
+  })
   try { port.postMessage({ type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps }) } catch { /* port closed */ }
   void affinityReady.then(async () => {
     await syncActiveTab()
@@ -752,7 +782,8 @@ chrome.runtime.onConnect.addListener((port) => {
       }
       case 'settings': {
         const settingsMsg = message as { settings: Partial<Settings> }
-        void persistSettings(settingsMsg.settings).then(async () => {
+        void settingsReady.then(() => persistSettings(settingsMsg.settings)).then(async () => {
+          if (!panelPorts.has(port)) return
           await startBridge()
           broadcastStatus()
         })
@@ -805,8 +836,11 @@ chrome.runtime.onConnect.addListener((port) => {
     panelPorts.delete(port)
     interactionResponses.removePort(port)
     if (panelPorts.size === 0) {
+      bridgeStartRevision += 1
+      bridge?.suspendReconnect()
       sessionTrustedActionOrigins.clear()
       approvals.notifyPending()
+      if (bridge?.state !== 'connected') disarmBridgeKeepalive()
     }
   })
 })
@@ -888,10 +922,18 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 // ---- Keepalive ----
 
-chrome.alarms.create('bridge-keepalive', { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== 'bridge-keepalive') return
-  if (bridge === null || bridge.state === 'reconnecting') void startBridge()
+  if (alarm.name !== BRIDGE_KEEPALIVE_ALARM) return
+  if (panelPorts.size === 0) {
+    if (bridge === null || bridge.state !== 'connected') disarmBridgeKeepalive()
+    return
+  }
+  // `stopped` is intentionally terminal until an explicit panel reopen or
+  // settings save. In particular, code 4000 means another browser owns the
+  // single bridge slot and the keepalive must not reclaim it.
+  if (bridge === null || bridge.state === 'reconnecting') {
+    void settingsReady.then(() => startBridge())
+  }
 })
 
 // ---- Boot ----
@@ -899,7 +941,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Clicking the toolbar icon opens the side panel directly (Chrome 116+).
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
-void loadSettings().then(async (loaded) => {
-  settings = loaded
-  await startBridge()
-})
+// Alarms survive some extension/service-worker restarts. Remove any stale
+// schedule left by an older eager-connection build; onConnect re-arms it.
+disarmBridgeKeepalive()
+
+// `settingsReady` intentionally has no bridge-start continuation: opening a
+// side panel is the first action allowed to claim the bridge connection.
