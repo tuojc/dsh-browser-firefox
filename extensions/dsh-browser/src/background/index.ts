@@ -12,6 +12,7 @@
  *   panel → bg: { type: 'session.active', sessionId }
  *   panel → bg: { type: 'approval.response', id, decision }
  *   panel → bg: { type: 'tab-affinity.response', revision, decision, sessionId }
+ *   panel → bg: { type: 'tab-affinity.rebind', id }
  *   panel → bg: { type: 'request-status' }
  *   bg → panel: { type: 'rpc.result', id, ok, result? | error? }
  *   bg → panel: { type: 'respond.result', id, ok, result? | error? }
@@ -21,6 +22,7 @@
  *   bg → panel: { type: 'approval.resolved', id }
  *   bg → panel: { type: 'session.resume-hint', sessionId }
  *   bg → panel: { type: 'tab-affinity', state }
+ *   bg → panel: { type: 'tab-affinity.rebind.result', id, ok, error? }
  *
  * @module
  */
@@ -549,6 +551,30 @@ async function resolveTabAffinityResponse(response: {
   }
 }
 
+/** Move browser control to the current tab only after a fresh, valid query. */
+async function rebindTabAffinityToActive(): Promise<void> {
+  await affinityReady
+  const tab = await syncActiveTab()
+  const summary = tab === undefined ? null : summarizeTab(tab)
+  if (summary === null) {
+    throw new Error(getUiLocale() === 'zh'
+      ? '无法确定当前标签页，原会话和标签页绑定保持不变'
+      : 'The current tab could not be determined; the existing session and tab binding were left unchanged')
+  }
+
+  const previousControlledTabId = tabAffinity.snapshot().controlled?.tabId
+  activeFollowRefresh?.abort()
+  cancelAllToolCalls()
+  cancelPendingApprovals()
+  tabAffinity.rebindActive(summary)
+  if (previousControlledTabId !== undefined && previousControlledTabId !== summary.tabId) {
+    resetTabSnapshot(previousControlledTabId)
+  }
+  resetTabSnapshot(summary.tabId)
+  persistTabAffinity()
+  broadcastTabAffinity()
+}
+
 /** 把协商的快照预算下发到受控页（尚未绑定时使用活动页）。 */
 async function pushBudgetToControlledTab(negotiated: BridgeCaps): Promise<void> {
   await affinityReady
@@ -784,15 +810,26 @@ chrome.runtime.onConnect.addListener((port) => {
         break
       }
       case 'tab-affinity.rebind': {
-        void syncActiveTab().then((tab) => {
-          const summary = tab === undefined ? null : summarizeTab(tab)
-          if (summary !== null) {
-            tabAffinity.rebindActive(summary)
-            resetTabSnapshot(summary.tabId)
-            persistTabAffinity()
-            broadcastTabAffinity()
-          }
-        })
+        const request = message as { id?: unknown }
+        if (typeof request.id !== 'string') break
+        void rebindTabAffinityToActive().then(
+          () => {
+            try { port.postMessage({ type: 'tab-affinity.rebind.result', id: request.id, ok: true }) } catch { /* port closed */ }
+          },
+          (error: unknown) => {
+            try {
+              port.postMessage({
+                type: 'tab-affinity.rebind.result',
+                id: request.id,
+                ok: false,
+                error: {
+                  code: 'no-active-tab',
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              })
+            } catch { /* port closed */ }
+          },
+        )
         break
       }
       case 'request-status':

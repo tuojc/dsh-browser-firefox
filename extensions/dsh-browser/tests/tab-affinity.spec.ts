@@ -22,18 +22,35 @@ describe('TabAffinityController', () => {
     expect(affinity.resolveTarget()).toMatchObject({ kind: 'target', tab: { tabId: 1, title: 'Updated title' } })
   })
 
-  it('keeps operating the bound tab in background by default on manual switch', () => {
+  it('fails closed on a manual switch until the matching handoff is decided', () => {
     const affinity = new TabAffinityController()
     affinity.observeActive(tab(1))
     affinity.bindInitial(tab(1))
     affinity.observeActive(tab(2))
-    const state = affinity.snapshot()
+    const handoff = affinity.snapshot()
 
-    expect(state).toMatchObject({ status: 'background', controlled: { tabId: 1 }, active: { tabId: 2 } })
+    expect(handoff).toMatchObject({ status: 'handoff', controlled: { tabId: 1 }, active: { tabId: 2 } })
+    expect(affinity.resolveTarget()).toEqual({ kind: 'handoff' })
+    expect(affinity.decide('follow', handoff.revision - 1)).toBe(false)
+    expect(affinity.resolveTarget()).toEqual({ kind: 'handoff' })
+
+    expect(affinity.decide('follow', handoff.revision)).toBe(true)
+    expect(affinity.snapshot()).toMatchObject({ status: 'following', controlled: { tabId: 2 } })
+  })
+
+  it('keeps operating the bound tab in the background after an explicit keep choice', () => {
+    const affinity = new TabAffinityController()
+    affinity.observeActive(tab(1))
+    affinity.bindInitial(tab(1))
+    affinity.observeActive(tab(2))
+    const handoff = affinity.snapshot()
+
+    expect(affinity.decide('keep', handoff.revision)).toBe(true)
+    expect(affinity.snapshot()).toMatchObject({ status: 'background', controlled: { tabId: 1 }, active: { tabId: 2 } })
     expect(affinity.resolveTarget()).toMatchObject({ kind: 'target', tab: { tabId: 1 } })
 
-    expect(affinity.decide('follow', state.revision)).toBe(true)
-    expect(affinity.snapshot()).toMatchObject({ status: 'following', controlled: { tabId: 2 } })
+    affinity.observeActive(tab(3))
+    expect(affinity.snapshot().status).toBe('handoff')
   })
 
   it('supports explicit rebindActive when starting new chat', () => {
@@ -41,6 +58,7 @@ describe('TabAffinityController', () => {
     affinity.observeActive(tab(1))
     affinity.bindInitial(tab(1))
     affinity.observeActive(tab(2))
+    affinity.decide('keep', affinity.snapshot().revision)
 
     expect(affinity.rebindActive(tab(2))).toBe(true)
     expect(affinity.snapshot()).toMatchObject({ status: 'following', controlled: { tabId: 2 }, active: { tabId: 2 } })
@@ -52,6 +70,7 @@ describe('TabAffinityController', () => {
     affinity.observeActive(tab(1))
     affinity.bindInitial(tab(1))
     affinity.observeActive(tab(2))
+    affinity.decide('keep', affinity.snapshot().revision)
 
     expect(affinity.removeTab(1)).toBe(true)
     expect(affinity.snapshot()).toMatchObject({ status: 'lost', controlled: null, active: { tabId: 2 } })
@@ -91,6 +110,7 @@ describe('TabAffinityController', () => {
     affinity.observeActive(tab(1))
     affinity.bindInitial(tab(1))
     affinity.observeActive(tab(2))
+    affinity.decide('keep', affinity.snapshot().revision)
 
     expect(affinity.replaceTab(1, 10)).toBe(true)
     expect(affinity.snapshot()).toMatchObject({
@@ -109,7 +129,7 @@ describe('TabAffinityController', () => {
     expect(affinity.replaceTab(999, 30)).toBe(false)
   })
 
-  it('returns to following status if the user returns to the controlled tab', () => {
+  it('clears the handoff if the user returns to the controlled tab', () => {
     const affinity = new TabAffinityController()
     affinity.observeActive(tab(1))
     affinity.bindInitial(tab(1))
@@ -123,7 +143,7 @@ describe('TabAffinityController', () => {
     const restored = new TabAffinityController()
     expect(restored.restoreControlled(tab(4))).toBe(true)
     restored.observeActive(tab(5))
-    expect(restored.snapshot()).toMatchObject({ status: 'background', controlled: { tabId: 4 }, active: { tabId: 5 } })
+    expect(restored.snapshot()).toMatchObject({ status: 'handoff', controlled: { tabId: 4 }, active: { tabId: 5 } })
 
     const lost = new TabAffinityController()
     expect(lost.restoreLost()).toBe(true)
