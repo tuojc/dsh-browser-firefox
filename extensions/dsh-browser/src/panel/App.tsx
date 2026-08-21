@@ -41,7 +41,11 @@ import {
   type ImageAttachmentLimits,
 } from './attachments.ts'
 import { imageErrorMessage } from './image-errors.ts'
-import { restoreSubmittedImages, restoreSubmittedText } from './composer.ts'
+import {
+  emptyComposerDraft,
+  restoreSubmittedDraft,
+  type ComposerDraft,
+} from './composer.ts'
 import {
   latestSessionTitle,
   projectedSessionTitle,
@@ -328,8 +332,9 @@ export function App(): React.JSX.Element {
   const [caps, setCaps] = useState<BridgeCaps | null>(null)
   const [settings, setSettings] = useState<PanelSettings | null>(null)
   const [rows, setRows] = useState<Row[]>([])
-  const [input, setInput] = useState('')
-  const [draftImages, setDraftImages] = useState<DraftImage[]>([])
+  const [draft, setDraft] = useState<ComposerDraft<DraftImage>>(() => emptyComposerDraft())
+  const input = draft.text
+  const draftImages = draft.images
   const [imageLimits, setImageLimits] = useState<ImageAttachmentLimits | null>(null)
   const [addingImages, setAddingImages] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -447,7 +452,7 @@ export function App(): React.JSX.Element {
         sessionRef.current = null
         sessionRuntimeRef.current.clear()
         setRows([])
-        setDraftImages([])
+        setDraft((current) => ({ ...current, images: [] }))
         setImageLimits(null)
         imageProjectionRef.current = { sessionId: null, seq: Number.NEGATIVE_INFINITY, limits: null }
         setSessionTitle(null)
@@ -831,8 +836,7 @@ export function App(): React.JSX.Element {
 
   function prepareSessionSwitch(nextWorking: boolean, nextQuestions: PendingQuestion[] = []): void {
     setRows([])
-    setInput('')
-    setDraftImages([])
+    setDraft(emptyComposerDraft())
     setImageLimits(null)
     imageProjectionRef.current = { sessionId: null, seq: Number.NEGATIVE_INFINITY, limits: null }
     setWorking(nextWorking)
@@ -855,7 +859,9 @@ export function App(): React.JSX.Element {
     const existing = draftImages
     try {
       const prepared = await prepareImageFiles(files, existing, limits)
-      if (sessionRef.current === sessionId) setDraftImages([...existing, ...prepared])
+      if (sessionRef.current === sessionId) {
+        setDraft((current) => ({ ...current, images: [...current.images, ...prepared] }))
+      }
     } catch (cause) {
       if (sessionRef.current === sessionId) setError(imageErrorMessage(cause, copy, limits))
     } finally {
@@ -873,9 +879,9 @@ export function App(): React.JSX.Element {
     if ((text === '' && submittedImages.length === 0)
       || busy || addingImagesRef.current || sendingRef.current || sessionChangingRef.current || id === null) return
     sendingRef.current = true
+    const submittedDraft: ComposerDraft<DraftImage> = { text, images: submittedImages }
     if (textOverride === undefined) {
-      setInput('')
-      setDraftImages([])
+      setDraft(emptyComposerDraft())
     }
     setBusy(true)
     setWorking(true)
@@ -894,8 +900,7 @@ export function App(): React.JSX.Element {
         setError(imageErrorMessage(cause, copy, imageLimits ?? undefined))
         setWorking(false)
         if (textOverride === undefined) {
-          setInput((current) => restoreSubmittedText(current, text))
-          setDraftImages((current) => restoreSubmittedImages(current, submittedImages))
+          setDraft((current) => restoreSubmittedDraft(current, submittedDraft))
         }
       }
     } finally {
@@ -1194,7 +1199,10 @@ export function App(): React.JSX.Element {
                       disabled={busy || addingImages}
                       aria-label={copy.app.removeImage(name)}
                       title={copy.app.removeImage(name)}
-                      onClick={() => setDraftImages((current) => current.filter((item) => item.id !== image.id))}
+                      onClick={() => setDraft((current) => ({
+                        ...current,
+                        images: current.images.filter((item) => item.id !== image.id),
+                      }))}
                     >×</button>
                   </span>
                 )
@@ -1203,7 +1211,9 @@ export function App(): React.JSX.Element {
           )}
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              if (!sendingRef.current) setDraft((current) => ({ ...current, text: e.target.value }))
+            }}
             onKeyDown={(e) => {
               // isComposing：输入法组词中的回车是确认选字，不是发送。
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1212,7 +1222,7 @@ export function App(): React.JSX.Element {
               }
             }}
             placeholder={state === 'connected' ? copy.app.connectedPlaceholder : copy.app.disconnectedPlaceholder}
-            disabled={!sessionReady}
+            disabled={!sessionReady || busy}
             rows={2}
           />
           <div className="composer-actions">

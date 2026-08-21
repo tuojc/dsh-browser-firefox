@@ -1,17 +1,24 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { restoreSubmittedImages, restoreSubmittedText } from '../src/panel/composer.ts'
+import { emptyComposerDraft, restoreSubmittedDraft } from '../src/panel/composer.ts'
 
 describe('rejected prompt draft restoration', () => {
-  it('restores the cleared submission', () => {
-    const images = [{ id: 'submitted-image' }]
-    expect(restoreSubmittedText('', 'describe this image')).toBe('describe this image')
-    expect(restoreSubmittedImages([], images)).toBe(images)
+  const submitted = {
+    text: 'describe this image',
+    images: [{ id: 'submitted-image' }],
+  }
+
+  it('restores the complete submission when the composer is still empty', () => {
+    expect(restoreSubmittedDraft(emptyComposerDraft(), submitted)).toBe(submitted)
   })
 
-  it('does not overwrite edits made while the rejected request was pending', () => {
-    const newerImages = [{ id: 'newer-image' }]
-    expect(restoreSubmittedText('newer text', 'submitted text')).toBe('newer text')
-    expect(restoreSubmittedImages(newerImages, [{ id: 'submitted-image' }])).toBe(newerImages)
+  it('does not mix rejected images into a newer text-only draft', () => {
+    const newer = { text: 'newer text', images: [] as { id: string }[] }
+    expect(restoreSubmittedDraft(newer, submitted)).toBe(newer)
+  })
+
+  it('does not mix rejected text into a newer image-only draft', () => {
+    const newer = { text: '', images: [{ id: 'newer-image' }] }
+    expect(restoreSubmittedDraft(newer, submitted)).toBe(newer)
   })
 })
