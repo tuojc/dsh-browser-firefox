@@ -306,7 +306,12 @@ describe('extension ↔ bridge e2e', () => {
       signal: new AbortController().signal,
     })
     const approval = panel.locator('.approval-dialog')
-    await approval.waitFor({ state: 'visible', timeout: 15_000 })
+    await Promise.race([
+      approval.waitFor({ state: 'visible', timeout: 15_000 }),
+      snapshot.then((result) => {
+        throw new Error(`snapshot settled before its approval appeared: ${JSON.stringify(result)}`)
+      }),
+    ])
     expect(await approval.locator('#approval-title').textContent()).toBe('允许读取页面？')
     expect(await approval.textContent()).toContain(`http://127.0.0.1:${port}`)
     expect(await approval.locator('button.session-trust').count()).toBe(0)
