@@ -8,6 +8,7 @@
  */
 
 import { getUiLocale, type UiLocale } from '../i18n.ts'
+import { imageRefsFromBlocks, type ImageAttachmentRef } from './attachments.ts'
 import { PANEL_COPY } from './strings.ts'
 
 /** One rendered conversation row. */
@@ -15,6 +16,7 @@ export interface Row {
   seq: number
   kind: 'user' | 'assistant' | 'tool' | 'info'
   text: string
+  images?: ImageAttachmentRef[]
   status?: 'running' | 'complete'
 }
 
@@ -140,14 +142,22 @@ export function rowFromEvent(event: SessionEventView): Row | null {
       // 渲染会污染对话流，必须跳过。
       const source = (event.data as { source?: { kind?: string } } | undefined)?.source
       if (source?.kind !== 'user') return null
-      const text = textFromBlocks(event.data?.content)
-      return text.trim() === '' ? null : { seq: 0, kind: 'user', text }
+      const blocks = event.data?.content
+      const text = textFromBlocks(blocks)
+      const images = imageRefsFromBlocks(blocks)
+      return text.trim() === '' && images.length === 0
+        ? null
+        : { seq: 0, kind: 'user', text, ...(images.length === 0 ? {} : { images }) }
     }
     case 'assistant/message': {
       // 工具调用也会产生 assistant/message，但其 content 可能只有 tool_use
       // 等非文本块。不要为这种中间事件渲染一个空的 AI 气泡。
-      const text = textFromBlocks(event.data?.message?.content)
-      return text.trim() === '' ? null : { seq: 0, kind: 'assistant', text }
+      const blocks = event.data?.message?.content
+      const text = textFromBlocks(blocks)
+      const images = imageRefsFromBlocks(blocks)
+      return text.trim() === '' && images.length === 0
+        ? null
+        : { seq: 0, kind: 'assistant', text, ...(images.length === 0 ? {} : { images }) }
     }
     default:
       return null
@@ -169,7 +179,13 @@ export function toolSummary(name: string, argsJson: unknown, locale: UiLocale = 
 }
 
 /** live 合并：若最后一行是工具行则并入（连续工具调用不刷屏），否则新增一行。 */
-export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq: number): Row[] {
+export function appendLiveRow(
+  rows: Row[],
+  kind: Row['kind'],
+  text: string,
+  seq: number,
+  images?: ImageAttachmentRef[],
+): Row[] {
   if (kind === 'tool') {
     const last = rows[rows.length - 1]
     if (last?.kind === 'tool') {
@@ -177,7 +193,7 @@ export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq:
     }
     return [...rows, { seq, kind, text, status: 'running' }]
   }
-  return [...rows, { seq, kind, text }]
+  return [...rows, { seq, kind, text, ...(images === undefined || images.length === 0 ? {} : { images }) }]
 }
 
 /** 标记最后一行工具调用已完成（并入，不新增行）。 */

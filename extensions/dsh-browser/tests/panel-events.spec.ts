@@ -46,6 +46,29 @@ describe('rowFromEvent', () => {
     expect(row).toEqual({ seq: 0, kind: 'assistant', text: '好的' })
   })
 
+  it('renders image-only and mixed multimodal messages from durable attachment refs', () => {
+    const image = {
+      type: 'image',
+      attachment: {
+        attachmentId: 'image-1', mediaType: 'image/png', bytes: 10, width: 20, height: 30, name: 'page.png',
+      },
+    }
+    expect(rowFromEvent(ev('user/message', { content: [image], source: { kind: 'user' } }))).toEqual({
+      seq: 0,
+      kind: 'user',
+      text: '',
+      images: [image.attachment],
+    })
+    expect(rowFromEvent(ev('assistant/message', {
+      message: { content: [{ type: 'text', text: 'I see it' }, image] },
+    }))).toEqual({
+      seq: 0,
+      kind: 'assistant',
+      text: 'I see it',
+      images: [image.attachment],
+    })
+  })
+
   it('skips assistant events that contain only tool or blank blocks', () => {
     expect(rowFromEvent(ev('assistant/message', {
       message: { content: [{ type: 'tool_use', name: 'browser_snapshot' }] },
