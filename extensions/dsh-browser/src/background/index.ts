@@ -782,10 +782,27 @@ chrome.runtime.onConnect.addListener((port) => {
       }
       case 'settings': {
         const settingsMsg = message as { settings: Partial<Settings> }
-        void settingsReady.then(() => persistSettings(settingsMsg.settings)).then(async () => {
-          if (!panelPorts.has(port)) return
-          await startBridge()
+        void settingsReady.then(async () => {
+          const previousConnection = { bridgeUrl: settings.bridgeUrl, token: settings.token }
+          await persistSettings(settingsMsg.settings)
+          if (panelPorts.size > 0) {
+            await startBridge()
+            broadcastStatus()
+            return
+          }
+          const connectionChanged = settings.bridgeUrl !== previousConnection.bridgeUrl
+            || settings.token !== previousConnection.token
+          if (!connectionChanged) return
+          // The settings write outlived its originating panel. Do not keep a
+          // healthy socket authenticated with stale connection settings: make
+          // the next explicit panel lease start from the persisted values.
+          bridgeStartRevision += 1
+          bridge?.stop()
+          bridge = null
+          rpc = null
+          caps = null
           broadcastStatus()
+          disarmBridgeKeepalive()
         })
         break
       }

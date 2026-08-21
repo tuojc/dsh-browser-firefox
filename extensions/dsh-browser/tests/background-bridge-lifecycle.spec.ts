@@ -50,10 +50,12 @@ function panelPort() {
     onMessage,
     onDisconnect,
   } as unknown as chrome.runtime.Port
-  return { onDisconnect, port }
+  return { onDisconnect, onMessage, port }
 }
 
-function mockChrome() {
+function mockChrome(options: {
+  localSet?: (items: Record<string, unknown>) => Promise<void>
+} = {}) {
   const onConnect = chromeEvent<[chrome.runtime.Port]>()
   const onAlarm = chromeEvent<[chrome.alarms.Alarm]>()
   const alarms = {
@@ -79,7 +81,7 @@ function mockChrome() {
     storage: {
       local: {
         get: vi.fn(async () => ({})),
-        set: vi.fn(async () => {}),
+        set: vi.fn(options.localSet ?? (async () => {})),
       },
       session: {
         get: vi.fn(async () => ({})),
@@ -179,5 +181,47 @@ describe('background bridge lifecycle', () => {
 
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidates stale connection settings when their save outlives the panel', async () => {
+    let finishSettingsWrite!: () => void
+    const settingsWrite = new Promise<void>((resolve) => { finishSettingsWrite = resolve })
+    const chromeMock = mockChrome({ localSet: async () => await settingsWrite })
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      wsUrl: 'ws://127.0.0.1:3080/ext/bridge',
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    await import('../src/background/index.ts')
+
+    const panel = panelPort()
+    chromeMock.onConnect.emit(panel.port)
+    await vi.waitFor(() => { expect(FakeWebSocket.instances).toHaveLength(1) })
+    const originalSocket = FakeWebSocket.instances[0]!
+    originalSocket.open()
+    await Promise.resolve()
+    originalSocket.receive({
+      t: 'hello.ok',
+      caps: { textOnly: true, snapshotMaxChars: 32_000, maxInteractiveItems: 60 },
+    })
+    await vi.waitFor(() => {
+      expect(panel.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ state: 'connected' }))
+    })
+
+    panel.onMessage.emit({
+      type: 'settings',
+      settings: { bridgeUrl: 'ws://127.0.0.1:3081', token: 'new-token' },
+    })
+    await vi.waitFor(() => { expect(chrome.storage.local.set).toHaveBeenCalledOnce() })
+    panel.onDisconnect.emit()
+    expect(originalSocket.readyState).toBe(FakeWebSocket.OPEN)
+
+    finishSettingsWrite()
+    await vi.waitFor(() => { expect(originalSocket.readyState).toBe(FakeWebSocket.CLOSED) })
+
+    const reopened = panelPort()
+    chromeMock.onConnect.emit(reopened.port)
+    await vi.waitFor(() => { expect(FakeWebSocket.instances).toHaveLength(2) })
+    expect(FakeWebSocket.instances[1]!.url).toBe('ws://127.0.0.1:3081/ext/bridge')
   })
 })
