@@ -9,6 +9,11 @@ export function emptyComposerDraft<Image>(): ComposerDraft<Image> {
   return { text: '', images: [] }
 }
 
+/** A picker result cannot mutate the composer during another image read or prompt admission. */
+export function canAcceptImageSelection(addingImages: boolean, sendingPrompt: boolean): boolean {
+  return !addingImages && !sendingPrompt
+}
+
 /** Restore both submitted parts together, or preserve a newer draft unchanged. */
 export function restoreSubmittedDraft<Image>(
   current: ComposerDraft<Image>,

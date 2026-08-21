@@ -42,6 +42,7 @@ import {
 } from './attachments.ts'
 import { imageErrorMessage } from './image-errors.ts'
 import {
+  canAcceptImageSelection,
   emptyComposerDraft,
   restoreSubmittedDraft,
   type ComposerDraft,
@@ -358,6 +359,7 @@ export function App(): React.JSX.Element {
   const questionSubmissionsRef = useRef<ResolvedQuestion[]>([])
   const stoppingRef = useRef(false)
   const addingImagesRef = useRef(false)
+  const sendingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const imageProjectionRef = useRef<{
     sessionId: string | null
@@ -852,7 +854,8 @@ export function App(): React.JSX.Element {
   async function addImageFiles(files: readonly File[]): Promise<void> {
     const limits = imageLimits
     const sessionId = sessionRef.current
-    if (files.length === 0 || limits === null || sessionId === null || addingImagesRef.current) return
+    if (files.length === 0 || limits === null || sessionId === null
+      || !canAcceptImageSelection(addingImagesRef.current, sendingRef.current)) return
     addingImagesRef.current = true
     setAddingImages(true)
     setError(null)
@@ -870,7 +873,6 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const sendingRef = useRef(false)
   async function send(textOverride?: string): Promise<void> {
     const text = (textOverride ?? input).trim()
     const submittedImages = textOverride === undefined ? draftImages : []

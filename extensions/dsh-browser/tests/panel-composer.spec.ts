@@ -1,6 +1,18 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { emptyComposerDraft, restoreSubmittedDraft } from '../src/panel/composer.ts'
+import {
+  canAcceptImageSelection,
+  emptyComposerDraft,
+  restoreSubmittedDraft,
+} from '../src/panel/composer.ts'
+
+describe('image picker admission', () => {
+  it('rejects a picker result that returns during prompt admission', () => {
+    expect(canAcceptImageSelection(false, true)).toBe(false)
+    expect(canAcceptImageSelection(true, false)).toBe(false)
+    expect(canAcceptImageSelection(false, false)).toBe(true)
+  })
+})
 
 describe('rejected prompt draft restoration', () => {
   const submitted = {
