@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 import { withSessionDeferral } from '../src/session-deferral.ts'
 
 type CreateRequest = Parameters<ApiProxy['sessions']['create']>[0]
@@ -76,6 +77,31 @@ describe('withSessionDeferral', () => {
     expect(sessionHistory).toHaveBeenCalledWith(
       expect.objectContaining({ payload: { sessionId: SessionId('session-real') } }),
     )
+  })
+
+  it('advertises the real host image limits before a deferred session materializes', async () => {
+    const { api } = apiHarness()
+    const imageLimits: ImageAttachmentLimits = {
+      maxImageBytes: 1024,
+      maxImagesPerMessage: 4,
+      maxMessageImageBytes: 4096,
+      maxImagePixels: 1_000_000,
+      maxImageDimension: 1200,
+      mediaTypes: ['image/png', 'image/jpeg'],
+    }
+    const wrapped = withSessionDeferral(api, true, imageLimits)
+    const id = await provisionalId(wrapped)
+
+    const history = await wrapped.sessions.history({ rpcId: RpcId('history'), payload: { sessionId: id } })
+
+    expect(history.result).toEqual({
+      ok: true,
+      value: {
+        events: [],
+        hasMore: false,
+        projections: { asOfSeq: -1, values: { imageLimits } },
+      },
+    })
   })
 
   it('materializes the session on the first prompt, replaying the create payload', async () => {
