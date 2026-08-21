@@ -18,9 +18,19 @@ class FakeWebSocket extends EventTarget {
 
   send(): void {}
 
-  close(): void {
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN
+    this.dispatchEvent(new Event('open'))
+  }
+
+  receive(frame: unknown): void {
+    this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }))
+  }
+
+  close(code = 1000, reason = ''): void {
+    if (this.readyState === FakeWebSocket.CLOSED) return
     this.readyState = FakeWebSocket.CLOSED
-    this.dispatchEvent(new Event('close'))
+    this.dispatchEvent(new CloseEvent('close', { code, reason }))
   }
 }
 
@@ -65,5 +75,56 @@ describe('BridgeClient connection probe', () => {
 
     expect(FakeWebSocket.instances).toHaveLength(1)
     client.stop()
+  })
+
+  it('does not retry after the bridge explicitly replaces this connection', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const states: BridgeState[] = []
+    const client = new BridgeClient({
+      onStateChange: (state) => { states.push(state) },
+      onFrame: () => {},
+      onHelloOk: () => {},
+    })
+
+    client.start('ws://127.0.0.1:3080/ext/bridge', '')
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    await vi.advanceTimersByTimeAsync(0)
+    socket.receive({
+      t: 'hello.ok',
+      caps: { textOnly: true, snapshotMaxChars: 32_000, maxInteractiveItems: 60 },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(states.at(-1)).toBe('connected')
+
+    socket.close(4000, 'replaced')
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(states.at(-1)).toBe('stopped')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('stops reconnecting after its user-owned lease disappears', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    let active = true
+    const states: BridgeState[] = []
+    const client = new BridgeClient({
+      onStateChange: (state) => { states.push(state) },
+      onFrame: () => {},
+      onHelloOk: () => {},
+    }, async () => true, () => active)
+
+    client.start('ws://127.0.0.1:3080/ext/bridge', '')
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    active = false
+    socket.close()
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(states.at(-1)).toBe('stopped')
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 })

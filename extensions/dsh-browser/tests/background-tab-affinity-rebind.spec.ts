@@ -47,6 +47,7 @@ function mockChrome() {
   vi.stubGlobal('chrome', {
     alarms: {
       create: vi.fn(),
+      clear: vi.fn(async () => true),
       onAlarm: chromeEvent<[chrome.alarms.Alarm]>(),
     },
     notifications: {
