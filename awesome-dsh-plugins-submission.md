@@ -55,10 +55,11 @@ https://addons.mozilla.org/en-GB/firefox/addon/dsh-%E6%B5%8F%E8%A7%88%E5%99%A8%E
 新提交，留「待测」，由雷达 k8s 实测判定。
 ```
 
-## 四、提交前检查清单
+## 四、执行记录（2026-08-22 已全部完成 ✅）
 
-- [ ] repo 已公开并推送最新代码（当前本地 remote 还指向上游 `Lum1104/dsh-browser`，需先建自己的仓库）
-- [ ] repo 加上 `dsh-plugin` topic
+- [x] repo 公开并推送：<https://github.com/tuojc/dsh-browser-firefox>（origin 指向自己，upstream 保留上游 `Lum1104/dsh-browser`；已推送 main + tags；浅克隆已 `git fetch --unshallow` 补全）
+- [x] repo 已加 topic：`dsh-plugin`、`deepseek-harness`、`firefox`、`firefox-addon`、`webextension`、`browser-automation`、`agent`
+- [x] 仓库主页已设为 AMO 链接
 - [x] 表格行中的仓库地址已替换为 `tuojc/dsh-browser-firefox`
-- [ ] 「运行级」列填「待测」（不要自填 ✅，由雷达实测判定）
-- [ ] 如需更快收录：直接改 PLUGINS.md 对应表格提 PR；只打 topic 则等每日 02:00 自动扫描
+- [x] 「运行级」列填「待测」（由雷达实测判定）
+- [x] PR 已提交：<https://github.com/AdamPlatin123/awesome-dsh-plugins/pull/277>（fork → 分支 `add-dsh-browser-firefox` → 追加表格行）

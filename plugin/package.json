@@ -1,10 +1,23 @@
 {
-  "name": "@deepseek-ai/dsh-bridge-browser",
-  "description": "Bridge plugin: token-authenticated WebSocket carrier for the browser extension plus text-only browser_* tools that drive the user's Chrome via that extension",
+  "name": "dsh-browser-firefox",
+  "description": "Firefox browser control for DeepSeek Harness: token-authenticated WebSocket bridge + text-first browser_* tools driving the user's own Firefox via the companion AMO extension",
   "version": "0.3.0",
-  "author": "Yuxiang Lin",
+  "author": "tuojc",
   "license": "MIT",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tuojc/dsh-browser-firefox.git",
+    "directory": "plugin"
+  },
+  "homepage": "https://github.com/tuojc/dsh-browser-firefox",
+  "bugs": "https://github.com/tuojc/dsh-browser-firefox/issues",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "firefox",
+    "browser-automation",
+    "webextension"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -53,7 +66,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false",
-    "build": "tsc -b --pretty false && tsdown"
+    "build": "tsc -b --pretty false && tsdown",
+    "prepublishOnly": "pnpm run build"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",

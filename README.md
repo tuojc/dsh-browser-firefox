@@ -93,15 +93,19 @@ pnpm build   # 依次构建 bridge 插件 + 扩展
 
 ### 1. 安装 bridge 插件到 dsh profile
 
+**从 npm 安装（推荐）**：
+
 ```sh
-dsh plugin --profile web add ./plugin/dsh-bridge-plugin-0.0.1.tgz
+dshpm install dsh-browser-firefox --profile web
 ```
+
+也可以从源码构建后用本地 tgz 安装（见「构建」一节）。
 
 首次启动时插件在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限）；本地回环连接免 token。**安装后重启 `dsh web` 生效。**
 
 ### 2. 在 Firefox 加载扩展
 
-**正式安装（推荐）**：扩展已提交至 Firefox 扩展商店（[addons.mozilla.org](https://addons.mozilla.org/)），搜索「**dsh 浏览器助手**」即可直接安装。
+**正式安装（推荐）**：扩展已上架 Firefox 扩展商店，直接安装👉 [DSH 浏览器助手 - addons.mozilla.org](https://addons.mozilla.org/en-GB/firefox/addon/dsh-%E6%B5%8F%E8%A7%88%E5%99%A8%E5%8A%A9%E6%89%8B/)（也可在 AMO 搜索「dsh 浏览器助手」）。
 
 **开发调试**用「临时载入」：
 

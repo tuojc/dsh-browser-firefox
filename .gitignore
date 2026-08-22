@@ -16,5 +16,8 @@ node_modules/
 *.zip
 *.tgz
 
+# 本地工具（gh CLI 等，勿提交）
+.tools/
+
 # 真实 manifest（含个人 gecko.id，见 manifest.example.json）
 extension/manifest.json
