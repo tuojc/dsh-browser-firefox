@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "dsh 浏览器助手",
   "description": "让 DeepSeek Harness 直接读取并操作你正在使用的浏览器标签页——纯文本交互、登录态保留、导航新建标签页并按会话分组。",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "browser_specific_settings": {
     "gecko": {
       "id": "dsh-browser-firefox@example.com",
