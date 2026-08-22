@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { BridgeServer } from '../src/server.ts'
 import { BROWSER_TOOL_NAMES, registerBrowserTools } from '../src/tools.ts'
+import { parameterSchemaSpecToJsonSchema, validateArgs } from '@deepseek-ai/dsh-tools'
 
 describe('registerBrowserTools', () => {
   function makeHarness() {
@@ -94,13 +95,51 @@ describe('registerBrowserTools', () => {
     expect(requestTool).toHaveBeenLastCalledWith('browser_wait', {}, exec.signal, 1_000)
   })
 
-  it('declares a JSON Schema object root on every tool (empty objects serialize to type:null and get 400)', () => {
+  it('declares a flat parameter map on every tool that compiles to a non-empty JSON Schema', () => {
     const { ctx, bridge, registered } = makeHarness()
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
-    for (const { definition } of registered) {
-      const params = definition.parameters as { type?: unknown }
-      expect(params.type).toBe('object')
+    for (const { name, definition } of registered) {
+      // Regression: parameters must be a FLAT property map ({ field: { type, ... } }),
+      // NOT a JSON-Schema object. Injecting { type: 'object', additionalProperties: false }
+      // made the compiler throw "parameters.type must be a value schema object" and
+      // surface every tool with an empty schema (model args dropped).
+      const params = definition.parameters as Record<string, unknown>
+      expect(typeof params).toBe('object')
+      expect(params).not.toBeNull()
+      const json = parameterSchemaSpecToJsonSchema(params as never)
+      expect(json.type).toBe('object')
+      expect(json.properties).toBeTypeOf('object')
     }
+  })
+
+  it('compiles the argument-bearing tools with their declared fields and requiredness', () => {
+    const { ctx, bridge, registered } = makeHarness()
+    registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
+    const schemaOf = (name: string) => {
+      const tool = registered.find((r) => r.name === name)!
+      return parameterSchemaSpecToJsonSchema(tool.definition.parameters as never)
+    }
+
+    // browser_navigate: url required (the field that was being dropped).
+    const navigate = schemaOf('browser_navigate')
+    expect(Object.keys(navigate.properties)).toContain('url')
+    expect(navigate.required).toContain('url')
+    expect(validateArgs(registered.find((r) => r.name === 'browser_navigate')!.definition.parameters as never, { url: 'https://example.com' })).toEqual([])
+    expect(validateArgs(registered.find((r) => r.name === 'browser_navigate')!.definition.parameters as never, {}).length).toBeGreaterThan(0)
+
+    // browser_type: index + text required, replace optional.
+    const type = schemaOf('browser_type')
+    expect(Object.keys(type.properties)).toEqual(expect.arrayContaining(['index', 'text', 'replace']))
+    expect(type.required).toEqual(expect.arrayContaining(['index', 'text']))
+
+    // browser_scroll: direction required with enum.
+    const scroll = schemaOf('browser_scroll')
+    expect(scroll.required).toContain('direction')
+    expect(scroll.properties.direction).toHaveProperty('enum', ['up', 'down', 'top', 'bottom'])
+
+    // browser_click: index + selector both optional (either/or).
+    const click = schemaOf('browser_click')
+    expect(Object.keys(click.properties)).toEqual(expect.arrayContaining(['index', 'selector']))
   })
 
   it('declares cooperative timeoutMs on every tool', () => {
