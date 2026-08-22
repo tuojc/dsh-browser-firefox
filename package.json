@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-firefox-workspace",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Firefox edition of the dsh browser bridge: plugin + WebExtension workspace",
   "author": "tuojc",
   "license": "MIT",
