@@ -38,7 +38,7 @@ describe('assertPositiveInteger', () => {
 })
 
 /** Valid budgets (the Loader applies schema defaults; hand-built tests pass them explicitly). */
-const VALID = { toolTimeoutMs: 60_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 }
+const VALID = { toolTimeoutMs: 60_000, snapshotMaxChars: 12_000, maxInteractiveItems: 120 }
 
 describe('config', () => {
   it('resolves defaults, including an enabled workspace under the dsh home', () => {

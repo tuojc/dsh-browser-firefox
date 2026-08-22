@@ -302,9 +302,19 @@ async function listTabsAction(): Promise<ToolAnswer> {
   return { ok: true, result: { text: items.length > 0 ? items.join('\n') : '(无标签页)' } }
 }
 
+/** In-flight tool calls that a bridge tool.cancel can still withdraw. */
+const inflightToolCalls = new Map<string, { cancelled: boolean }>()
+
 /** Route one tool.call frame to the active tab and answer over the bridge. */
-function routeToolCall(call: ToolCall, sessionId: string | undefined, title: string | undefined): void {
+function routeToolCall(call: ToolCall, expiresAt: number | undefined, sessionId: string | undefined, title: string | undefined): void {
   if (bridge === null) return
+  // 到达时已过期的调用直接拒绝：不再执行任何页面动作。
+  if (expiresAt !== undefined && Date.now() > expiresAt) {
+    bridge.send({ t: 'tool.result', id: call.id, ok: false, error: { code: 'timeout', message: '调用到达时已过期，未执行' } })
+    return
+  }
+  const state = { cancelled: false }
+  inflightToolCalls.set(call.id, state)
   ensureSession(sessionId)
   const budget = caps === null
     ? undefined
@@ -332,7 +342,13 @@ function routeToolCall(call: ToolCall, sessionId: string | undefined, title: str
   } else {
     promise = dispatchToolCall(call, settings.sharePageContent, budget, workingTabId)
   }
-  void promise.then(sendAnswer)
+  void promise.then((answer) => {
+    inflightToolCalls.delete(call.id)
+    // 调用方已超时/取消（server 已 tool.cancel 并在本地结算）：
+    // 迟到的结果直接丢弃，过期动作不能被记为成功。
+    if (state.cancelled) return
+    sendAnswer(answer)
+  })
 }
 
 /** (Re)start the bridge with the current settings. 零配置：地址留空时自动探测；回环连接无需 token。 */
@@ -362,7 +378,11 @@ async function startBridge(): Promise<void> {
       onStateChange: () => { broadcastStatus() },
       onFrame: (frame) => {
         if (frame.t === 'event') broadcastEvent(frame)
-        else if (frame.t === 'tool.call') routeToolCall(frame, frame.sessionId, frame.title)
+        else if (frame.t === 'tool.call') routeToolCall(frame, frame.expiresAt, frame.sessionId, frame.title)
+        else if (frame.t === 'tool.cancel') {
+          const entry = inflightToolCalls.get(frame.id)
+          if (entry !== undefined) entry.cancelled = true
+        }
         // rpc.result is settled by the rpc facade (wrapped below).
       },
       onHelloOk: (negotiated) => {

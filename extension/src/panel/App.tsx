@@ -31,6 +31,7 @@ const STATE_LABEL: Record<BridgeState, string> = {
   connecting: '连接中…',
   reconnecting: '重连中…',
   stopped: '未连接',
+  unauthorized: '需要 Token',
 }
 
 function SettingsIcon(): React.JSX.Element {
@@ -301,12 +302,12 @@ export function App(): React.JSX.Element {
           </label>
           <label>
             <span>Token</span>
-            <small>本地连接无需填写</small>
+            <small>Firefox 必填：复制 ~/.dsh/ext-bridge-token 文件内容</small>
             <input
               type="password"
               value={settings?.token ?? ''}
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, token: e.target.value })}
-              placeholder="远程部署时填写"
+              placeholder="~/.dsh/ext-bridge-token 的内容"
             />
           </label>
           <label>
@@ -341,6 +342,12 @@ export function App(): React.JSX.Element {
         <span className="connection" role="status"><span className={`dot ${state}`} />{statusText}</span>
         <button className="icon-button" onClick={() => setShowSettings(true)} aria-label="打开设置" title="设置"><SettingsIcon /></button>
       </header>
+      {state === 'unauthorized' && (
+        <div className="auth-banner" role="alert">
+          连接被拒绝：需要访问令牌。请打开设置，将 <code>~/.dsh/ext-bridge-token</code> 文件的内容粘贴到 Token 一栏后保存。
+          <button className="secondary" onClick={() => setShowSettings(true)}>打开设置</button>
+        </div>
+      )}
       <section className="context-card" aria-label="当前页面">
         <span className="context-icon"><PageIcon /></span>
         <span className="context-copy">

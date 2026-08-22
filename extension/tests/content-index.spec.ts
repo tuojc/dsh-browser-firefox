@@ -13,9 +13,9 @@ describe('content script registration', () => {
   it('replaces a stale listener when content.js is injected again', async () => {
     const addListener = vi.fn()
     const removeListener = vi.fn()
-    vi.stubGlobal('chrome', {
-      runtime: { onMessage: { addListener, removeListener } },
-    })
+    const api = { runtime: { onMessage: { addListener, removeListener } } }
+    vi.stubGlobal('chrome', api)
+    vi.stubGlobal('browser', api)
 
     await import('../src/content/index.ts')
     expect(addListener).toHaveBeenCalledTimes(1)

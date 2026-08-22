@@ -142,6 +142,25 @@ describe('BridgeServer', () => {
     expect(ws.readyState).toBe(WebSocket.CLOSED)
   })
 
+  it('requires the token from loopback moz-extension origins (per-install UUID is not an identity)', async () => {
+    const h = await startBridge()
+    harnesses.push(h)
+    const { ws, done } = await connect(h.url, 'moz-extension://9c8f7a2b-1111-4222-8333-444455556666')
+    send(ws, { t: 'hello', token: '', caps: CAPS })
+    await done
+    expect(ws.readyState).toBe(WebSocket.CLOSED)
+  })
+
+  it('accepts loopback moz-extension origins that present the token', async () => {
+    const h = await startBridge()
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url, 'moz-extension://9c8f7a2b-1111-4222-8333-444455556666')
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+    expect(frames.find((f) => f.t === 'hello.ok')).toBeDefined()
+    ws.close()
+  })
+
   it('still requires the token from non-loopback remotes', async () => {
     const h = await startBridge({ remoteAddressOverride: '192.168.1.5' })
     harnesses.push(h)
@@ -221,6 +240,73 @@ describe('BridgeServer', () => {
     expect(call.args).toEqual({ index: 1 })
     send(ws, { t: 'tool.result', id: call.id, ok: true, result: { text: 'clicked' } })
     await expect(result).resolves.toEqual({ text: 'clicked' })
+    ws.close()
+  })
+
+  it('sends expiresAt on tool.call and withdraws the call with tool.cancel on timeout', async () => {
+    const h = await startBridge({ toolTimeoutMs: 80 })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+    const before = Date.now()
+    const result = h.bridge.requestTool('browser_click', { index: 1 }, new AbortController().signal)
+    await waitFor(() => frames.some((f) => f.t === 'tool.call'))
+    const call = frames.find((f) => f.t === 'tool.call') as Extract<BridgeFrame, { t: 'tool.call' }>
+    expect(typeof call.expiresAt).toBe('number')
+    expect(call.expiresAt!).toBeGreaterThanOrEqual(before + 80)
+    // 扩展不应答：超时后必须在网线上撤回该调用。
+    await expect(result).rejects.toMatchObject({ code: 'timeout' })
+    await waitFor(() => frames.some((f) => f.t === 'tool.cancel' && (f as { id: string }).id === call.id))
+    ws.close()
+  })
+
+  it('withdraws tool calls with tool.cancel when the caller signal fires', async () => {
+    const h = await startBridge()
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+    const controller = new AbortController()
+    const result = h.bridge.requestTool('browser_click', { index: 1 }, controller.signal)
+    await waitFor(() => frames.some((f) => f.t === 'tool.call'))
+    const call = frames.find((f) => f.t === 'tool.call') as Extract<BridgeFrame, { t: 'tool.call' }>
+    controller.abort()
+    await expect(result).rejects.toMatchObject({ code: 'bridge-closed' })
+    await waitFor(() => frames.some((f) => f.t === 'tool.cancel' && (f as { id: string }).id === call.id))
+    ws.close()
+  })
+
+  it('preserves arrival order for session-scoped prompt/cancel rpc frames', async () => {
+    const calls: string[] = []
+    let releaseFirst!: () => void
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const h = await startBridge({
+      apiHandler: {
+        fetch: async (request: Request) => {
+          const body = JSON.parse(await request.text()) as { rpcId: string }
+          calls.push(body.rpcId)
+          if (body.rpcId === 'p1') await gate
+          return new Response(JSON.stringify({ type: 'server-response', rpcId: body.rpcId, result: { ok: true, value: null } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        },
+      },
+    })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+    send(ws, { t: 'rpc', id: 'p1', method: 'session.prompt', payload: { sessionId: 's1' } })
+    send(ws, { t: 'rpc', id: 'c1', method: 'session.cancel', payload: { sessionId: 's1' } })
+    // 无序时 c1 会立即进入 handler；有序时它必须等 p1 的 fetch 完成。
+    await new Promise((resolve) => { setTimeout(resolve, 60) })
+    expect(calls).toEqual(['p1'])
+    releaseFirst()
+    await waitFor(() => calls.length === 2)
+    expect(calls).toEqual(['p1', 'c1'])
+    await waitFor(() => frames.some((f) => f.t === 'rpc.result' && f.id === 'c1'))
     ws.close()
   })
 

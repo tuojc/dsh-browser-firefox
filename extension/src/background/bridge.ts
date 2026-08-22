@@ -12,8 +12,8 @@
 import type { BridgeCaps, ClientFrame, ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 import { isServerFrame, parseBridgeFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
 
-/** Coarse connection state for the UI. */
-export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped'
+/** Coarse connection state for the UI. 'unauthorized' parks the loop until settings change. */
+export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped' | 'unauthorized'
 
 /** Frame/state sinks owned by the background assembly. */
 export interface BridgeSinks {
@@ -128,6 +128,7 @@ export class BridgeClient {
       } satisfies ClientFrame))
 
       let authed = false
+      let authRejected = false
       const accepted = await new Promise<boolean>((resolve) => {
         const onMessage = (event: MessageEvent): void => {
           const frame = parseBridgeFrame(String(event.data))
@@ -150,12 +151,25 @@ export class BridgeClient {
           if (isServerFrame(frame)) this.sinks.onFrame(frame)
         }
         socket.addEventListener('message', onMessage)
-        socket.addEventListener('close', () => {
+        socket.addEventListener('close', (event: CloseEvent) => {
+          // 4002 = token rejected. Firefox moz-extension:// origins carry a
+          // per-install UUID (not an identity boundary), so the bridge always
+          // requires the bearer token from Firefox clients.
+          if (!authed && event.code === 4002) authRejected = true
           this.clearAckTimer()
           resolve(false)
         }, { once: true })
         this.ackTimer = setTimeout(() => resolve(false), HELLO_ACK_TIMEOUT_MS)
       })
+      if (authRejected && this.running && generation === this.generation) {
+        // Retrying with the same token cannot succeed; park until the user
+        // updates the token in settings (which restarts the bridge).
+        this.running = false
+        if (this.ws === socket) this.ws = null
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close()
+        this.emitState('unauthorized')
+        return
+      }
       if (!accepted || !this.running || generation !== this.generation) {
         await this.fail(socket)
         continue

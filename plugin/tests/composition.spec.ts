@@ -179,7 +179,7 @@ describe('real Loader composition', () => {
     await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
     expect(client.frames.find((f) => f.t === 'hello.ok')).toEqual({
       t: 'hello.ok',
-      caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
+      caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 120 },
     })
 
     // Gateway RPC round-trip against the real session store.

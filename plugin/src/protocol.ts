@@ -74,8 +74,10 @@ export type ServerFrame =
   | { t: 'rpc.result'; id: string; ok: false; error: { code: string; message: string } }
   /** One gateway event envelope (the same server-request shape the GUI's /api/events.mux carries). */
   | { t: 'event'; frame: { rpcId: string; method: string; payload: unknown } }
-  /** A model-requested browser action to execute in the active tab. */
-  | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; sessionId?: string; title?: string }
+  /** A model-requested browser action to execute in the user-controlled tab. `expiresAt` (ms epoch) withdraws the call once the caller stops waiting. */
+  | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; expiresAt?: number; sessionId?: string; title?: string }
+  /** Withdraw a tool call that timed out or whose caller was cancelled. */
+  | { t: 'tool.cancel'; id: string }
   /** Liveness probe. */
   | { t: 'ping' }
   /** Fatal connection error; the client should re-authenticate. */
@@ -96,6 +98,7 @@ export function isServerFrame(frame: BridgeFrame): frame is ServerFrame {
     || frame.t === 'rpc.result'
     || frame.t === 'event'
     || frame.t === 'tool.call'
+    || frame.t === 'tool.cancel'
     || frame.t === 'ping'
     || frame.t === 'error'
 }
@@ -162,17 +165,23 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
         ? { t: 'event', frame: frame.frame as ServerFrame extends { t: 'event' } ? ServerFrame['frame'] : never }
         : undefined
     case 'tool.call':
-      return typeof frame.id === 'string' && typeof frame.name === 'string'
-        && typeof frame.args === 'object' && frame.args !== null && !Array.isArray(frame.args)
-        ? {
-            t: 'tool.call',
-            id: frame.id,
-            name: frame.name,
-            args: frame.args as Record<string, unknown>,
-            ...(typeof frame.sessionId === 'string' ? { sessionId: frame.sessionId } : {}),
-            ...(typeof frame.title === 'string' ? { title: frame.title } : {}),
-          }
-        : undefined
+      if (typeof frame.id !== 'string' || typeof frame.name !== 'string') return undefined
+      if (typeof frame.args !== 'object' || frame.args === null || Array.isArray(frame.args)) return undefined
+      // expiresAt is optional for backwards compatibility with pre-0.3.1
+      // plugins; when present it must be a finite positive ms-epoch.
+      if (frame.expiresAt !== undefined
+        && (typeof frame.expiresAt !== 'number' || !Number.isFinite(frame.expiresAt) || frame.expiresAt <= 0)) return undefined
+      return {
+        t: 'tool.call',
+        id: frame.id,
+        name: frame.name,
+        args: frame.args as Record<string, unknown>,
+        ...(typeof frame.expiresAt === 'number' ? { expiresAt: frame.expiresAt } : {}),
+        ...(typeof frame.sessionId === 'string' ? { sessionId: frame.sessionId } : {}),
+        ...(typeof frame.title === 'string' ? { title: frame.title } : {}),
+      }
+    case 'tool.cancel':
+      return typeof frame.id === 'string' ? { t: 'tool.cancel', id: frame.id } : undefined
     case 'ping':
       return { t: 'ping' }
     case 'error':

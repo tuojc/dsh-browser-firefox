@@ -20,10 +20,13 @@ function mockChrome(options: {
     ? vi.fn(async () => [{ frameId: 0, result: undefined }])
     : vi.fn(async () => { throw options.injectionError })
   const query = vi.fn(async () => options.tab === undefined ? [] : [options.tab])
-  vi.stubGlobal('chrome', {
-    tabs: { query, sendMessage },
+  const api = {
+    tabs: { query, sendMessage, get: vi.fn(async () => options.tab) },
     scripting: { executeScript },
-  })
+  }
+  vi.stubGlobal('chrome', api)
+  // 生产环境跑在 Firefox（browser.* 原生 API）；测试里两者指向同一 mock。
+  vi.stubGlobal('browser', api)
   return { executeScript, query, sendMessage }
 }
 

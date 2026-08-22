@@ -101,7 +101,9 @@ dshpm install dsh-browser-firefox --profile web
 
 也可以从源码构建后用本地 tgz 安装（见「构建」一节）。
 
-首次启动时插件在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限）；本地回环连接免 token。**安装后重启 `dsh web` 生效。**
+首次启动时插件在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限）。**安装后重启 `dsh web` 生效。**
+
+> **0.3.1 起（安全收紧，与上游同步）**：Firefox 的 `moz-extension://` Origin 是每次安装随机生成的 UUID，不能作为身份边界，因此 **Firefox 扩展必须出示 token 才能连接**（Chrome 扩展的回环免 token 不受影响）。
 
 ### 2. 在 Firefox 加载扩展
 
@@ -118,8 +120,8 @@ dshpm install dsh-browser-firefox --profile web
 ## 使用
 
 1. 确保 `dsh web` 运行（默认 `http://127.0.0.1:3080`）。
-2. 扩展加载后自动连接本机 bridge（零配置），无需手动操作。
-3. 在 DSH GUI 对话时，Agent 调用 `browser_*` 工具操作浏览器：导航/点击链接在**后台新标签页**打开并归入当前会话的域名命名分组。
+2. **首次使用需粘贴一次 token**：打开扩展侧边栏 → 右上角设置 → 把 `~/.dsh/ext-bridge-token` 文件的内容粘贴到 Token 一栏 → 保存并连接。（桥地址留空即可，自动探测。）
+3. 之后在 DSH GUI 对话时，Agent 调用 `browser_*` 工具操作浏览器：导航/点击链接在**后台新标签页**打开并归入当前会话的域名命名分组。
 
 ## 验证
 
@@ -157,7 +159,7 @@ package.json / pnpm-workspace.yaml / pnpm-lock.yaml
 ## 安全
 
 - bridge 路径自带 token 认证；非回环远程拒绝特权方法（`settings/credentials/open-*`）。
-- 本地免 token 依赖 `moz-extension://` / `chrome-extension://` Origin（网页无法伪造）。
+- Chrome 扩展本地回环免 token 依赖 `chrome-extension://` Origin（网页无法伪造）；`moz-extension://` Origin 是随机 UUID、不构成身份边界，故 Firefox 一律要求 token。
 - 密码、支付卡号等敏感字段在快照中一律掩码为 `••••`。
 - 导航/点击链接只在后台新建标签页，不覆盖、不抢用户当前页面。
 

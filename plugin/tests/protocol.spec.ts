@@ -32,6 +32,22 @@ describe('parseBridgeFrame', () => {
       .toEqual({ t: 'tool.call', id: '4', name: 'browser_click', args: { index: 1 } })
   })
 
+  it('parses tool.call expiresAt and tool.cancel frames', () => {
+    expect(parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: 'a', name: 'browser_click', args: {}, expiresAt: 1234567890 })))
+      .toEqual({ t: 'tool.call', id: 'a', name: 'browser_click', args: {}, expiresAt: 1234567890 })
+    // 兼容 0.3.0 及更早的插件：缺省 expiresAt 仍解析。
+    expect(parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: 'a', name: 'browser_click', args: {} })))
+      .toEqual({ t: 'tool.call', id: 'a', name: 'browser_click', args: {} })
+    // 非法 expiresAt（非正数 / 非数字）整体拒收。
+    expect(parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: 'a', name: 'x', args: {}, expiresAt: -1 }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: 'a', name: 'x', args: {}, expiresAt: 'soon' }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'tool.cancel', id: 'a' }))).toEqual({ t: 'tool.cancel', id: 'a' })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'tool.cancel' }))).toBeUndefined()
+    const cancel = parseBridgeFrame(JSON.stringify({ t: 'tool.cancel', id: 'a' }))!
+    expect(isServerFrame(cancel)).toBe(true)
+    expect(isClientFrame(cancel)).toBe(false)
+  })
+
   it('parses rpc.result success and error forms', () => {
     expect(parseBridgeFrame(JSON.stringify({ t: 'rpc.result', id: '1', ok: true, result: { x: 1 } })))
       .toEqual({ t: 'rpc.result', id: '1', ok: true, result: { x: 1 } })

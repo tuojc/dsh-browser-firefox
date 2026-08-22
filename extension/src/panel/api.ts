@@ -45,18 +45,89 @@ export interface PanelApi {
 
 /** Connect to the background service worker and return the panel API. */
 export function connectPanel(): PanelApi {
-  const port = browser.runtime.connect({ name: 'dsh-panel' })
+  type Port = ReturnType<typeof browser.runtime.connect>
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
   const eventListeners = new Set<(frame: ServerFrame) => void>()
-  /** port 存活标志：断开后不再 postMessage（避免 Firefox 的 postMessage on disconnected port）。 */
-  let alive = true
-  const safePost = (message: unknown): boolean => {
-    if (!alive) return false
-    try { port.postMessage(message); return true } catch { alive = false; return false }
+
+  let port: Port | null = null
+  let reconnectPromise: Promise<Port> | null = null
+
+  function connectionError(cause?: unknown): Error {
+    return cause instanceof Error ? cause : new Error('background disconnected')
   }
 
-  port.onMessage.addListener((message: unknown) => {
+  /** Reject every accepted-but-unanswered call; none are replayed (they may have executed). */
+  function failAll(error: Error, preserve?: { kind: 'rpc'; id: string }): void {
+    for (const [id, entry] of pending) {
+      if (preserve?.kind === 'rpc' && preserve.id === id) continue
+      entry.reject(error)
+      pending.delete(id)
+    }
+  }
+
+  function attach(next: Port): Port {
+    port = next
+    next.onMessage.addListener(onMessage)
+    next.onDisconnect.addListener(() => {
+      if (port !== next) return
+      port = null
+      failAll(connectionError())
+      // Firefox event pages and extension reloads can invalidate a live Port.
+      // Reconnect once while the panel is still open; later sends share the
+      // same attempt instead of opening competing ports.
+      void ensurePort(150).catch(() => {})
+    })
+    return next
+  }
+
+  function ensurePort(delayMs = 0): Promise<Port> {
+    if (port !== null) return Promise.resolve(port)
+    if (reconnectPromise !== null) return reconnectPromise
+    const attempt = new Promise<void>((resolve) => { setTimeout(resolve, delayMs) })
+      .then(() => port ?? attach(browser.runtime.connect({ name: 'dsh-panel' })))
+    reconnectPromise = attempt
+    void attempt.then(
+      () => { if (reconnectPromise === attempt) reconnectPromise = null },
+      () => { if (reconnectPromise === attempt) reconnectPromise = null },
+    )
+    return attempt
+  }
+
+  function invalidate(stale: Port, error: Error, preserve?: { kind: 'rpc'; id: string }): void {
+    if (port !== stale) return
+    port = null
+    failAll(error, preserve)
+  }
+
+  /**
+   * Post once on the live port. Calls made during reconnect wait for the shared
+   * replacement; a synchronous stale-port failure retries only the message that
+   * is known not to have been accepted. Requests already accepted by the old
+   * port are rejected by invalidate()/failAll() and are never replayed.
+   */
+  function send(message: unknown, preserve?: { kind: 'rpc'; id: string }): Promise<void> {
+    const current = port
+    if (current !== null) {
+      try {
+        current.postMessage(message)
+        return Promise.resolve()
+      } catch (cause) {
+        invalidate(current, connectionError(cause), preserve)
+      }
+    }
+    return ensurePort(150).then((next) => {
+      try {
+        next.postMessage(message)
+      } catch (cause) {
+        const error = connectionError(cause)
+        invalidate(next, error)
+        throw error
+      }
+    })
+  }
+
+  function onMessage(message: unknown): void {
     if (typeof message !== 'object' || message === null) return
     const msg = message as BackgroundMessage
     switch (msg.type) {
@@ -80,24 +151,25 @@ export function connectPanel(): PanelApi {
         for (const listener of eventListeners) listener(msg.frame)
         break
     }
-  })
+  }
 
-  port.onDisconnect.addListener(() => {
-    alive = false
-    const error = new Error('background disconnected')
-    for (const entry of pending.values()) entry.reject(error)
-    pending.clear()
-  })
+  try {
+    attach(browser.runtime.connect({ name: 'dsh-panel' }))
+  } catch {
+    void ensurePort(150).catch(() => {})
+  }
 
   return {
     rpc<T>(method: string, payload?: unknown): Promise<T> {
       const id = crypto.randomUUID()
       return new Promise<T>((resolve, reject) => {
-        pending.set(id, { resolve: (value) => resolve(value as T), reject })
-        if (!safePost({ type: 'rpc', id, method, payload })) {
+        const entry = { resolve: (value: unknown) => resolve(value as T), reject }
+        pending.set(id, entry)
+        void send({ type: 'rpc', id, method, payload }, { kind: 'rpc', id }).catch((error: unknown) => {
+          if (pending.get(id) !== entry) return
           pending.delete(id)
-          reject(new Error('background disconnected'))
-        }
+          reject(connectionError(error))
+        })
       })
     },
     onStatus(callback) {
@@ -109,10 +181,10 @@ export function connectPanel(): PanelApi {
       return () => { eventListeners.delete(callback) }
     },
     updateSettings(next) {
-      safePost({ type: 'settings', settings: next })
+      void send({ type: 'settings', settings: next }).catch(() => {})
     },
     requestStatus() {
-      safePost({ type: 'request-status' })
+      void send({ type: 'request-status' }).catch(() => {})
     },
   }
 }

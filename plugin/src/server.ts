@@ -54,6 +54,23 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.unset',
 ])
 
+/** Session mutations whose WebSocket arrival order is behaviorally significant. */
+const ORDERED_SESSION_METHODS = new Set([
+  'session.prompt',
+  'session.cancel',
+])
+
+/**
+ * Extract the session id ordering key from an rpc frame, or undefined when
+ * the method does not mutate a specific session (those dispatch freely).
+ */
+function orderedSessionId(frame: Extract<ClientFrame, { t: 'rpc' }>): string | undefined {
+  if (!ORDERED_SESSION_METHODS.has(frame.method)) return undefined
+  if (typeof frame.payload !== 'object' || frame.payload === null || Array.isArray(frame.payload)) return undefined
+  const sessionId = (frame.payload as Record<string, unknown>).sessionId
+  return typeof sessionId === 'string' ? sessionId : undefined
+}
+
 /** Loopback IPv4/IPv6 literals (IPv4-mapped included). Exported for tests and reuse. */
 export function isLoopbackAddress(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
@@ -139,6 +156,7 @@ export class BridgeServer {
   private readonly wss = new WebSocketServer({ noServer: true })
   private current: ReadyConnection | null = null
   private readonly pendingTools = new Map<string, PendingTool>()
+  private readonly orderedSessionRpcs = new Map<string, Promise<void>>()
   private closed = false
 
   constructor(private readonly deps: BridgeServerDeps) {}
@@ -184,6 +202,7 @@ export class BridgeServer {
       throw new BridgeToolError('bridge-closed', 'tool call cancelled before dispatch')
     }
     const id = randomUUID()
+    const expiresAt = Date.now() + timeoutMs
     return new Promise<unknown>((resolve, reject) => {
       let timer: NodeJS.Timeout
       const settle = (error: BridgeToolError): void => {
@@ -192,15 +211,22 @@ export class BridgeServer {
         signal.removeEventListener('abort', onAbort)
         reject(error)
       }
+      const cancel = (error: BridgeToolError): void => {
+        // The extension may still be working on the action after the caller
+        // has stopped waiting. Withdraw the call before settling locally so
+        // a late completion cannot report success for an expired action.
+        sendFrame(conn.ws, { t: 'tool.cancel', id })
+        settle(error)
+      }
       const onAbort = (): void => {
-        settle(new BridgeToolError('bridge-closed', 'tool call cancelled before the extension answered'))
+        cancel(new BridgeToolError('bridge-closed', 'tool call cancelled before the extension answered'))
       }
       timer = setTimeout(() => {
-        settle(new BridgeToolError('timeout', `browser action "${name}" timed out after ${timeoutMs}ms`))
+        cancel(new BridgeToolError('timeout', `browser action "${name}" timed out after ${timeoutMs}ms`))
       }, timeoutMs)
       signal.addEventListener('abort', onAbort, { once: true })
       this.pendingTools.set(id, { resolve, reject, timer })
-      const callFrame: BridgeFrame = { t: 'tool.call', id, name, args, ...(sessionId !== undefined ? { sessionId } : {}), ...(title !== undefined ? { title } : {}) }
+      const callFrame: BridgeFrame = { t: 'tool.call', id, name, args, expiresAt, ...(sessionId !== undefined ? { sessionId } : {}), ...(title !== undefined ? { title } : {}) }
       conn.ws.send(JSON.stringify(callFrame), (error) => {
         /* v8 ignore next -- teardown race: when the write fails, the socket's
         close handler settles the same call with the same code; the callback
@@ -268,11 +294,13 @@ export class BridgeServer {
         // open a cross-origin socket to 127.0.0.1 with a loopback remote —
         // the loopback shortcut therefore requires a chrome-extension://
         // Origin (only extension contexts can present one; pages cannot
-        // forge the header). Non-loopback remotes must still present the
-        // bearer token.
+        // forge the header). Firefox moz-extension:// origins contain a
+        // per-install UUID rather than the manifest's stable Gecko ID, so
+        // they are not an identity boundary and must present the bearer token.
+        // Non-loopback remotes must also present the bearer token.
         const loopbackNoToken = isLoopbackAddress(remoteAddress)
           && typeof origin === 'string'
-          && (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://'))
+          && origin.startsWith('chrome-extension://')
         if (!loopbackNoToken && !verifyToken(this.deps.token, frame.token)) {
           ws.close(4002, 'bad token')
           return
@@ -324,7 +352,7 @@ export class BridgeServer {
   private handleReadyFrame(frame: BridgeFrame): void {
     switch (frame.t) {
       case 'rpc':
-        void this.handleRpc(frame)
+        this.routeRpc(frame)
         break
       case 'tool.result':
         this.settleTool(frame.id, frame.ok, frame.ok ? frame.result : frame.error)
@@ -341,6 +369,29 @@ export class BridgeServer {
         // the extension is the only sender on this channel.
         break
     }
+  }
+
+  /**
+   * Preserve prompt/cancel arrival order per session. In particular, the
+   * first prompt may still be materializing a provisional session; its cancel
+   * must not reach the gateway until that admission has completed.
+   */
+  private routeRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): void {
+    const sessionId = orderedSessionId(frame)
+    if (sessionId === undefined) {
+      void this.handleRpc(frame)
+      return
+    }
+    const previous = this.orderedSessionRpcs.get(sessionId) ?? Promise.resolve()
+    const task = previous.then(
+      () => this.handleRpc(frame),
+      () => this.handleRpc(frame),
+    )
+    this.orderedSessionRpcs.set(sessionId, task)
+    const clear = (): void => {
+      if (this.orderedSessionRpcs.get(sessionId) === task) this.orderedSessionRpcs.delete(sessionId)
+    }
+    void task.then(clear, clear)
   }
 
   private async handleRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): Promise<void> {

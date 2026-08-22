@@ -24,8 +24,9 @@ describe('registerBrowserTools', () => {
   it('registers the full v1 tool set', () => {
     const { ctx, bridge, registered } = makeHarness()
     const disposers = registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
-    expect(registered.map((r) => r.name).sort()).toEqual([...BROWSER_TOOL_NAMES].sort())
-    expect(disposers.size).toBe(BROWSER_TOOL_NAMES.length)
+    // browser_clear_screenshots 是插件本地工具（不经扩展），不在 wire action 清单里。
+    expect(registered.map((r) => r.name).sort()).toEqual([...BROWSER_TOOL_NAMES, 'browser_clear_screenshots'].sort())
+    expect(disposers.size).toBe(BROWSER_TOOL_NAMES.length + 1)
     for (const dispose of disposers.values()) dispose()
   })
 
