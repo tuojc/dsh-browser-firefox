@@ -19,7 +19,7 @@ Firefox 版的 DeepSeek Harness 浏览器操作插件，让模型直接读取并
 | **bridge 插件** | `plugin/` | 装在 dsh web 里的本地服务端（WebSocket 桥） |
 | **Firefox 扩展** | `extension/` | 装在 Firefox 里，实际操作浏览器标签页 |
 
-集成是**纯文本**的：页面被转成带编号交互元素清单的结构化文本，模型按编号操作元素；截图从不进入模型管线。
+集成是**纯文本**的：页面被转成带编号交互元素清单的结构化文本，模型按编号操作元素。截图只是视觉兜底——保存为 PNG 文件交给视觉工具分析，不以图片形式进入对话上下文。
 
 ## 功能
 
@@ -65,11 +65,11 @@ sidebar panel (React) ◄─port─► background script ◄─WS─► dsh brid
                            content script (快照 / 动作 / 元素解析 / 隐私)
 ```
 
-- **bridge 插件**（`plugin/`）：token 认证的 WebSocket 服务端、工具分发、会话标识透传；挂载 `/ext/bridge`（WS）与 `/ext/bridge-config`（零配置发现）。
+- **bridge 插件**（`plugin/`）：token 认证的 WebSocket 服务端、工具分发、会话标识透传；挂载 `/ext/bridge`（WS）与 `/ext/bridge-config`（地址自动发现）。
 - **扩展 background**（`extension/src/background/`）：桥连接（指数退避重连 + alarm 保活）、工具分流（导航/链接在 background 新建标签页并分组，其余分发到 content script）、标签页组管理。
 - **content script**（`extension/src/content/`）：纯文本快照、稳定编号、元素解析、动作执行、敏感字段掩码。
 - **panel**（`extension/src/panel/`）：React 侧边栏对话界面，Markdown 渲染（已消毒）。
-- **协议**：`plugin/src/protocol.ts` 是两端共享的帧格式定义（`tool.call` 帧含 `sessionId` 与 `title`）。
+- **协议**：`plugin/src/protocol.ts` 是两端共享的帧格式定义（`tool.call` 帧含 `expiresAt`/`sessionId`/`title`；超时或取消时服务端以 `tool.cancel` 撤回调用）。
 
 ## 构建
 
@@ -82,28 +82,30 @@ pnpm install
 pnpm build   # 依次构建 bridge 插件 + 扩展
 ```
 
-构建产物（打包文件）共 4 个：
+构建产物：
 
-| 组件 | 安装包 | 源码包 |
+| 组件 | 分发方式 | 本地产物 |
 |---|---|---|
-| 插件 | `plugin/dsh-bridge-plugin-0.0.1.tgz` | `plugin/dsh-bridge-plugin-source.zip` |
-| 扩展 | `extension/dsh-browser-firefox.zip` | `extension/dsh-browser-firefox-extension-source.zip` |
+| 插件 | 发布到 npm（`dsh-browser-firefox`），用户一行命令安装 | `plugin/lib/`（构建输出） |
+| 扩展 | 提交 AMO（Firefox 扩展商店） | `extension/dsh-browser-firefox.zip`（安装包）、`extension/dsh-browser-firefox-extension-source.zip`（AMO 审核用源码包） |
 
 ## 安装
 
 ### 1. 安装 bridge 插件到 dsh profile
 
-**从 npm 安装（推荐）**：
+**一行命令安装（推荐）**：
 
 ```sh
-dshpm install dsh-browser-firefox --profile web
+dsh plugin --profile web add dsh-browser-firefox@latest
 ```
+
+以后想升级到最新版，重新执行同一条命令即可。
 
 也可以从源码构建后用本地 tgz 安装（见「构建」一节）。
 
-首次启动时插件在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限）。**安装后重启 `dsh web` 生效。**
+**安装后重启 `dsh web` 生效。** 首次启动时插件会在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限），下面「使用」一节第 2 步会用到。
 
-> **0.3.1 起（安全收紧，与上游同步）**：Firefox 的 `moz-extension://` Origin 是每次安装随机生成的 UUID，不能作为身份边界，因此 **Firefox 扩展必须出示 token 才能连接**（Chrome 扩展的回环免 token 不受影响）。
+> **为什么 Firefox 必须填 token（0.3.1 起，与上游同步的安全收紧）**：Firefox 扩展的 `moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，所以 bridge 要求 Firefox 客户端一律出示 token（Chrome 扩展的回环免 token 不受影响）。
 
 ### 2. 在 Firefox 加载扩展
 
@@ -136,12 +138,10 @@ curl -s http://127.0.0.1:3080/ext/bridge-config
 ## 目录结构
 
 ```
-plugin/                                 # dsh 侧 bridge 插件
+plugin/                                 # dsh 侧 bridge 插件（npm 包 dsh-browser-firefox）
   src/                                  # 源码（协议 / 服务端 / 工具）
   lib/                                  # 构建产物
   cordis.patch.yml                      # 插件注册配置
-  dsh-bridge-plugin-0.0.1.tgz           # 安装包
-  dsh-bridge-plugin-source.zip          # 源码包
 extension/                              # Firefox 扩展
   src/background/                       # 桥连接 / 工具分流 / 分组管理
   src/content/                          # 快照 / 动作 / 元素解析
