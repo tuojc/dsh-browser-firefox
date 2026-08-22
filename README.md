@@ -21,6 +21,48 @@ Firefox 版的 DeepSeek Harness 浏览器操作插件，让模型直接读取并
 
 集成是**纯文本**的：页面被转成带编号交互元素清单的结构化文本，模型按编号操作元素。截图只是视觉兜底——保存为 PNG 文件交给视觉工具分析，不以图片形式进入对话上下文。
 
+## 快速开始
+
+### 第 1 步：安装 bridge 插件
+
+```sh
+dsh plugin --profile web add dsh-browser-firefox@latest
+```
+
+**安装后重启 `dsh web` 生效。** 首次启动时插件会在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限），第 3 步会用到。
+
+> 以后想升级到最新版，重新执行同一条命令即可。也可以从源码构建后用本地产物安装（见「从源码构建」一节）。
+
+### 第 2 步：安装 Firefox 扩展
+
+扩展已上架 Firefox 扩展商店，直接安装👉 [DSH 浏览器助手 - addons.mozilla.org](https://addons.mozilla.org/zh-CN/firefox/addon/dsh-%E6%B5%8F%E8%A7%88%E5%99%A8%E5%8A%A9%E6%89%8B/)（也可在 AMO 搜索「dsh 浏览器助手」）。
+
+> **开发调试**可改用「临时载入」：打开 `about:debugging#/runtime/this-firefox` → 「临时载入附加组件」→ 选择 `extension/dist/manifest.json`（目录）或 `extension/dsh-browser-firefox.zip`。修改 manifest/权限后需「移除 → 重新临时载入」；临时加载的扩展在 Firefox 关闭后失效。
+
+### 第 3 步：填写 token（仅首次）
+
+```sh
+cat ~/.dsh/ext-bridge-token   # 复制输出
+```
+
+打开扩展侧边栏 → 右上角 ⚙️ 设置 → 把复制的内容粘贴到 **Token** 一栏 → 保存并连接。（桥地址留空即可，自动探测本机 3080/3081/3090 端口。）
+
+> **为什么 Firefox 必须填 token（0.3.1 起，与上游同步的安全收紧）**：Firefox 扩展的 `moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，所以 bridge 要求 Firefox 客户端一律出示 token（Chrome 扩展的回环免 token 不受影响）。没填或填错时，面板会显示「需要 Token」横幅引导你完成这一步。
+
+### 第 4 步：开始使用
+
+确保 `dsh web` 正在运行（默认 `http://127.0.0.1:3080`），在 DSH GUI 对话即可——Agent 会调用 `browser_*` 工具操作浏览器：导航/点击链接在**后台新标签页**打开，并归入当前会话的域名命名分组。
+
+验证连接是否正常：
+
+```sh
+# bridge 发现端点应返回 WS 地址
+curl -s http://127.0.0.1:3080/ext/bridge-config
+# => {"wsUrl":"ws://127.0.0.1:3080/ext/bridge"}
+```
+
+扩展连接后，让 Agent 执行 `browser_snapshot` 应返回当前页快照；`browser_navigate` 应在后台新建标签页（浏览器不切走）并归入带域名标题的分组。也可以在扩展侧边栏点「读取页面」直接体验。
+
 ## 功能
 
 | 能力 | 工具 | 说明 |
@@ -38,6 +80,7 @@ Firefox 版的 DeepSeek Harness 浏览器操作插件，让模型直接读取并
 | 截图 | `browser_screenshot` | 按需截图（视觉兜底），返回 PNG 路径；临时保存、多张并存、超 20 张自动删最旧 |
 | 清理截图 | `browser_clear_screenshots` | 删除全部临时截图，看完后调用避免残留 |
 | 执行 JS | `browser_evaluate` | 页面上下文执行任意 JS（支持 async/await），snapshot/click 覆盖不到时的逃逸舱 |
+| 列出标签页 | `browser_list_tabs` | 列出当前会话分组内的所有标签页（`*` 标记工作标签页） |
 
 ### 后台静默操作
 
@@ -71,7 +114,7 @@ sidebar panel (React) ◄─port─► background script ◄─WS─► dsh brid
 - **panel**（`extension/src/panel/`）：React 侧边栏对话界面，Markdown 渲染（已消毒）。
 - **协议**：`plugin/src/protocol.ts` 是两端共享的帧格式定义（`tool.call` 帧含 `expiresAt`/`sessionId`/`title`；超时或取消时服务端以 `tool.cancel` 撤回调用）。
 
-## 构建
+## 从源码构建
 
 前置要求：Node.js `>=20`、pnpm 11.x、Firefox `>=140`（标签页组需要）。
 
@@ -88,52 +131,6 @@ pnpm build   # 依次构建 bridge 插件 + 扩展
 |---|---|---|
 | 插件 | 发布到 npm（`dsh-browser-firefox`），用户一行命令安装 | `plugin/lib/`（构建输出） |
 | 扩展 | 提交 AMO（Firefox 扩展商店） | `extension/dsh-browser-firefox.zip`（安装包）、`extension/dsh-browser-firefox-extension-source.zip`（AMO 审核用源码包） |
-
-## 安装
-
-### 1. 安装 bridge 插件到 dsh profile
-
-**一行命令安装（推荐）**：
-
-```sh
-dsh plugin --profile web add dsh-browser-firefox@latest
-```
-
-以后想升级到最新版，重新执行同一条命令即可。
-
-也可以从源码构建后用本地 tgz 安装（见「构建」一节）。
-
-**安装后重启 `dsh web` 生效。** 首次启动时插件会在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限），下面「使用」一节第 2 步会用到。
-
-> **为什么 Firefox 必须填 token（0.3.1 起，与上游同步的安全收紧）**：Firefox 扩展的 `moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，所以 bridge 要求 Firefox 客户端一律出示 token（Chrome 扩展的回环免 token 不受影响）。
-
-### 2. 在 Firefox 加载扩展
-
-**正式安装（推荐）**：扩展已上架 Firefox 扩展商店，直接安装👉 [DSH 浏览器助手 - addons.mozilla.org](https://addons.mozilla.org/en-GB/firefox/addon/dsh-%E6%B5%8F%E8%A7%88%E5%99%A8%E5%8A%A9%E6%89%8B/)（也可在 AMO 搜索「dsh 浏览器助手」）。
-
-**开发调试**用「临时载入」：
-
-1. 打开 `about:debugging#/runtime/this-firefox`
-2. 点「临时载入附加组件」
-3. 选择 `extension/dist/manifest.json`（目录）或 `extension/dsh-browser-firefox.zip`
-
-> 修改 manifest/权限后需「移除 → 重新临时载入」；临时加载的扩展在 Firefox 关闭后失效。正式分发请提交 AMO（用 `dsh-browser-firefox.zip`）。
-
-## 使用
-
-1. 确保 `dsh web` 运行（默认 `http://127.0.0.1:3080`）。
-2. **首次使用需粘贴一次 token**：打开扩展侧边栏 → 右上角设置 → 把 `~/.dsh/ext-bridge-token` 文件的内容粘贴到 Token 一栏 → 保存并连接。（桥地址留空即可，自动探测。）
-3. 之后在 DSH GUI 对话时，Agent 调用 `browser_*` 工具操作浏览器：导航/点击链接在**后台新标签页**打开并归入当前会话的域名命名分组。
-
-## 验证
-
-```sh
-# bridge 发现端点
-curl -s http://127.0.0.1:3080/ext/bridge-config
-# => {"wsUrl":"ws://127.0.0.1:3080/ext/bridge"}
-```
-
-扩展连接后，在 DSH GUI 让 Agent 执行 `browser_snapshot` 应返回当前页快照；`browser_navigate` 应在后台新建标签页（浏览器不切走）并归入带域名标题的分组。
 
 ## 目录结构
 
