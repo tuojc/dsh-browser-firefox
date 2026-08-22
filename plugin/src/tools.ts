@@ -170,10 +170,10 @@ export function registerBrowserTools(
       + '仅在页面内容是图片/公式/验证码等无法用文本表达时才调用（视觉兜底）。'
       + '截图保存在 session workspace 的 .dsh-browser-tmp/ 目录，最多保留 20 张（超出自动删最旧）；'
       + '看完后可用 browser_clear_screenshots 清理。',
-    parameters: {
+    parameters: argsSchema({
       fullPage: { type: 'boolean', description: '整页滚动截图（暂未实现，预留）。' },
       region: { type: 'string', description: '区域截图 CSS 选择器（暂未实现，预留）。' },
-    },
+    }),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
@@ -195,7 +195,7 @@ export function registerBrowserTools(
   const clearScreenshotsTool: ToolDefinition = {
     name: 'browser_clear_screenshots',
     description: '删除 browser_screenshot 产生的全部临时截图文件，避免残留垃圾。看完截图后可调用。',
-    parameters: {},
+    parameters: argsSchema({}),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: async (_args, exec) => {
@@ -221,6 +221,15 @@ interface Call {
   (exec: { signal: AbortSignal; agent?: { id?: string } | null }, name: string, args: Record<string, unknown>): Promise<TextResult>
 }
 
+/** Build a raw JSON Schema object for a tool's arguments. `register()` stores
+ * `parameters` verbatim and the registry hands it to the model unchanged, so
+ * fields must live under `properties` and requiredness is the top-level
+ * `required` array (NOT per-field `required: true`, which is the flat
+ * defineTool map form). */
+function argsSchema(properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
+  return { type: 'object', additionalProperties: false, properties, ...(required.length > 0 ? { required } : {}) }
+}
+
 /** The v1 tool set, model-perspective contracts only (no transport vocabulary). */
 function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[] {
   const snapshot = (): ToolDefinition => ({
@@ -228,10 +237,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     description: '读取当前浏览器页面的结构化文本快照（无截图）：标题、URL、正文摘要、带编号的可交互元素清单、表单字段。'
       + '编号是后续 browser_click/browser_type 等操作的定位依据。页面未变化时设置 delta=true 只返回变化部分，节省上下文。'
       + UNTRUSTED_CONTENT_WARNING,
-    parameters: {
+    parameters: argsSchema({
       delta: { type: 'boolean', description: 'true 时只返回相对上次快照的变化（编号、URL、标题）。默认 false 返回完整快照。' },
       region: { type: 'string', description: '可选：只读取页面某个区域（CSS 选择器或 "main"），用于懒加载内容。' },
-    },
+    }),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => {
@@ -246,10 +255,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
   const click = (): ToolDefinition => ({
     name: 'browser_click',
     description: '点击页面元素。用编号 index（来自 browser_snapshot）或 CSS 选择器 selector（配 index 指定第几个匹配）定位。',
-    parameters: {
+    parameters: argsSchema({
       index: { type: 'number', description: 'browser_snapshot 清单中的元素编号（与 selector 二选一）。' },
       selector: { type: 'string', description: 'CSS 选择器（与 index 二选一）。' },
-    },
+    }),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => call(exec, 'browser_click', args as Record<string, unknown>),
@@ -259,11 +268,11 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     name: 'browser_type',
     description: '向当前页面编号为 index 的输入框输入文本。默认追加到现有值之后；replace=true 时先清空再输入。'
       + '敏感字段（密码/卡号）的值不会回传，输入后立即清空本地记录。',
-    parameters: {
-      index: { type: 'number', required: true, description: '表单字段编号（来自 browser_snapshot 的 forms 清单）。' },
-      text: { type: 'string', required: true, description: '要输入的文本。' },
+    parameters: argsSchema({
+      index: { type: 'number', description: '表单字段编号（来自 browser_snapshot 的 forms 清单）。' },
+      text: { type: 'string', description: '要输入的文本。' },
       replace: { type: 'boolean', description: 'true 时清空现有值后输入。默认追加。' },
-    },
+    }, ['index', 'text']),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => {
@@ -279,9 +288,9 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
   const press = (): ToolDefinition => ({
     name: 'browser_press',
     description: '向当前页面发送一个按键。常用值：Enter、Tab、Escape、ArrowUp、ArrowDown、ArrowLeft、ArrowRight、Backspace、Delete。',
-    parameters: {
-      key: { type: 'string', required: true, description: '按键名（KeyboardEvent.key 语义）。' },
-    },
+    parameters: argsSchema({
+      key: { type: 'string', description: '按键名（KeyboardEvent.key 语义）。' },
+    }, ['key']),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => call(exec, 'browser_press', args as Record<string, unknown>),
@@ -290,10 +299,10 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
   const scroll = (): ToolDefinition => ({
     name: 'browser_scroll',
     description: '滚动当前页面。direction 为 up/down/top/bottom；amount 为像素数（默认一屏）。',
-    parameters: {
-      direction: { type: 'string', required: true, enum: ['up', 'down', 'top', 'bottom'], description: '滚动方向。' },
+    parameters: argsSchema({
+      direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'], description: '滚动方向。' },
       amount: { type: 'number', description: '滚动像素数；top/bottom 时忽略。' },
-    },
+    }, ['direction']),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => {
@@ -308,9 +317,9 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
   const navigate = (): ToolDefinition => ({
     name: 'browser_navigate',
     description: '在当前标签页导航到指定 URL。保留当前登录状态（cookie/会话）。',
-    parameters: {
-      url: { type: 'string', required: true, description: '完整 URL（http/https）。' },
-    },
+    parameters: argsSchema({
+      url: { type: 'string', description: '完整 URL（http/https）。' },
+    }, ['url']),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => call(exec, 'browser_navigate', args as Record<string, unknown>),
@@ -319,7 +328,7 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
   const simple = (name: 'browser_back' | 'browser_forward' | 'browser_reload' | 'browser_list_tabs', description: string): ToolDefinition => ({
     name,
     description,
-    parameters: {},
+    parameters: argsSchema({}),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (_args, exec) => call(exec, name, {}),
@@ -329,9 +338,9 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     name: 'browser_get_text',
     description: '读取当前页面指定区域的文本（用于懒加载内容或局部更新）。不带 selector 时返回整个页面的纯文本。'
       + UNTRUSTED_CONTENT_WARNING,
-    parameters: {
+    parameters: argsSchema({
       selector: { type: 'string', description: 'CSS 选择器；缺省为整个页面。' },
-    },
+    }),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => {
@@ -343,9 +352,9 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
   const wait = (): ToolDefinition => ({
     name: 'browser_wait',
     description: '等待页面稳定（加载完成且无 DOM 变化）。在点击或导航后需要等结果渲染时使用。',
-    parameters: {
+    parameters: argsSchema({
       ms: { type: 'number', description: '额外等待毫秒数；缺省只做稳定性检测。' },
-    },
+    }),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => {
@@ -359,12 +368,12 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     description: '在页面上下文执行受限的 DOM 操作（Firefox 禁止任意 JS，故用预编译操作）。'
       + 'action 支持：count（计数匹配元素）、getText（读文本）、click（点击第 index 个匹配）、setValue（设置值）、querySelectorAll（列出匹配元素）。'
       + '用 CSS 选择器 selector 定位，index 指定第几个匹配（默认 0）。用于 snapshot/click 覆盖不到的 DOM 操作。',
-    parameters: {
-      action: { type: 'string', required: true, enum: ['count', 'getText', 'click', 'setValue', 'querySelectorAll'], description: '操作类型。' },
-      selector: { type: 'string', required: true, description: 'CSS 选择器。' },
+    parameters: argsSchema({
+      action: { type: 'string', enum: ['count', 'getText', 'click', 'setValue', 'querySelectorAll'], description: '操作类型。' },
+      selector: { type: 'string', description: 'CSS 选择器。' },
       index: { type: 'number', description: '匹配元素的序号（默认 0）。' },
       value: { type: 'string', description: 'setValue 时设置的值。' },
-    },
+    }, ['action', 'selector']),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => call(exec, 'browser_evaluate', args as Record<string, unknown>),

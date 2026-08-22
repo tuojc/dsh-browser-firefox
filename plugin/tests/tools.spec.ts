@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { BridgeServer } from '../src/server.ts'
 import { BROWSER_TOOL_NAMES, registerBrowserTools } from '../src/tools.ts'
-import { parameterSchemaSpecToJsonSchema, validateArgs } from '@deepseek-ai/dsh-tools'
 
 describe('registerBrowserTools', () => {
   function makeHarness() {
@@ -95,37 +94,33 @@ describe('registerBrowserTools', () => {
     expect(requestTool).toHaveBeenLastCalledWith('browser_wait', {}, exec.signal, 1_000)
   })
 
-  it('declares a flat parameter map on every tool that compiles to a non-empty JSON Schema', () => {
+  it('declares a raw JSON Schema object root on every tool with non-empty properties', () => {
     const { ctx, bridge, registered } = makeHarness()
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
     for (const { name, definition } of registered) {
-      // Regression: parameters must be a FLAT property map ({ field: { type, ... } }),
-      // NOT a JSON-Schema object. Injecting { type: 'object', additionalProperties: false }
-      // made the compiler throw "parameters.type must be a value schema object" and
-      // surface every tool with an empty schema (model args dropped).
-      const params = definition.parameters as Record<string, unknown>
-      expect(typeof params).toBe('object')
-      expect(params).not.toBeNull()
-      const json = parameterSchemaSpecToJsonSchema(params as never)
-      expect(json.type).toBe('object')
-      expect(json.properties).toBeTypeOf('object')
+      // register() hands `parameters` to the model verbatim as JSON Schema, so
+      // the root must be { type:'object', properties:{...} } and every field
+      // must live under `properties` (a field left at the root — the original
+      // bug — was invisible to the model and args were dropped).
+      const params = definition.parameters as { type?: unknown; properties?: Record<string, unknown> }
+      expect(params.type).toBe('object')
+      expect(params.properties).toBeTypeOf('object')
+      expect(params.properties).not.toBeNull()
     }
   })
 
-  it('compiles the argument-bearing tools with their declared fields and requiredness', () => {
+  it('declares each argument-bearing tool with the right fields and requiredness', () => {
     const { ctx, bridge, registered } = makeHarness()
     registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
     const schemaOf = (name: string) => {
       const tool = registered.find((r) => r.name === name)!
-      return parameterSchemaSpecToJsonSchema(tool.definition.parameters as never)
+      return tool.definition.parameters as { properties: Record<string, unknown>; required?: string[] }
     }
 
     // browser_navigate: url required (the field that was being dropped).
     const navigate = schemaOf('browser_navigate')
     expect(Object.keys(navigate.properties)).toContain('url')
     expect(navigate.required).toContain('url')
-    expect(validateArgs(registered.find((r) => r.name === 'browser_navigate')!.definition.parameters as never, { url: 'https://example.com' })).toEqual([])
-    expect(validateArgs(registered.find((r) => r.name === 'browser_navigate')!.definition.parameters as never, {}).length).toBeGreaterThan(0)
 
     // browser_type: index + text required, replace optional.
     const type = schemaOf('browser_type')
@@ -140,6 +135,11 @@ describe('registerBrowserTools', () => {
     // browser_click: index + selector both optional (either/or).
     const click = schemaOf('browser_click')
     expect(Object.keys(click.properties)).toEqual(expect.arrayContaining(['index', 'selector']))
+
+    // browser_evaluate: action + selector required (the field that reported the empty action).
+    const evaluate = schemaOf('browser_evaluate')
+    expect(evaluate.required).toEqual(expect.arrayContaining(['action', 'selector']))
+    expect(evaluate.properties.action).toHaveProperty('enum', ['count', 'getText', 'click', 'setValue', 'querySelectorAll'])
   })
 
   it('declares cooperative timeoutMs on every tool', () => {
