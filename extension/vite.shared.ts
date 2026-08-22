@@ -1,4 +1,4 @@
-import { copyFileSync, cpSync, mkdirSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { defineConfig } from 'vite'
@@ -11,12 +11,18 @@ import { defineConfig } from 'vite'
 
 export const outDir = resolve(import.meta.dirname, 'dist')
 
-/** Copy manifest.json into dist after each target build (Chrome loads dist/). */
+/**
+ * Copy manifest.json into dist after each target build (Firefox loads dist/).
+ * Fresh clones (and CI) have no personal manifest.json — fall back to the
+ * committed manifest.example.json so the build works out of the box.
+ */
 export const copyManifest = {
   name: 'copy-manifest',
   closeBundle(): void {
     mkdirSync(outDir, { recursive: true })
-    copyFileSync(resolve(import.meta.dirname, 'manifest.json'), resolve(outDir, 'manifest.json'))
+    const personal = resolve(import.meta.dirname, 'manifest.json')
+    const source = existsSync(personal) ? personal : resolve(import.meta.dirname, 'manifest.example.json')
+    copyFileSync(source, resolve(outDir, 'manifest.json'))
     cpSync(resolve(import.meta.dirname, 'assets'), resolve(outDir, 'assets'), { recursive: true })
   },
 }
