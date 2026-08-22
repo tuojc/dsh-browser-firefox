@@ -1,7 +1,7 @@
-# dsh-browser 独立 workspace：桥接插件与 Chrome 扩展自包含安装。
+# dsh-browser-firefox workspace：plugin（dsh 插件）+ extension（Firefox 扩展）。
 packages:
-  - extensions/*
-  - packages/*/*
+  - plugin
+  - extension
 
 # dsh 运行时与扩展构建依赖这些受信任包的安装脚本。
 allowBuilds:

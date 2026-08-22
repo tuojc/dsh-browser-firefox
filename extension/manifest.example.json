@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "dsh 浏览器助手",
+  "description": "让 DeepSeek Harness 直接读取并操作你正在使用的浏览器标签页——纯文本交互、登录态保留、导航新建标签页并按会话分组。",
+  "version": "0.3.0",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "dsh-browser-firefox@example.com",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "alarms",
+    "tabGroups"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "打开 dsh 助手",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png"
+    }
+  },
+  "sidebar_action": {
+    "default_title": "dsh 浏览器助手",
+    "default_panel": "panel/index.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    },
+    "open_at_install": false
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src http://127.0.0.1:3080 http://127.0.0.1:3081 http://127.0.0.1:3090 ws://127.0.0.1:3080 ws://127.0.0.1:3081 ws://127.0.0.1:3090"
+  }
+}

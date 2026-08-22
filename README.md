@@ -1,115 +1,162 @@
-# dsh Browser Control
+# dsh-browser-firefox
 
-**English** | [中文](README.zh.md)
+Firefox 版的 DeepSeek Harness 浏览器操作插件，让模型直接读取并操作你**正在使用的 Firefox 标签页**，登录态、会话与 Cookie 全程保留。
 
-<img width="1701" height="897" alt="dsh Browser Control" src="https://github.com/user-attachments/assets/3b1f3a25-f962-4e02-a9ef-d23e0d01fc8e" />
+- **后台静默操作**：导航与点击链接一律新建标签页（不覆盖当前页、不抢焦点），Agent 在后台完成操作。
+- **常驻运行**：扩展加载后即常驻并保持桥接连接，无需先点开侧边栏。
+- **会话级分组**：每个 dsh 对话固定一个带颜色的标签页组，组名取自目标域名（如 `bilibili.com`）。
 
-Connect [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) to the Chrome tab you are already using. The model can read page content, click controls, fill forms, scroll, and navigate while preserving your login state, session, and cookies. A side panel provides the conversation UI.
+本项目从 [Lum1104/dsh-browser](https://github.com/Lum1104/dsh-browser)（MIT 许可）移植为 Firefox 版，保留原作者版权（见 [LICENSE](./LICENSE)）。
 
-`dsh` is DeepSeek AI's open-source, plugin-based agent harness. This repository provides a companion browser bridge plugin and Chrome MV3 extension as one standalone pnpm workspace.
+---
 
-The integration is text-only: pages become structured text with a numbered inventory of interactive elements, and the model addresses those elements by number. Screenshots never enter the model-facing pipeline.
+## 这是什么
 
-The workspace uses a pinned, publicly available `@deepseek-ai/dsh` release for reproducible installation. It requires neither a DeepSeek Harness source checkout, dependencies from a parent directory, nor npm credentials. DeepSeek Harness is currently a developer preview, so upgrades may require coordinated dependency and API updates.
+[dsh](https://github.com/deepseek-ai/deepseek-harness)（DeepSeek Harness）是 DeepSeek 的开源插件式 Agent 框架。本仓库提供配套的两个组件：
 
-## Core capabilities
-
-| Capability | Tool | Notes |
+| 组件 | 位置 | 作用 |
 |---|---|---|
-| Read page | `browser_snapshot` | Structured text snapshot: title, URL, main text, numbered controls, and masked form fields; `delta: true` returns only changes |
-| Click element | `browser_click` | Click links, buttons, checkboxes, and other controls by inventory number |
-| Fill forms | `browser_type` | React/Vue-compatible input; `replace` clears the field first |
-| Press keys | `browser_press` | Keyboard events such as Enter, Tab, Escape, and arrow keys |
-| Scroll | `browser_scroll` | Viewport scrolling: up, down, top, and bottom |
-| Navigate | `browser_navigate` / `browser_back` / `browser_forward` / `browser_reload` | In-tab navigation with login state preserved |
-| Read region | `browser_get_text` | Lazy-loaded or partial page text |
-| Wait for stability | `browser_wait` | Page-load and render-settle detection |
+| **bridge 插件** | `plugin/` | 装在 dsh web 里的本地服务端（WebSocket 桥） |
+| **Firefox 扩展** | `extension/` | 装在 Firefox 里，实际操作浏览器标签页 |
 
-## Repository layout
+集成是**纯文本**的：页面被转成带编号交互元素清单的结构化文本，模型按编号操作元素；截图从不进入模型管线。
+
+## 功能
+
+| 能力 | 工具 | 说明 |
+|---|---|---|
+| 读取页面 | `browser_snapshot` | 结构化文本快照：标题/URL/正文/编号控件/表单字段（敏感值掩码）；`delta: true` 只返回变化 |
+| 点击元素 | `browser_click` | 按编号点击；若是 http/https 链接则**后台新开标签页**，否则普通点击 |
+| 填写表单 | `browser_type` | 输入文本；`replace` 先清空再输入 |
+| 按键 | `browser_press` | Enter / Tab / Escape / 方向键等 |
+| 滚动 | `browser_scroll` | 视口滚动（up/down/top/bottom） |
+| 导航 | `browser_navigate` | **后台静默新建标签页**打开 URL，不覆盖当前页 |
+| 历史 | `browser_back` / `browser_forward` | 当前标签页内后退/前进 |
+| 刷新 | `browser_reload` | 重新加载当前标签页 |
+| 读区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
+| 等待 | `browser_wait` | 页面加载与渲染稳定检测 |
+| 截图 | `browser_screenshot` | 按需截图（视觉兜底），返回 PNG 路径；临时保存、多张并存、超 20 张自动删最旧 |
+| 清理截图 | `browser_clear_screenshots` | 删除全部临时截图，看完后调用避免残留 |
+| 执行 JS | `browser_evaluate` | 页面上下文执行任意 JS（支持 async/await），snapshot/click 覆盖不到时的逃逸舱 |
+
+### 后台静默操作
+
+`browser_navigate` 与点击链接都用 `active:false` 新建标签页——浏览器**停留当前页、不切走**。扩展内部维护「工作标签页」，后续 `browser_snapshot`/点击等操作静默作用在这个后台标签页上。
+
+### 常驻运行
+
+Firefox MV3 的 background 默认是 event page，空闲 45-90 秒会休眠。本扩展用 3 个错峰的 alarm（每 20 秒）持续保活，使 background 常驻、WebSocket 桥常连——Agent 随时能操作浏览器，无需先点侧边栏。
+
+### 配合视觉工具（截图）
+
+当页面内容是图片/公式/验证码等无法用文本表达时，模型可调 `browser_screenshot` 截图，得到 PNG 绝对路径后交给任意视觉工具（如 vision_glance）分析。截图保存在 session workspace 的 `.dsh-browser-tmp/` 目录，多张并存、最多 20 张（超出自动删最旧）；看完后调 `browser_clear_screenshots` 清理。
+
+### 会话级标签页组
+
+每个 dsh **会话固定一个 Firefox 标签页组**：该会话内导航/点击链接新建的标签页都归入同一组，颜色自动分配（蓝/绿/红/紫…循环），**组名取自目标域名**（去 `www.` 前缀，如 `bilibili.com`）——不同会话不同颜色、不同域名，连续性工作聚在一起。
+
+## 架构
 
 ```
-packages/browser/bridge-browser/
-  cordis.patch.yml
-extensions/dsh-browser/
-scripts/install.sh
+sidebar panel (React) ◄─port─► background script ◄─WS─► dsh bridge 插件
+                                    │
+                 tabs.sendMessage (DSH_ACTION / DSH_RESOLVE_ELEMENT)
+                                    ▼
+                           content script (快照 / 动作 / 元素解析 / 隐私)
 ```
 
-## Why this design
+- **bridge 插件**（`plugin/`）：token 认证的 WebSocket 服务端、工具分发、会话标识透传；挂载 `/ext/bridge`（WS）与 `/ext/bridge-config`（零配置发现）。
+- **扩展 background**（`extension/src/background/`）：桥连接（指数退避重连 + alarm 保活）、工具分流（导航/链接在 background 新建标签页并分组，其余分发到 content script）、标签页组管理。
+- **content script**（`extension/src/content/`）：纯文本快照、稳定编号、元素解析、动作执行、敏感字段掩码。
+- **panel**（`extension/src/panel/`）：React 侧边栏对话界面，Markdown 渲染（已消毒）。
+- **协议**：`plugin/src/protocol.ts` 是两端共享的帧格式定义（`tool.call` 帧含 `sessionId` 与 `title`）。
 
-- **Your real browser, not a headless copy**: the model works in the page you already have open, retaining logins, sessions, and cookies.
-- **A text-first model interface**: numbered controls, stable IDs across snapshots, delta updates, and masked sensitive values make pages operable without vision.
-- **A narrow privacy boundary**: passwords and payment-card values are always rendered as `••••` and never leave the page.
-- **A guarded bridge**: authenticated handshakes protect remote connections, privileged gateway methods reject non-loopback callers, and the extension only operates the active tab.
+## 构建
 
-## Zero-configuration install and use
+前置要求：Node.js `>=20`、pnpm 11.x、Firefox `>=140`（标签页组需要）。
 
-Prerequisites: Node.js `^22.19` or `>=24`, Corepack/pnpm, and Google Chrome. All required `@deepseek-ai` packages are available from the public npm registry; installation does not require an npm token.
-
-**Step 1 — install the bridge and extension**. The recommended command does not require Git or a local clone:
+> **从源码 clone 后**，先执行 `cp extension/manifest.example.json extension/manifest.json`，并把其中 `gecko.id` 改成你自己的唯一邮箱（提交 AMO 签名需要，仓库不含个人 manifest）。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lum1104/dsh-browser/refs/heads/main/scripts/install.sh | bash
+pnpm install
+pnpm build   # 依次构建 bridge 插件 + 扩展
 ```
 
-The remote installer downloads `main` into the installer-managed directory `~/.dsh/dsh-browser`, then installs the pinned public npm dependencies from the lockfile, builds the bridge plugin, registers its official bundle in dsh's local `web` profile, builds the extension, copies it to `~/.dsh/browser-extension`, and opens `chrome://extensions`. Enable Developer mode and load the extension directory when prompted. Running the same command again updates the managed installation; keep source edits in a clone instead.
+构建产物（打包文件）共 4 个：
 
-Developers can clone the repository and run the same installer from any checkout. This mode uses the current branch without downloading or overwriting source files:
+| 组件 | 安装包 | 源码包 |
+|---|---|---|
+| 插件 | `plugin/dsh-bridge-plugin-0.0.1.tgz` | `plugin/dsh-bridge-plugin-source.zip` |
+| 扩展 | `extension/dsh-browser-firefox.zip` | `extension/dsh-browser-firefox-extension-source.zip` |
+
+## 安装
+
+### 1. 安装 bridge 插件到 dsh profile
 
 ```sh
-git clone https://github.com/Lum1104/dsh-browser.git
-cd dsh-browser
-./scripts/install.sh
+dsh plugin --profile web add ./plugin/dsh-bridge-plugin-0.0.1.tgz
 ```
 
-**Step 2 — start dsh**. For a managed installation, use its pinned version:
+首次启动时插件在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限）；本地回环连接免 token。**安装后重启 `dsh web` 生效。**
+
+### 2. 在 Firefox 加载扩展
+
+**正式安装（推荐）**：扩展已提交至 Firefox 扩展商店（[addons.mozilla.org](https://addons.mozilla.org/)），搜索「**dsh 浏览器助手**」即可直接安装。
+
+**开发调试**用「临时载入」：
+
+1. 打开 `about:debugging#/runtime/this-firefox`
+2. 点「临时载入附加组件」
+3. 选择 `extension/dist/manifest.json`（目录）或 `extension/dsh-browser-firefox.zip`
+
+> 修改 manifest/权限后需「移除 → 重新临时载入」；临时加载的扩展在 Firefox 关闭后失效。正式分发请提交 AMO（用 `dsh-browser-firefox.zip`）。
+
+## 使用
+
+1. 确保 `dsh web` 运行（默认 `http://127.0.0.1:3080`）。
+2. 扩展加载后自动连接本机 bridge（零配置），无需手动操作。
+3. 在 DSH GUI 对话时，Agent 调用 `browser_*` 工具操作浏览器：导航/点击链接在**后台新标签页**打开并归入当前会话的域名命名分组。
+
+## 验证
 
 ```sh
-cd ~/.dsh/dsh-browser && pnpm start
+# bridge 发现端点
+curl -s http://127.0.0.1:3080/ext/bridge-config
+# => {"wsUrl":"ws://127.0.0.1:3080/ext/bridge"}
 ```
 
-From a clone, run `pnpm start` in the repository root instead.
+扩展连接后，在 DSH GUI 让 Agent 执行 `browser_snapshot` 应返回当前页快照；`browser_navigate` 应在后台新建标签页（浏览器不切走）并归入带域名标题的分组。
 
-Or run the latest public release directly from npm:
+## 目录结构
 
-```sh
-npx @deepseek-ai/dsh web
+```
+plugin/                                 # dsh 侧 bridge 插件
+  src/                                  # 源码（协议 / 服务端 / 工具）
+  lib/                                  # 构建产物
+  cordis.patch.yml                      # 插件注册配置
+  dsh-bridge-plugin-0.0.1.tgz           # 安装包
+  dsh-bridge-plugin-source.zip          # 源码包
+extension/                              # Firefox 扩展
+  src/background/                       # 桥连接 / 工具分流 / 分组管理
+  src/content/                          # 快照 / 动作 / 元素解析
+  src/panel/                            # React 侧边栏
+  src/browser.d.ts                      # browser.* 类型声明
+  manifest.json                         # Firefox MV3 清单
+  dist/                                 # 构建产物
+  dsh-browser-firefox.zip               # 加载 / 提交包
+  dsh-browser-firefox-extension-source.zip  # 源码包
+scripts/install-firefox.sh              # 一键安装（跨电脑）
+README.md / PRIVACY.md / LICENSE
+package.json / pnpm-workspace.yaml / pnpm-lock.yaml
 ```
 
-Both commands load the same browser bundle from the local `web` profile. Port 3080 is used by default; if it is occupied, run `pnpm start -- --port <port>` or `npx @deepseek-ai/dsh web --port <port>`. When the DeepSeek whale icon appears in the toolbar, click it to open the side panel.
+## 安全
 
-**For subsequent use**, the extension does not need to be installed again. Run either startup command above.
+- bridge 路径自带 token 认证；非回环远程拒绝特权方法（`settings/credentials/open-*`）。
+- 本地免 token 依赖 `moz-extension://` / `chrome-extension://` Origin（网页无法伪造）。
+- 密码、支付卡号等敏感字段在快照中一律掩码为 `••••`。
+- 导航/点击链接只在后台新建标签页，不覆盖、不抢用户当前页面。
 
-**No configuration is required for local use**: the extension discovers dsh through `/ext/bridge-config`, and loopback connections do not require a bridge token. This runtime security token is unrelated to npm authentication; an address and bridge token are only needed for remote deployment with `--host 0.0.0.0`.
+## 许可
 
-**Step 3 — use it**: open any normal `http://` or `https://` page and click the DeepSeek whale icon. When the side panel reports "Connected", chat normally or click "Read page" first. A page that was already open before the extension was installed or reloaded is instrumented automatically on the first action; no page refresh is needed. Browser-internal and protected pages such as `chrome://` and the Chrome Web Store cannot be read or operated.
-
-To update a managed installation, run the same `curl | bash` command again. To update a clone, pull or switch to the desired revision and run `./scripts/install.sh`. Then click Reload for "dsh Browser Assistant" in `chrome://extensions` and reopen the side panel. Chrome should load `~/.dsh/browser-extension`; do not load the source directory `extensions/dsh-browser/`.
-
-## Development
-
-The bridge plugin and Chrome extension are both members of this repository's workspace. Run all commands from the repository root. For the first development installation, run `pnpm install`.
-
-```sh
-pnpm run build
-pnpm run typecheck
-pnpm run test
-
-pnpm --filter @deepseek-ai/dsh-bridge-browser run build
-pnpm --filter @deepseek-ai/dsh-bridge-browser run typecheck
-pnpm --filter @deepseek-ai/dsh-bridge-browser run test
-
-pnpm --filter dsh-browser-extension run build
-pnpm --filter dsh-browser-extension run test
-```
-
-Notes:
-
-- The bridge plugin must have a built `lib/` before startup because the loader consumes it; both `scripts/install.sh` and the root `pnpm run build` build the plugin before the extension.
-- The dependencies of `@deepseek-ai/dsh` and the bridge plugin are pinned to the same tested public release line. An upgrade must update the manifests and lockfile together and rerun the root checks.
-
-## Security
-
-- The bridge path sits outside the `/api` trust boundary and performs its own bearer-token authentication.
-- Privileged gateway methods such as `settings.*`, `credentials.*`, and `host.open*` reject non-loopback sources.
-- The model-facing pipeline is text-only; passwords and payment-card values never leave the page.
-- Only the active tab is operated; the extension never switches tabs silently.
+MIT © 2026 Yuxiang Lin（原 [Lum1104/dsh-browser](https://github.com/Lum1104/dsh-browser) 作者），本 Firefox 移植版保留原许可与版权声明。

@@ -2,3 +2,19 @@ node_modules/
 **/node_modules/
 **/lib/
 **/dist/
+
+# macOS
+.DS_Store
+
+# 测试覆盖率
+**/coverage/
+
+# 构建缓存
+*.tsbuildinfo
+
+# 打包产物
+*.zip
+*.tgz
+
+# 真实 manifest（含个人 gecko.id，见 manifest.example.json）
+extension/manifest.json
