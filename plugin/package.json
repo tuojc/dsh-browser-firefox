@@ -1,7 +1,7 @@
 {
   "name": "dsh-browser-firefox",
   "description": "Firefox browser control for DeepSeek Harness: token-authenticated WebSocket bridge + text-first browser_* tools driving the user's own Firefox via the companion AMO extension",
-  "version": "0.3.3",
+  "version": "0.3.2",
   "author": "tuojc",
   "license": "MIT",
   "repository": {
