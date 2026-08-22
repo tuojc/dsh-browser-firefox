@@ -29,15 +29,11 @@ Firefox 版的 DeepSeek Harness 浏览器操作插件，让模型直接读取并
 dsh plugin --profile web add dsh-browser-firefox@latest
 ```
 
-**安装后重启 `dsh web` 生效。** 首次启动时插件会在 `~/.dsh/ext-bridge-token` 生成 bearer token（`0600` 权限），第 3 步会用到。
-
-> 以后想升级到最新版，重新执行同一条命令即可。也可以从源码构建后用本地产物安装（见「从源码构建」一节）。
+**安装后重启 `dsh web` 生效。**
 
 ### 第 2 步：安装 Firefox 扩展
 
 扩展已上架 Firefox 扩展商店，直接安装👉 [DSH 浏览器助手 - addons.mozilla.org](https://addons.mozilla.org/zh-CN/firefox/addon/dsh-%E6%B5%8F%E8%A7%88%E5%99%A8%E5%8A%A9%E6%89%8B/)（也可在 AMO 搜索「dsh 浏览器助手」）。
-
-> **开发调试**可改用「临时载入」：打开 `about:debugging#/runtime/this-firefox` → 「临时载入附加组件」→ 选择 `extension/dist/manifest.json`（目录）或 `extension/dsh-browser-firefox.zip`。修改 manifest/权限后需「移除 → 重新临时载入」；临时加载的扩展在 Firefox 关闭后失效。
 
 ### 第 3 步：填写 token（仅首次）
 
@@ -49,19 +45,13 @@ cat ~/.dsh/ext-bridge-token   # 复制输出
 
 > **为什么 Firefox 必须填 token（0.3.1 起，与上游同步的安全收紧）**：Firefox 扩展的 `moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，所以 bridge 要求 Firefox 客户端一律出示 token（Chrome 扩展的回环免 token 不受影响）。没填或填错时，面板会显示「需要 Token」横幅引导你完成这一步。
 
-### 第 4 步：开始使用
-
-确保 `dsh web` 正在运行（默认 `http://127.0.0.1:3080`），在 DSH GUI 对话即可——Agent 会调用 `browser_*` 工具操作浏览器：导航/点击链接在**后台新标签页**打开，并归入当前会话的域名命名分组。
-
-验证连接是否正常：
+### 验证
 
 ```sh
 # bridge 发现端点应返回 WS 地址
 curl -s http://127.0.0.1:3080/ext/bridge-config
 # => {"wsUrl":"ws://127.0.0.1:3080/ext/bridge"}
 ```
-
-扩展连接后，让 Agent 执行 `browser_snapshot` 应返回当前页快照；`browser_navigate` 应在后台新建标签页（浏览器不切走）并归入带域名标题的分组。也可以在扩展侧边栏点「读取页面」直接体验。
 
 ## 功能
 
