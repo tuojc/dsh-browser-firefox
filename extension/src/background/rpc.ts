@@ -6,7 +6,7 @@
  */
 
 import type { BridgeClient } from './bridge.ts'
-import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 
 const RPC_TIMEOUT_MS = 30_000
 

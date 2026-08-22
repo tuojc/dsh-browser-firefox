@@ -8,7 +8,7 @@
  * @module
  */
 
-import type { ToolError } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { ToolError } from 'dsh-browser-firefox/src/protocol.ts'
 
 /** A tool call from the bridge. */
 export interface ToolCall {

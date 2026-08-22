@@ -152,8 +152,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 
   // Zero-config discovery endpoint: the extension fetches this to learn the
   // bridge WebSocket URL without any manual configuration. The URL carries no
-  // secret (loopback connections skip the token); non-loopback deployments
-  // keep requiring the token on the WS itself.
+  // secret; the WS itself authenticates (loopback chrome-extension origins
+  // skip the token; Firefox clients and non-loopback remotes must present it).
   const configRoute: WebRoute = {
     kind: 'exact',
     path: BRIDGE_CONFIG_PATH,

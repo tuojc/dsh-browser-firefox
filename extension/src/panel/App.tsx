@@ -8,8 +8,8 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
+import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
 import { renderMarkdown } from './markdown.ts'

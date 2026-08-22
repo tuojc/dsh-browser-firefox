@@ -5,8 +5,8 @@
  * @module
  */
 
-import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
+import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import type { Settings } from '../background/index.ts'
 

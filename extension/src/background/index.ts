@@ -16,12 +16,13 @@
  * @module
  */
 
-import type { BridgeCaps } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import type { ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
+import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
+import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from 'dsh-browser-firefox/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
 import { createRpc } from './rpc.ts'
 import { dispatchToolCall, type ToolCall, type ToolAnswer, type ContentBudget } from './tools.ts'
+import { TabSessionManager, pushTab } from './session-state.ts'
 
 /** User settings persisted in browser.storage.local. */
 export interface Settings {
@@ -131,24 +132,30 @@ async function pushBudgetToActiveTab(negotiated: BridgeCaps): Promise<void> {
   }
 }
 
-/** Session-scoped tab group: maps a dsh sessionId to its Firefox tab group id. */
-const sessionGroups = new Map<string, number>()
-/** 当前工作的标签页 id（navigate/点击链接新建的 tab）；后续操作静默作用于此 tab。 */
-let workingTabId: number | undefined
-/** 当前工作 tab 所属的 group（页面自开新 tab 时自动归组用）。 */
-let workingGroupId: number | undefined
-/** session 打开的 tab 顺序（去重，栈顶为最近打开），供 browser_back 回退与 browser_list_tabs 列出。 */
-let tabStack: number[] = []
-/** 当前 session id（用于 session 切换时重置 tab 栈）。 */
-let currentSessionId: string | undefined
+/** Per-session tab state (working tab / group / tab stack). */
+const tabSessions = new TabSessionManager()
 
-/** session 切换时重置工作 tab / group / 栈，避免串到上一个 session 的 tab。 */
+/** 切换当前 session 并返回其 tab 状态；其它 session 的状态原样保留。 */
 function ensureSession(sessionId: string | undefined): void {
-  if (sessionId === currentSessionId) return
-  currentSessionId = sessionId
-  workingTabId = undefined
-  workingGroupId = undefined
-  tabStack = []
+  tabSessions.ensure(sessionId)
+}
+
+/** 等待 tab 加载完成（有界）：navigate/点链接后紧接着的 snapshot 需要完整 DOM。 */
+async function waitForTabComplete(tabId: number, timeoutMs = 15_000): Promise<void> {
+  const tab = await browser.tabs.get(tabId).catch(() => undefined)
+  if (tab === undefined || tab.status === 'complete') return
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(done, timeoutMs)
+    function done(): void {
+      clearTimeout(timer)
+      browser.tabs.onUpdated.removeListener(onUpdated)
+      resolve()
+    }
+    function onUpdated(updatedTabId: number, changeInfo: { status?: string }): void {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') done()
+    }
+    browser.tabs.onUpdated.addListener(onUpdated)
+  })
 }
 /** Color palette cycled per new group (Firefox tabGroups.ColorEnum). */
 const GROUP_COLORS: chrome.tabGroups.ColorEnum[] = ['blue', 'green', 'red', 'purple', 'yellow', 'orange', 'pink', 'cyan', 'grey']
@@ -181,24 +188,28 @@ function titleFromUrl(url: string): string {
 async function createTabInGroup(url: string, sessionId: string | undefined, title?: string): Promise<chrome.tabs.Tab> {
   // 静默新建：active:false 不抢焦点，Agent 在后台操作。
   const tab = await browser.tabs.create({ url, active: false })
-  workingTabId = tab.id
-  if (tab.id !== undefined) pushTab(tab.id)
+  const state = tabSessions.current()
+  state.workingTabId = tab.id
+  if (tab.id !== undefined) pushTab(state.tabStack, tab.id)
   if (tab.id === undefined || sessionId === undefined) return tab
   try {
-    const existing = sessionGroups.get(sessionId)
-    let groupId: number
+    const existing = tabSessions.groupOf(sessionId)
     if (existing !== undefined) {
-      groupId = await browser.tabs.group({ tabIds: [tab.id], groupId: existing })
-    } else {
-      groupId = await browser.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } })
-      sessionGroups.set(sessionId, groupId)
-      const color = GROUP_COLORS[groupColorIndex++ % GROUP_COLORS.length]
-      const groupTitle = title || titleFromUrl(url)
       try {
-        await browser.tabGroups.update(groupId, { color, title: groupTitle })
-      } catch (error) { console.warn('[dsh-browser] tab group color/title failed:', error) }
+        state.groupId = await browser.tabs.group({ tabIds: [tab.id], groupId: existing })
+        return tab
+      } catch {
+        // 记录的 group 已失效（用户关掉了组内所有 tab）：删映射，按新建 group 重试。
+        tabSessions.clearGroup(sessionId)
+      }
     }
-    workingGroupId = groupId
+    const groupId = await browser.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } })
+    state.groupId = groupId
+    const color = GROUP_COLORS[groupColorIndex++ % GROUP_COLORS.length]
+    const groupTitle = title || titleFromUrl(url)
+    try {
+      await browser.tabGroups.update(groupId, { color, title: groupTitle })
+    } catch (error) { console.warn('[dsh-browser] tab group color/title failed:', error) }
   } catch (error) {
     // tabGroups 不可用（如更旧的 Firefox）时降级：tab 已创建，只是未分组。
     console.warn('[dsh-browser] tab group failed (tab 仍已创建，仅未分组):', error)
@@ -209,7 +220,7 @@ async function createTabInGroup(url: string, sessionId: string | undefined, titl
 /** browser_navigate：新建标签页打开（不覆盖当前页），并归入当前会话的 group。 */
 /** browser_screenshot：截取工作 tab（或活动 tab）为 data URL，回传 bridge 保存。 */
 async function screenshotAction(): Promise<ToolAnswer> {
-  const targetId = workingTabId
+  const targetId = tabSessions.current().workingTabId
     ?? (await browser.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id
   if (targetId === undefined) {
     return { ok: false, error: { code: 'no-active-tab', message: '没有可截图的标签页' } }
@@ -233,23 +244,25 @@ async function navigateAction(call: ToolCall, sessionId: string | undefined, tit
   // 1. 先在当前 session group 里查已有 tab（同页）→ 切回，不重复新建
   const existing = await findTabByPage(parsed.href)
   if (existing?.id !== undefined) {
-    workingTabId = existing.id
+    tabSessions.current().workingTabId = existing.id
     return { ok: true, result: { text: `已切换到已有标签页 ${parsed.href}…` } }
   }
-  // 2. 否则新建
-  await createTabInGroup(parsed.href, sessionId, title)
+  // 2. 否则新建并等待加载完成（紧接着的 snapshot 需要完整 DOM）
+  const tab = await createTabInGroup(parsed.href, sessionId, title)
+  if (tab.id !== undefined) await waitForTabComplete(tab.id)
   return { ok: true, result: { text: `已在后台新标签页打开 ${parsed.href}…` } }
 }
 
 /** 在当前 session group 里查找「相同页面（origin+pathname+search，忽略 hash）」的 tab。 */
 async function findTabByPage(url: string): Promise<chrome.tabs.Tab | undefined> {
-  // 还没建 group（workingGroupId 空）时不检测，直接新建 + 建 group，避免切到用户没关的 tab
-  if (workingGroupId === undefined) return undefined
+  // 还没建 group 时不检测，直接新建 + 建 group，避免切到用户没关的 tab
+  const groupId = tabSessions.current().groupId
+  if (groupId === undefined) return undefined
   const target = new URL(url)
   const tabs = await browser.tabs.query({})
   return tabs.find((t) => {
-    // 只查当前 session 的 group（groupId === workingGroupId）
-    if (t.groupId !== workingGroupId) return false
+    // 只查当前 session 的 group
+    if (t.groupId !== groupId) return false
     if (t.url === undefined || !/^https?:\/\//.test(t.url)) return false
     try {
       const u = new URL(t.url)
@@ -260,7 +273,12 @@ async function findTabByPage(url: string): Promise<chrome.tabs.Tab | undefined> 
 
 /** browser_click：先让 content script 解析目标元素；若是链接则新建标签页 + 入 group，否则普通点击。 */
 async function clickAction(call: ToolCall, sessionId: string | undefined, budget: ContentBudget | undefined, title?: string): Promise<ToolAnswer> {
-  const [tab] = await browser.tabs.query({ active: true, lastFocusedWindow: true })
+  // 快照编号来自工作 tab：优先在工作 tab 上解析目标元素，失效时回退活动 tab。
+  const state = tabSessions.current()
+  let tab = state.workingTabId === undefined
+    ? undefined
+    : await browser.tabs.get(state.workingTabId).catch(() => undefined)
+  tab ??= (await browser.tabs.query({ active: true, lastFocusedWindow: true }))[0]
   if (tab?.id === undefined) {
     return { ok: false, error: { code: 'no-active-tab', message: '没有活动的标签页可操作' } }
   }
@@ -270,33 +288,36 @@ async function clickAction(call: ToolCall, sessionId: string | undefined, budget
     if (resolved?.isLink === true && typeof resolved.href === 'string') {
       const parsed = safeHttpUrl(resolved.href)
       if (parsed !== undefined) {
-        await createTabInGroup(parsed.href, sessionId, title)
+        const opened = await createTabInGroup(parsed.href, sessionId, title)
+        if (opened.id !== undefined) await waitForTabComplete(opened.id)
         return { ok: true, result: { text: `已在后台新标签页打开 ${parsed.href}…` } }
       }
     }
   } catch {
     // content script 未就绪或解析失败：回退到普通 dispatch（会触发注入恢复）。
   }
-  return dispatchToolCall(call, settings.sharePageContent, budget, workingTabId)
+  return dispatchToolCall(call, settings.sharePageContent, budget, state.workingTabId)
 }
 
 /** browser_back：栈中有上一个 tab 时切回，栈底退化到页面 history.back()。 */
 async function backAction(call: ToolCall, budget: ContentBudget | undefined): Promise<ToolAnswer> {
-  const idx = tabStack.lastIndexOf(workingTabId ?? -1)
+  const state = tabSessions.current()
+  const idx = state.tabStack.lastIndexOf(state.workingTabId ?? -1)
   if (idx > 0) {
-    workingTabId = tabStack[idx - 1]
+    state.workingTabId = state.tabStack[idx - 1]
     return { ok: true, result: { text: '已回到上一个标签页' } }
   }
-  return dispatchToolCall(call, settings.sharePageContent, budget, workingTabId)
+  return dispatchToolCall(call, settings.sharePageContent, budget, state.workingTabId)
 }
 
 /** browser_list_tabs：列出当前 session group 的所有 tab。 */
 async function listTabsAction(): Promise<ToolAnswer> {
+  const state = tabSessions.current()
   const tabs = await browser.tabs.query({})
   const items = tabs
-    .filter((t) => workingGroupId === undefined || t.groupId === workingGroupId)
+    .filter((t) => state.groupId === undefined || t.groupId === state.groupId)
     .map((t) => {
-      const mark = t.id === workingTabId ? ' *' : ''
+      const mark = t.id === state.workingTabId ? ' *' : ''
       return `[${t.id}]${mark} ${t.title ?? '(无标题)'} ${t.url ?? ''}`
     })
   return { ok: true, result: { text: items.length > 0 ? items.join('\n') : '(无标签页)' } }
@@ -340,7 +361,7 @@ function routeToolCall(call: ToolCall, expiresAt: number | undefined, sessionId:
   } else if (call.name === 'browser_list_tabs') {
     promise = listTabsAction()
   } else {
-    promise = dispatchToolCall(call, settings.sharePageContent, budget, workingTabId)
+    promise = dispatchToolCall(call, settings.sharePageContent, budget, tabSessions.current().workingTabId)
   }
   void promise.then((answer) => {
     inflightToolCalls.delete(call.id)
@@ -461,19 +482,26 @@ const pendingFollowTabs = new Set<number>()
 /** 工作 tab 跟随到新 tab，并归组。 */
 function followTab(tab: chrome.tabs.Tab): void {
   if (tab.id === undefined) return
-  workingTabId = tab.id
-  pushTab(tab.id)
-  if (workingGroupId !== undefined) {
-    void browser.tabs.group({ tabIds: [tab.id], groupId: workingGroupId }).catch(() => {})
+  const state = tabSessions.current()
+  state.workingTabId = tab.id
+  pushTab(state.tabStack, tab.id)
+  if (state.groupId !== undefined) {
+    void browser.tabs.group({ tabIds: [tab.id], groupId: state.groupId }).catch(() => {})
   }
 }
 
 browser.tabs.onCreated.addListener((tab) => {
   if (tab.openerTabId !== undefined) {
-    if (tab.openerTabId === workingTabId) followTab(tab)
+    if (tab.openerTabId === tabSessions.current().workingTabId) followTab(tab)
   } else if (tab.id !== undefined) {
     pendingFollowTabs.add(tab.id)
   }
+})
+
+// tab 关闭时清理：所有 session 的栈剔除死 id、工作 tab 引用置空。
+browser.tabs.onRemoved.addListener((tabId) => {
+  pendingFollowTabs.delete(tabId)
+  tabSessions.removeTab(tabId)
 })
 
 browser.tabs.onActivated.addListener((activeInfo) => {
@@ -485,12 +513,6 @@ browser.tabs.onActivated.addListener((activeInfo) => {
     followTab(tab)
   }).catch(() => {})
 })
-
-/** 压栈：先移除栈中重复 id 再 push（去重，栈顶最新）。 */
-function pushTab(tabId: number): void {
-  tabStack = tabStack.filter((id) => id !== tabId)
-  tabStack.push(tabId)
-}
 
 // ---- Keepalive ----
 // Firefox MV3 的 background 是 event page，空闲 45-90 秒后会卸载（WebSocket 断开）。

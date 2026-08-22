@@ -9,8 +9,8 @@
  * @module
  */
 
-import type { BridgeCaps, ClientFrame, ServerFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
-import { isServerFrame, parseBridgeFrame } from '@deepseek-ai/dsh-bridge-browser/src/protocol.ts'
+import type { BridgeCaps, ClientFrame, ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
+import { isServerFrame, parseBridgeFrame } from 'dsh-browser-firefox/src/protocol.ts'
 
 /** Coarse connection state for the UI. 'unauthorized' parks the loop until settings change. */
 export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped' | 'unauthorized'
