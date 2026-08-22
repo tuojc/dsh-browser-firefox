@@ -166,9 +166,14 @@ describe('real Loader composition', () => {
     // Zero-config discovery endpoint answers with the bridge WebSocket URL.
     const configResponse = await fetch(`http://127.0.0.1:${port}/ext/bridge-config`)
     expect(configResponse.status).toBe(200)
+    // Firefox extensions fetch this cross-origin during auto-detection: ACAO required.
+    expect(configResponse.headers.get('access-control-allow-origin')).toBe('*')
     const config = await configResponse.json() as { wsUrl?: unknown }
     expect(typeof config.wsUrl).toBe('string')
     expect(config.wsUrl).toBe(`ws://127.0.0.1:${port}/ext/bridge`)
+    const preflight = await fetch(`http://127.0.0.1:${port}/ext/bridge-config`, { method: 'OPTIONS' })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
     expect(tools.get('browser_click')).toBeDefined()
     expect(tools.get('browser_navigate')).toBeDefined()
 

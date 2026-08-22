@@ -157,8 +157,18 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const configRoute: WebRoute = {
     kind: 'exact',
     path: BRIDGE_CONFIG_PATH,
-    handler: (_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' })
+    handler: (req, res) => {
+      // CORS: browser extensions fetch this from their own origin during
+      // bridge auto-detection. Firefox enforces CORS on extension fetches
+      // (Chrome with host_permissions does not) — without ACAO the discovery
+      // response is unreadable and the extension never learns the WS URL.
+      const cors = { 'access-control-allow-origin': '*' }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { ...cors, 'access-control-allow-methods': 'GET, OPTIONS' })
+        res.end()
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json', ...cors })
       res.end(JSON.stringify({ wsUrl: `ws://127.0.0.1:${ctx.webServer.port}${BRIDGE_PATH}` }))
     },
   }
