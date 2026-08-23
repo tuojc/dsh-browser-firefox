@@ -272,6 +272,7 @@ textarea:focus-visible {
 }
 
 .context-card {
+  position: relative;
   display: flex;
   min-width: 0;
   flex: 0 0 auto;
@@ -360,6 +361,85 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.1);
   color: #738097;
   cursor: default;
+}
+
+.context-copy.context-select {
+  position: relative;
+  padding: 0 14px 0 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.context-copy.context-select:hover strong {
+  color: #dce4ff;
+}
+
+.chevron {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #8f9bb0;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.session-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 42px;
+  right: 10px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid #222d43;
+  border-radius: 12px;
+  background: #141c2e;
+  box-shadow: 0 12px 28px rgba(10, 16, 30, 0.45);
+}
+
+.session-picker button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #d8e0f0;
+  cursor: pointer;
+  font-size: 11.5px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-picker button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.session-picker button.active {
+  background: rgba(96, 120, 255, 0.16);
+  color: #ffffff;
+}
+
+.session-picker .session-picker-new {
+  color: #aebaff;
+  font-weight: 650;
+}
+
+.session-picker-empty {
+  padding: 10px;
+  color: #738097;
+  font-size: 11px;
+  text-align: center;
 }
 
 .messages {

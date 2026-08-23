@@ -104,12 +104,16 @@ const ToolActivity = memo(function ToolActivity({ row }: { row: Row }): React.JS
   )
 })
 
+import { pickCurrentSession, resolveBrowserSessions, type SessionListItem, type SessionView, type WorkspaceView } from './sessions.ts'
+
 export function App(): React.JSX.Element {
   const [api] = useState<PanelApi>(() => connectPanel())
   const [state, setState] = useState<BridgeState>('stopped')
   const [caps, setCaps] = useState<BridgeCaps | null>(null)
   const [settings, setSettings] = useState<PanelSettings | null>(null)
-  const [pageInfo, setPageInfo] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<SessionListItem[]>([])
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false)
   const [rows, setRows] = useState<Row[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -134,9 +138,7 @@ export function App(): React.JSX.Element {
     })
   }, [])
 
-  // 每次连接重启（设置变更/断线重连）都新建会话。状态消息逐条监听：
-  // React 会把 stopped/connecting 等瞬时状态合并进同一帧渲染，依赖渲染
-  // 状态无法可靠观察到"连接已重置"，因此在这里按消息粒度判定。
+  // 断线重连/设置变更会重置连接；重新连上后恢复会话列表与当前会话（不自动新建）。
   const [sessionEpoch, setSessionEpoch] = useState(0)
   const lastStateRef = useRef<BridgeState | null>(null)
   useEffect(() => {
@@ -158,33 +160,10 @@ export function App(): React.JSX.Element {
   }, [api])
 
   useEffect(() => {
-    if (state === 'connected' && sessionRef.current === null) {
-      void ensureSession()
+    if (state === 'connected') {
+      void loadSessions()
     }
   }, [state, sessionEpoch])
-
-  // 页面芯片显示浏览器当前活动标签页（标题，缺省退回 URL）；切换/更新时刷新。
-  useEffect(() => {
-    const refresh = (): void => {
-      void browser.tabs.query({ active: true, lastFocusedWindow: true }).then((tabs) => {
-        const tab = tabs[0]
-        setPageInfo(
-          tab !== undefined && tab.title !== undefined && tab.title !== ''
-            ? tab.title
-            : tab !== undefined && tab.url !== undefined && tab.url !== ''
-              ? tab.url
-              : null,
-        )
-      }).catch(() => setPageInfo(null))
-    }
-    refresh()
-    browser.tabs.onActivated.addListener(refresh)
-    browser.tabs.onUpdated.addListener(refresh)
-    return () => {
-      browser.tabs.onActivated.removeListener(refresh)
-      browser.tabs.onUpdated.removeListener(refresh)
-    }
-  }, [])
 
   // Auto-scroll to the newest row.
   useEffect(() => {
@@ -234,15 +213,64 @@ export function App(): React.JSX.Element {
     }
   }
 
-  /** 每次打开侧边栏都新建一个会话（与 GUI/其他界面的历史完全隔离）。 */
-  async function ensureSession(): Promise<void> {
+  /** 列出 browser-sessions 工作区里的会话，恢复/选择当前会话（不自动新建）。 */
+  async function loadSessions(): Promise<void> {
     try {
-      const created = await api.rpc<{ sessionId: string }>('session.create', {})
-      sessionRef.current = created.sessionId
-      await refreshHistory()
+      const [workspaces, allSessions] = await Promise.all([
+        api.rpc<{ items: WorkspaceView[] }>('workspace.list', {}),
+        api.rpc<{ items: SessionView[] }>('session.list', {}),
+      ])
+      const list = resolveBrowserSessions(workspaces.items, allSessions.items)
+      setSessions(list)
+      const persisted = await restorePersistedSessionId()
+      const current = pickCurrentSession(list, persisted)
+      if (current !== null) {
+        await selectSession(current.sessionId)
+      } else {
+        sessionRef.current = null
+        setRows([])
+        setCurrentSessionId(null)
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
+  }
+
+  /** 切换当前会话并加载其历史。 */
+  async function selectSession(id: string): Promise<void> {
+    sessionRef.current = id
+    setCurrentSessionId(id)
+    void persistSessionId(id)
+    await refreshHistory()
+  }
+
+  /** 在 browser-sessions 新建一个会话并置为当前（deferred 到首次 prompt）。 */
+  async function createSession(): Promise<void> {
+    try {
+      const created = await api.rpc<{ sessionId: string }>('session.create', {})
+      sessionRef.current = created.sessionId
+      setCurrentSessionId(created.sessionId)
+      setRows([])
+      void persistSessionId(created.sessionId)
+      setSessions((prev) => [{ sessionId: created.sessionId, title: '新会话', updatedAt: Date.now() }, ...prev])
+      setSessionPickerOpen(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  async function restorePersistedSessionId(): Promise<string | null> {
+    try {
+      const stored = await browser.storage.local.get('dshPanelSessionId')
+      const id = stored.dshPanelSessionId
+      return typeof id === 'string' && id !== '' ? id : null
+    } catch {
+      return null
+    }
+  }
+
+  function persistSessionId(id: string): void {
+    void browser.storage.local.set({ dshPanelSessionId: id }).catch(() => {})
   }
 
   const sendingRef = useRef(false)
@@ -279,6 +307,10 @@ export function App(): React.JSX.Element {
 
   // 状态栏只显示连接状态；快照上限是技术细节，在设置页说明（见 hint）。
   const statusText = useMemo(() => STATE_LABEL[state], [state])
+  const currentSessionTitle = useMemo(() => {
+    if (currentSessionId === null) return null
+    return sessions.find((s) => s.sessionId === currentSessionId)?.title ?? '新会话'
+  }, [sessions, currentSessionId])
 
   if (showSettings) {
     return (
@@ -348,13 +380,30 @@ export function App(): React.JSX.Element {
           <button className="secondary" onClick={() => setShowSettings(true)}>打开设置</button>
         </div>
       )}
-      <section className="context-card" aria-label="当前页面">
+      <section className="context-card" aria-label="当前会话">
         <span className="context-icon"><PageIcon /></span>
-        <span className="context-copy">
-          <small>当前页面</small>
-          <strong title={pageInfo ?? undefined}>{pageInfo ?? '等待浏览器页面'}</strong>
-        </span>
-        <button className="context-action" disabled={state !== 'connected' || busy}
+        <button className="context-copy context-select" onClick={() => setSessionPickerOpen((v) => !v)}
+          aria-haspopup="listbox" aria-expanded={sessionPickerOpen}>
+          <small>当前会话</small>
+          <strong title={currentSessionTitle ?? undefined}>{currentSessionTitle ?? '未选择会话'}</strong>
+          <span className="chevron" aria-hidden="true">▾</span>
+        </button>
+        {sessionPickerOpen && (
+          <div className="session-picker" role="listbox" aria-label="会话列表">
+            <button className="session-picker-new" onClick={() => { void createSession() }}>
+              ＋ 新建会话
+            </button>
+            {sessions.map((s) => (
+              <button key={s.sessionId} role="option" aria-selected={s.sessionId === currentSessionId}
+                className={s.sessionId === currentSessionId ? 'active' : ''}
+                onClick={() => { setSessionPickerOpen(false); void selectSession(s.sessionId) }}>
+                {s.title}
+              </button>
+            ))}
+            {sessions.length === 0 && <span className="session-picker-empty">暂无会话</span>}
+          </div>
+        )}
+        <button className="context-action" disabled={state !== 'connected' || busy || sessionRef.current === null}
           onClick={() => { void send('请用 browser_snapshot 读取当前页面，然后告诉我页面上有什么，并等待我的指令。') }}>
           读取页面
         </button>
@@ -364,13 +413,19 @@ export function App(): React.JSX.Element {
           <div className="empty">
             <span className="empty-logo"><img src={whaleUrl} alt="" /></span>
             <div>
-              <h1>把当前页面交给我</h1>
+              <h1>{sessionRef.current === null ? '从一个会话开始' : '把这个页面交给我'}</h1>
               <p>我可以阅读页面、查找信息，也可以替你点击、填写和导航。</p>
             </div>
-            <button disabled={state !== 'connected'}
-              onClick={() => { void send('请先概览当前页面，告诉我最重要的信息，并等待我的下一步指令。') }}>
-              先概览这个页面
-            </button>
+            {sessionRef.current === null ? (
+              <button disabled={state !== 'connected'} onClick={() => { void createSession() }}>
+                ＋ 新建会话
+              </button>
+            ) : (
+              <button disabled={state !== 'connected'}
+                onClick={() => { void send('请先概览当前页面，告诉我最重要的信息，并等待我的下一步指令。') }}>
+                读取当前页面
+              </button>
+            )}
           </div>
         )}
         {rows.map((row) => (
@@ -400,7 +455,7 @@ export function App(): React.JSX.Element {
                 void send()
               }
             }}
-            placeholder={state === 'connected' ? '告诉我想在这个页面做什么…' : '连接 dsh 后即可开始'}
+            placeholder={state === 'connected' ? '告诉我你想在这个会话里做什么…' : '连接 dsh 后即可开始'}
             disabled={state !== 'connected'}
             rows={2}
           />
