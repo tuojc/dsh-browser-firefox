@@ -22,7 +22,7 @@ export interface SessionEventView {
     content?: unknown
     message?: { content?: unknown }
     name?: string
-    arguments?: string
+    arguments?: unknown
   }
 }
 
@@ -79,7 +79,8 @@ const TOOL_LABELS: Record<string, string> = {
 export function toolSummary(name: string, argsJson: unknown): string {
   let summary = TOOL_LABELS[name] ?? name
   try {
-    const args = JSON.parse(String(argsJson ?? '{}')) as unknown
+    // tool/call 的 arguments 是 JSON 字符串；tool/code-dispatch 的 arguments 是对象。
+    const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : argsJson
     if (typeof args === 'object' && args !== null && 'index' in args) {
       summary += ` #${String((args as { index?: unknown }).index)}`
     }
@@ -110,33 +111,59 @@ export function completeLastTool(rows: Row[], seq: number): Row[] {
   return rows
 }
 
-/** 历史渲染：连续工具调用归并成一行（tool/call..result 不逐条刷屏；超 3 个折叠计数）。 */
+/** 历史渲染：连续工具调用归并成一行（tool/call..result 不逐条刷屏；超 3 个折叠计数）。
+ * run_code 只是模型包裹浏览器操作的外壳，真实操作名来自随后的 tool/code-dispatch-start。 */
 export function mergeHistoryRows(events: SessionEventView[], nextSeq: () => number): Row[] {
   const rows: Row[] = []
-  let pendingTool: { items: string[]; total: number } | null = null
+  let pendingTool: { items: string[] } | null = null
+  let lastCallRunCode = false
   const flushTool = (): void => {
     if (pendingTool === null) return
-    const shown = pendingTool.items.slice(0, 3)
-    const label = pendingTool.total > shown.length
-      ? `${shown.join(' → ')} 等${pendingTool.total}个工具`
+    const items = pendingTool.items.length === 0 ? ['执行代码'] : pendingTool.items
+    const shown = items.slice(0, 3)
+    const label = items.length > shown.length
+      ? `${shown.join(' → ')} 等${items.length}个操作`
       : shown.join(' → ')
     rows.push({ seq: nextSeq(), kind: 'tool', text: label, status: 'complete' })
     pendingTool = null
   }
   for (const ev of events) {
     if (ev.type === 'tool/call') {
-      const summary = toolSummary(ev.data?.name ?? 'tool', ev.data?.arguments)
-      if (pendingTool === null) pendingTool = { items: [summary], total: 1 }
-      else {
-        pendingTool.items.push(summary)
-        pendingTool.total += 1
+      const name = ev.data?.name ?? 'tool'
+      if (pendingTool === null) pendingTool = { items: [] }
+      if (name === 'run_code') {
+        // 内层页面操作由 tool/code-dispatch-start 提供；这里不记「run_code」。
+        lastCallRunCode = true
+      } else {
+        pendingTool.items.push(toolSummary(name, ev.data?.arguments))
+        lastCallRunCode = false
       }
       continue
     }
-    if (ev.type === 'tool/result') continue
-    flushTool()
+    if (ev.type === 'tool/code-dispatch-start') {
+      if (pendingTool === null) pendingTool = { items: [] }
+      pendingTool.items.push(toolSummary(ev.data?.name ?? 'tool', ev.data?.arguments))
+      lastCallRunCode = false // 已有内层操作，不再算「纯代码」
+      continue
+    }
+    if (ev.type === 'tool/code-dispatch') continue
+    if (ev.type === 'tool/result') {
+      if (lastCallRunCode) {
+        // 纯代码 run_code（无内层页面操作）：补一行「执行代码」（连续纯代码去重）。
+        if (pendingTool === null) pendingTool = { items: [] }
+        if (pendingTool.items[pendingTool.items.length - 1] !== '执行代码') pendingTool.items.push('执行代码')
+        lastCallRunCode = false
+      }
+      continue
+    }
     const row = rowFromEvent(ev)
-    if (row !== null) rows.push({ ...row, seq: nextSeq() })
+    if (row !== null) {
+      // 只有真实 user/assistant 文本行才结束当前工具组；step/start、step/end、
+      // turn/start、无文本的 assistant/message（reasoning+tool-call）等噪音事件
+      // 不落盘、不打断「连续页面操作合并成一个框」。
+      flushTool()
+      rows.push({ ...row, seq: nextSeq() })
+    }
   }
   flushTool()
   return rows

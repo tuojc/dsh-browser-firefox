@@ -60,10 +60,18 @@ function SendIcon(): React.JSX.Element {
   )
 }
 
-function ToolIcon(): React.JSX.Element {
+function SwapIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M12.1 3.35a4 4 0 0 0-4.75 5.27l-4.1 4.1a1.85 1.85 0 1 0 2.62 2.62l4.1-4.1a4 4 0 0 0 5.25-4.78l-2.45 2.45-1.9-.5-.5-1.9 2.45-2.45a4 4 0 0 0-.72-.71Z" />
+      <path d="M6.5 5h8l-2.6-2.6M13.5 15h-8l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  )
+}
+
+function DownIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 4.5v11M5.5 11.25 10 15.75 14.5 11.25" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
     </svg>
   )
 }
@@ -92,19 +100,20 @@ const ToolActivity = memo(function ToolActivity({ row }: { row: Row }): React.JS
   const running = row.status === 'running'
   return (
     <div className={`tool-activity ${running ? 'running' : 'complete'}`} role="status">
-      <span className="tool-icon"><ToolIcon /></span>
       <span className="tool-copy">
-        <span className="tool-label">{running ? '正在操作页面' : '页面操作'}</span>
+        <span className="tool-label">页面操作</span>
         <span className="tool-summary">{row.text}</span>
       </span>
       <span className="tool-state" aria-label={running ? '进行中' : '已完成'}>
-        {running ? <span className="spinner" /> : '完成'}
+        {running ? '进行中' : '完成'}
       </span>
     </div>
   )
 })
 
 import { pickCurrentSession, resolveBrowserSessions, type SessionListItem, type SessionView, type WorkspaceView } from './sessions.ts'
+import { progressLabel } from './progress.ts'
+import { isAtBottom } from './scroll.ts'
 
 export function App(): React.JSX.Element {
   const [api] = useState<PanelApi>(() => connectPanel())
@@ -114,6 +123,8 @@ export function App(): React.JSX.Element {
   const [sessions, setSessions] = useState<SessionListItem[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false)
+  const [hostPermission, setHostPermission] = useState<boolean | null>(null)
+  const [showJump, setShowJump] = useState(false)
   const [rows, setRows] = useState<Row[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -123,8 +134,25 @@ export function App(): React.JSX.Element {
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const cardRef = useRef<HTMLElement | null>(null)
+  const stickToBottomRef = useRef(true)
 
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
+
+  // Firefox MV3：host 权限是可选权限，读取页面前需已授予。
+  useEffect(() => {
+    void browser.permissions.contains({ origins: ['<all_urls>'] }).then(setHostPermission).catch(() => setHostPermission(null))
+  }, [])
+
+  async function grantHostPermission(): Promise<void> {
+    try {
+      const granted = await browser.permissions.request({ origins: ['<all_urls>'] })
+      setHostPermission(granted)
+    } catch (error) {
+      console.error('[dsh-browser] host permission request failed:', error)
+    }
+  }
 
   // Settings: seed from storage, then let the panel own the form.
   useEffect(() => {
@@ -165,10 +193,65 @@ export function App(): React.JSX.Element {
     }
   }, [state, sessionEpoch])
 
-  // Auto-scroll to the newest row.
+  const lastRowText = rows[rows.length - 1]?.text
+
+  // Auto-scroll to the newest row, but only while the user is already at the
+  // bottom — scrolling up to read history must not yank the view back down.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [rows, working])
+    if (!stickToBottomRef.current) return
+    const el = scrollRef.current
+    if (el === null) return
+    // 用 'instant' 而非 'auto'：'.messages' 是 scroll-behavior:smooth，
+    // 'auto' 会跟随平滑动画导致内容持续流入时滚动条滞后、到不了最底部。
+    el.scrollTo({ top: el.scrollHeight, behavior: 'instant' })
+  }, [rows, working, lastRowText])
+
+  // 兜底：内容高度变化（新增行/换行回排/异步加载）时若仍贴底，则重新钉到最底部。
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const body = bodyRef.current
+    if (body === null) return
+    const observer = new ResizeObserver(() => {
+      if (!stickToBottomRef.current) return
+      el.scrollTo({ top: el.scrollHeight, behavior: 'instant' })
+    })
+    observer.observe(body)
+    return () => observer.disconnect()
+  }, [])
+
+  function onMessagesScroll(): void {
+    const el = scrollRef.current
+    if (el === null) return
+    const atBottom = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
+    stickToBottomRef.current = atBottom
+    setShowJump(!atBottom)
+  }
+
+  function jumpToBottom(): void {
+    const el = scrollRef.current
+    if (el === null) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'instant' })
+    stickToBottomRef.current = true
+    setShowJump(false)
+  }
+
+  // 会话下拉：点击卡片外或按 Escape 关闭。
+  useEffect(() => {
+    if (!sessionPickerOpen) return
+    const onPointerDown = (e: PointerEvent): void => {
+      if (cardRef.current !== null && !cardRef.current.contains(e.target as Node)) setSessionPickerOpen(false)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setSessionPickerOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [sessionPickerOpen])
 
   /** Live frame handling: session events append rows; turn/end reconciles with history. */
   async function onFrame(frame: ServerFrame): Promise<void> {
@@ -187,13 +270,27 @@ export function App(): React.JSX.Element {
     }
     if (payload.event.type === 'tool/call') {
       setWorking(true)
+      const name = payload.event.data?.name ?? 'tool'
+      if (name === 'run_code') return // 内层页面操作由 tool/code-dispatch-start 提供
+      const summary = toolSummary(name, payload.event.data?.arguments)
+      setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
+      return
+    }
+    if (payload.event.type === 'tool/code-dispatch-start') {
+      // run_code 内部的真实页面操作（browser_navigate / browser_snapshot …）。
+      setWorking(true)
       const summary = toolSummary(payload.event.data?.name ?? 'tool', payload.event.data?.arguments)
       setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
       return
     }
     if (payload.event.type === 'tool/result') {
-      // 并入最后一行工具行：调用已完成（不新增行）。
-      setRows((prev) => completeLastTool(prev, nextSeq()))
+      // 运行中的工具行标记完成；纯代码 run_code（无内层操作）补一行「执行代码」（连续纯代码去重）。
+      setRows((prev) => {
+        const last = prev[prev.length - 1]
+        if (last?.kind === 'tool' && last.status === 'running') return completeLastTool(prev, nextSeq())
+        if (last?.kind === 'tool' && last.text.endsWith('执行代码')) return prev
+        return completeLastTool(appendLiveRow(prev, 'tool', '执行代码', nextSeq()), nextSeq())
+      })
       return
     }
     if (payload.event.type === 'turn/end') {
@@ -299,6 +396,20 @@ export function App(): React.JSX.Element {
     }
   }
 
+  /** 终止当前回合（session.cancel），并把面板恢复为可输入。 */
+  async function cancelTurn(): Promise<void> {
+    const id = sessionRef.current
+    if (id === null) return
+    try {
+      await api.rpc('session.cancel', { sessionId: id })
+    } catch (error) {
+      console.error('[dsh-browser] session.cancel failed:', error)
+    } finally {
+      setWorking(false)
+      setBusy(false)
+    }
+  }
+
   function saveSettings(): void {
     if (settings === null) return
     api.updateSettings(settings)
@@ -380,13 +491,21 @@ export function App(): React.JSX.Element {
           <button className="secondary" onClick={() => setShowSettings(true)}>打开设置</button>
         </div>
       )}
-      <section className="context-card" aria-label="当前会话">
+      {hostPermission === false && (
+        <div className="auth-banner permission-banner" role="alert">
+          需要授权「访问所有网站数据」才能读取页面内容。
+          <button className="secondary" onClick={() => { void grantHostPermission() }}>授权</button>
+        </div>
+      )}
+      <section className="context-card" aria-label="当前会话" ref={cardRef}>
         <span className="context-icon"><PageIcon /></span>
-        <button className="context-copy context-select" onClick={() => setSessionPickerOpen((v) => !v)}
-          aria-haspopup="listbox" aria-expanded={sessionPickerOpen}>
+        <span className="context-copy">
           <small>当前会话</small>
           <strong title={currentSessionTitle ?? undefined}>{currentSessionTitle ?? '未选择会话'}</strong>
-          <span className="chevron" aria-hidden="true">▾</span>
+        </span>
+        <button className="context-switcher" onClick={() => setSessionPickerOpen((v) => !v)}
+          aria-haspopup="listbox" aria-expanded={sessionPickerOpen} aria-label="切换会话" title="切换会话">
+          <SwapIcon />
         </button>
         {sessionPickerOpen && (
           <div className="session-picker" role="listbox" aria-label="会话列表">
@@ -403,12 +522,9 @@ export function App(): React.JSX.Element {
             {sessions.length === 0 && <span className="session-picker-empty">暂无会话</span>}
           </div>
         )}
-        <button className="context-action" disabled={state !== 'connected' || busy || sessionRef.current === null}
-          onClick={() => { void send('请用 browser_snapshot 读取当前页面，然后告诉我页面上有什么，并等待我的指令。') }}>
-          读取页面
-        </button>
       </section>
-      <div className="messages" ref={scrollRef}>
+      <div className="messages" ref={scrollRef} onScroll={onMessagesScroll}>
+        <div className="messages-body" ref={bodyRef}>
         {rows.length === 0 && !working && (
           <div className="empty">
             <span className="empty-logo"><img src={whaleUrl} alt="" /></span>
@@ -416,14 +532,9 @@ export function App(): React.JSX.Element {
               <h1>{sessionRef.current === null ? '从一个会话开始' : '把这个页面交给我'}</h1>
               <p>我可以阅读页面、查找信息，也可以替你点击、填写和导航。</p>
             </div>
-            {sessionRef.current === null ? (
+            {sessionRef.current === null && (
               <button disabled={state !== 'connected'} onClick={() => { void createSession() }}>
                 ＋ 新建会话
-              </button>
-            ) : (
-              <button disabled={state !== 'connected'}
-                onClick={() => { void send('请先概览当前页面，告诉我最重要的信息，并等待我的下一步指令。') }}>
-                读取当前页面
               </button>
             )}
           </div>
@@ -434,12 +545,16 @@ export function App(): React.JSX.Element {
             {row.kind === 'tool' ? <ToolActivity row={row} /> : <MessageBody row={row} />}
           </div>
         ))}
-        {working && rows[rows.length - 1]?.status !== 'running' && (
+        {working && (
           <div className="ai-progress" role="status" aria-label="助手正在处理">
             <span className="assistant-avatar"><img src={whaleUrl} alt="" /></span>
             <span className="progress-dots" aria-hidden="true"><i /><i /><i /></span>
-            <span>{rows[rows.length - 1]?.kind === 'tool' ? '正在整理结果' : '正在思考'}</span>
+            <span>{progressLabel(rows)}</span>
           </div>
+        )}
+        </div>
+        {showJump && (
+          <button className="jump-bottom" onClick={jumpToBottom} aria-label="回到底部" title="回到底部"><DownIcon /></button>
         )}
       </div>
       {error !== null && <div className="error">{error}</div>}
@@ -461,7 +576,11 @@ export function App(): React.JSX.Element {
           />
           <div className="composer-actions">
             <span>Enter 发送 · Shift + Enter 换行</span>
-            <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label="发送消息"><SendIcon /></button>
+            {working ? (
+              <button className="stop" onClick={() => { void cancelTurn() }} aria-label="停止" title="停止生成">■</button>
+            ) : (
+              <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label="发送消息"><SendIcon /></button>
+            )}
           </div>
         </div>
       </footer>

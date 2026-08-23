@@ -66,6 +66,11 @@ describe('toolSummary', () => {
     expect(toolSummary('browser_navigate', 'not-json')).toBe('打开页面')
     expect(toolSummary('custom_tool', '{}')).toBe('custom_tool')
   })
+
+  it('accepts object arguments (tool/code-dispatch shape)', () => {
+    expect(toolSummary('browser_click', { index: 7 })).toBe('点击元素 #7')
+    expect(toolSummary('browser_snapshot', {})).toBe('读取页面')
+  })
 })
 
 describe('appendLiveRow / completeLastTool', () => {
@@ -119,5 +124,89 @@ describe('mergeHistoryRows', () => {
 
   it('handles empty history', () => {
     expect(mergeHistoryRows([], () => 0)).toEqual([])
+  })
+})
+
+describe('mergeHistoryRows: run_code 与内层页面操作', () => {
+  const evc = (name: string, args: unknown): SessionEventView => ev('tool/call', { name, arguments: args })
+  const dispatch = (name: string, args: unknown = {}): SessionEventView => ev('tool/code-dispatch-start', { name, arguments: args })
+
+  it('忽略 run_code 外壳，显示内层页面操作名并用箭头合并', () => {
+    let seq = 0
+    const nextSeq = (): number => { seq += 1; return seq }
+    const rows = mergeHistoryRows([
+      evc('run_code', '{"description":"导航"}'),
+      dispatch('browser_navigate', { url: 'https://x.com' }),
+      ev('tool/code-dispatch', {}),
+      ev('tool/result', {}),
+      evc('run_code', '{"description":"等待并截图"}'),
+      dispatch('browser_wait', {}),
+      ev('tool/code-dispatch', {}),
+      dispatch('browser_snapshot', {}),
+      ev('tool/code-dispatch', {}),
+      ev('tool/result', {}),
+    ], nextSeq)
+    expect(rows).toEqual([{ seq: 1, kind: 'tool', text: '打开页面 → 等待页面 → 读取页面', status: 'complete' }])
+  })
+
+  it('纯代码 run_code（无内层操作）显示「执行代码」', () => {
+    let seq = 0
+    const nextSeq = (): number => { seq += 1; return seq }
+    const rows = mergeHistoryRows([
+      evc('run_code', '{"description":"读文件"}'),
+      ev('tool/result', {}),
+      evc('run_code', '{"description":"再读文件"}'),
+      ev('tool/result', {}),
+    ], nextSeq)
+    expect(rows).toEqual([{ seq: 1, kind: 'tool', text: '执行代码', status: 'complete' }])
+  })
+
+  it('页面操作与纯代码混合时箭头连接', () => {
+    let seq = 0
+    const nextSeq = (): number => { seq += 1; return seq }
+    const rows = mergeHistoryRows([
+      evc('run_code', '{}'),
+      dispatch('browser_navigate', {}),
+      ev('tool/result', {}),
+      evc('run_code', '{}'),
+      ev('tool/result', {}),
+    ], nextSeq)
+    expect(rows).toEqual([{ seq: 1, kind: 'tool', text: '打开页面 → 执行代码', status: 'complete' }])
+  })
+
+  it('直接工具调用（非 run_code）仍按原名显示', () => {
+    let seq = 0
+    const nextSeq = (): number => { seq += 1; return seq }
+    const rows = mergeHistoryRows([
+      evc('browser_click', '{"index":7}'),
+      ev('tool/result', {}),
+    ], nextSeq)
+    expect(rows).toEqual([{ seq: 1, kind: 'tool', text: '点击元素 #7', status: 'complete' }])
+  })
+
+  it('跨 step 边界与无文本 assistant/message 仍合并为单框', () => {
+    let seq = 0
+    const nextSeq = (): number => { seq += 1; return seq }
+    const rows = mergeHistoryRows([
+      evc('run_code', '{}'),
+      dispatch('browser_navigate', {}),
+      ev('tool/code-dispatch', {}),
+      ev('tool/result', {}),
+      ev('step/end', {}),
+      ev('step/start', {}),
+      // 无文本的 assistant/message（reasoning + tool-call），不打断合并。
+      ev('assistant/message', { message: { content: [{ type: 'reasoning', text: '继续' }, { type: 'tool-call', name: 'run_code' }] } }),
+      evc('run_code', '{}'),
+      dispatch('browser_snapshot', {}),
+      ev('tool/code-dispatch', {}),
+      ev('tool/result', {}),
+      ev('step/end', {}),
+      ev('step/start', {}),
+      ev('assistant/message', { message: { content: [{ type: 'text', text: '完成' }] } }),
+    ], nextSeq)
+    expect(rows).toEqual([
+      { seq: 1, kind: 'tool', text: '打开页面 → 读取页面', status: 'complete' },
+      { seq: 2, kind: 'assistant', text: '完成' },
+    ])
   })
 })

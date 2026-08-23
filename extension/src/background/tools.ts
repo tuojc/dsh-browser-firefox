@@ -9,6 +9,7 @@
  */
 
 import type { ToolError } from 'dsh-browser-firefox/src/protocol.ts'
+import { waitForTabComplete } from './tab-utils.ts'
 
 /** A tool call from the bridge. */
 export interface ToolCall {
@@ -99,6 +100,13 @@ export async function dispatchToolCall(
   if (tab?.id === undefined) {
     return { ok: false, error: { code: 'no-active-tab', message: '没有可操作的标签页' } }
   }
+  // 后台标签页可能被 Firefox 卸载（discarded）或仍在加载：注入内容脚本前先确保页面就绪。
+  if (tab.discarded === true) {
+    await browser.tabs.reload(tab.id).catch(() => {})
+    await waitForTabComplete(tab.id)
+  } else if (tab.status === 'loading') {
+    await waitForTabComplete(tab.id)
+  }
   try {
     const response = await sendAction(tab.id, call)
     return isToolAnswer(response) ? response : unavailable('页面内容脚本返回了无效响应')
@@ -116,8 +124,10 @@ export async function dispatchToolCall(
       }
       const response = await sendAction(tab.id, call)
       return isToolAnswer(response) ? response : unavailable('页面内容脚本返回了无效响应')
-    } catch {
-      return unavailable('无法在当前页面加载内容脚本；Chrome 内置页和受保护页面不支持操作')
+    } catch (cause) {
+      console.error('[dsh-browser] content script injection failed:', cause)
+      const reason = cause instanceof Error ? cause.message : String(cause)
+      return unavailable(`无法在当前页面加载内容脚本（${reason}）。页面可能刚被浏览器卸载或仍在加载，请稍后重试。`)
     }
   }
 }

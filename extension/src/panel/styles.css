@@ -363,52 +363,73 @@ textarea:focus-visible {
   cursor: default;
 }
 
-.context-copy.context-select {
-  position: relative;
-  padding: 0 14px 0 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
+.context-switcher {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #bac7ff;
   cursor: pointer;
-  text-align: left;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
-.context-copy.context-select:hover strong {
-  color: #dce4ff;
+.context-switcher:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
-.chevron {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  color: #8f9bb0;
-  font-size: 10px;
-  line-height: 1;
+.context-switcher svg {
+  width: 15px;
+  height: 15px;
+}
+
+.context-copy {
+  flex: 1;
 }
 
 .session-picker {
   position: absolute;
   top: calc(100% + 6px);
-  left: 42px;
-  right: 10px;
-  z-index: 20;
+  left: 0;
+  right: 0;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 220px;
+  max-height: min(56vh, 280px);
   overflow-y: auto;
   padding: 4px;
   border: 1px solid #222d43;
   border-radius: 12px;
   background: #141c2e;
   box-shadow: 0 12px 28px rgba(10, 16, 30, 0.45);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.session-picker::-webkit-scrollbar {
+  width: 6px;
+}
+
+.session-picker::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 3px;
+}
+
+.session-picker::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .session-picker button {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 32px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -443,16 +464,48 @@ textarea:focus-visible {
 }
 
 .messages {
-  display: flex;
+  position: relative;
   min-height: 0;
   flex: 1;
-  flex-direction: column;
-  gap: 18px;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 24px 16px 28px;
   scroll-behavior: smooth;
   scrollbar-gutter: stable;
+}
+
+.messages-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.jump-bottom {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  z-index: 5;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #d7dfff;
+  border-radius: 50%;
+  background: #ffffff;
+  color: var(--blue);
+  box-shadow: 0 6px 16px rgba(23, 32, 51, 0.16);
+  cursor: pointer;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.jump-bottom:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(23, 32, 51, 0.2);
+}
+
+.jump-bottom svg {
+  width: 16px;
+  height: 16px;
 }
 
 .empty {
@@ -596,24 +649,14 @@ textarea:focus-visible {
 }
 
 .row.tool {
-  position: relative;
-  padding-left: 37px;
-}
-
-.row.tool::before {
-  position: absolute;
-  top: -18px;
-  bottom: -18px;
-  left: 13px;
-  width: 1px;
-  background: #d5ddfb;
-  content: "";
+  align-items: flex-start;
 }
 
 .tool-activity {
   display: flex;
-  width: min(100%, 410px);
   min-width: 0;
+  flex: 1 1 auto;
+  max-width: 410px;
   align-items: center;
   gap: 9px;
   padding: 8px 9px;
@@ -625,27 +668,6 @@ textarea:focus-visible {
 .tool-activity.running {
   border-color: #ccd6ff;
   background: var(--blue-wash);
-}
-
-.tool-icon {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--blue-soft);
-  color: var(--blue);
-}
-
-.tool-icon svg {
-  width: 15px;
-  height: 15px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.55;
 }
 
 .tool-copy {
@@ -980,6 +1002,18 @@ textarea:focus-visible {
   color: #aeb6c4;
   cursor: default;
   box-shadow: none;
+}
+
+.composer-actions .stop {
+  border-color: #ffb3b8;
+  background: #fff1f2;
+  color: #e5484d;
+}
+
+.composer-actions .stop:hover:not(:disabled) {
+  border-color: #ff8a90;
+  background: #ffe3e5;
+  color: #c53030;
 }
 
 .settings {

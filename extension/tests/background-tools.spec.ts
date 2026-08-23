@@ -6,7 +6,7 @@ const CALL: ToolCall = { id: 'tool-1', name: 'browser_snapshot', args: {} }
 const OK: ToolAnswer = { ok: true, result: { text: 'page' } }
 
 function mockChrome(options: {
-  tab?: { id?: number; url?: string }
+  tab?: { id?: number; url?: string; discarded?: boolean; status?: string }
   responses?: Array<unknown>
   injectionError?: Error
 }) {
@@ -20,14 +20,20 @@ function mockChrome(options: {
     ? vi.fn(async () => [{ frameId: 0, result: undefined }])
     : vi.fn(async () => { throw options.injectionError })
   const query = vi.fn(async () => options.tab === undefined ? [] : [options.tab])
+  const reload = vi.fn(async () => {})
+  const listeners = new Set<(tabId: number, changeInfo: { status?: string }) => void>()
+  const onUpdated = {
+    addListener: vi.fn((fn: (tabId: number, changeInfo: { status?: string }) => void) => { listeners.add(fn) }),
+    removeListener: vi.fn((fn: (tabId: number, changeInfo: { status?: string }) => void) => { listeners.delete(fn) }),
+  }
   const api = {
-    tabs: { query, sendMessage, get: vi.fn(async () => options.tab) },
+    tabs: { query, sendMessage, get: vi.fn(async () => options.tab), reload, onUpdated },
     scripting: { executeScript },
   }
   vi.stubGlobal('chrome', api)
   // 生产环境跑在 Firefox（browser.* 原生 API）；测试里两者指向同一 mock。
   vi.stubGlobal('browser', api)
-  return { executeScript, query, sendMessage }
+  return { executeScript, query, sendMessage, reload, listeners }
 }
 
 afterEach(() => {
@@ -60,6 +66,17 @@ describe('dispatchToolCall', () => {
     expect(chromeMock.sendMessage).toHaveBeenNthCalledWith(2, 7, { type: 'DSH_BUDGET', budget })
   })
 
+  it('reloads a discarded tab before injecting the content script', async () => {
+    const chromeMock = mockChrome({
+      tab: { id: 9, url: 'https://example.com/background', discarded: true, status: 'complete' },
+      responses: [new Error('no receiver'), OK],
+    })
+
+    await expect(dispatchToolCall(CALL, 'ask')).resolves.toEqual(OK)
+    expect(chromeMock.reload).toHaveBeenCalledWith(9)
+    expect(chromeMock.executeScript).toHaveBeenCalledWith({ target: { tabId: 9 }, files: ['content.js'] })
+  })
+
   it('does not attempt injection on Chrome internal pages', async () => {
     const chromeMock = mockChrome({
       tab: { id: 8, url: 'chrome://extensions' },
@@ -82,7 +99,7 @@ describe('dispatchToolCall', () => {
 
     await expect(dispatchToolCall(CALL, 'ask')).resolves.toMatchObject({
       ok: false,
-      error: { code: 'content-unavailable', message: expect.stringContaining('受保护页面') },
+      error: { code: 'content-unavailable', message: expect.stringContaining('Cannot access contents of the page') },
     })
   })
 

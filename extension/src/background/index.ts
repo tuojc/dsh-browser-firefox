@@ -23,6 +23,8 @@ import { BridgeClient, type BridgeState } from './bridge.ts'
 import { createRpc } from './rpc.ts'
 import { dispatchToolCall, type ToolCall, type ToolAnswer, type ContentBudget } from './tools.ts'
 import { TabSessionManager, pushTab } from './session-state.ts'
+import { waitForTabComplete } from './tab-utils.ts'
+import { registerToolbarAction, type SidebarActionApi } from './toolbar.ts'
 
 /** User settings persisted in browser.storage.local. */
 export interface Settings {
@@ -140,23 +142,7 @@ function ensureSession(sessionId: string | undefined): void {
   tabSessions.ensure(sessionId)
 }
 
-/** 等待 tab 加载完成（有界）：navigate/点链接后紧接着的 snapshot 需要完整 DOM。 */
-async function waitForTabComplete(tabId: number, timeoutMs = 15_000): Promise<void> {
-  const tab = await browser.tabs.get(tabId).catch(() => undefined)
-  if (tab === undefined || tab.status === 'complete') return
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(done, timeoutMs)
-    function done(): void {
-      clearTimeout(timer)
-      browser.tabs.onUpdated.removeListener(onUpdated)
-      resolve()
-    }
-    function onUpdated(updatedTabId: number, changeInfo: { status?: string }): void {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') done()
-    }
-    browser.tabs.onUpdated.addListener(onUpdated)
-  })
-}
+
 /** Color palette cycled per new group (Firefox tabGroups.ColorEnum). */
 const GROUP_COLORS: chrome.tabGroups.ColorEnum[] = ['blue', 'green', 'red', 'purple', 'yellow', 'orange', 'pink', 'cyan', 'grey']
 let groupColorIndex = 0
@@ -527,9 +513,19 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
 })
 
+// ---- Toolbar action → sidebar ----
+// Firefox 的顶部工具栏 action 图标默认无任何点击行为：不注册 onClicked 的话，
+// 安装后顶部图标只是摆设，只有 sidebar_action 侧边栏入口能打开面板。
+// 这里注册 action.onClicked → sidebarAction.toggle()，让顶部图标也能打开/收起侧边栏。
+// sidebarAction 是 Firefox 专有 API（@types/chrome 未收录），用窄化类型接入。
+registerToolbarAction(
+  browser.action,
+  (browser as unknown as { sidebarAction: SidebarActionApi }).sidebarAction,
+)
+
 // ---- Boot ----
 
-// Firefox: the sidebar is opened via the toolbar icon / sidebar_action; no sidePanel API.
+// Firefox: 用 sidebar_action 打开侧边栏面板（无 sidePanel API）；顶部工具栏图标也在此处接入。
 console.log('[dsh-browser] background script booting, bridgeUrl default:', SETTINGS_DEFAULTS.bridgeUrl)
 
 void loadSettings().then(async (loaded) => {

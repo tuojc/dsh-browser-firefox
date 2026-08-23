@@ -25,6 +25,9 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "scripts": [
       "background.js"
