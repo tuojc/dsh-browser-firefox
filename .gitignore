@@ -22,3 +22,6 @@ node_modules/
 # 真实 manifest（含个人 gecko.id，见 manifest.example.json）
 extension/manifest.json
 .pnpm-store/
+
+# local vision-toolkit temp artifacts
+.dsh-vision-toolkit/
