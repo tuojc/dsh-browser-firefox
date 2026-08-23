@@ -152,4 +152,4 @@ package.json / pnpm-workspace.yaml / pnpm-lock.yaml
 
 ## 许可
 
-MIT © 2026 Yuxiang Lin（原 [Lum1104/dsh-browser](https://github.com/Lum1104/dsh-browser) 作者），本 Firefox 移植版保留原许可与版权声明。
+MIT © 2026 Yuxiang Lin（原 [Lum1104/dsh-browser](https://github.com/Lum1104/dsh-browser) 作者）；Firefox port modifications © 2026 tuojc。保留原版权声明与 MIT 协议。
