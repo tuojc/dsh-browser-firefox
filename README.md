@@ -43,7 +43,7 @@ cat ~/.dsh/ext-bridge-token   # 复制输出
 
 打开扩展侧边栏 → 右上角 ⚙️ 设置 → 把复制的内容粘贴到 **Token** 一栏 → 保存并连接。（桥地址留空即可，自动探测本机 3080/3081/3090 端口。）
 
-> **为什么 Firefox 必须填 token（0.3.1 起，与上游同步的安全收紧）**：Firefox 扩展的 `moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，所以 bridge 要求 Firefox 客户端一律出示 token（Chrome 扩展的回环免 token 不受影响）。没填或填错时，面板会显示「需要 Token」横幅引导你完成这一步。
+> **为什么 Firefox 必须填 token（0.3.1 起，与上游同步的安全收紧）**：Firefox 扩展的 `moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，所以 bridge 要求 Firefox 客户端一律出示 token。没填或填错时，面板会显示「需要 Token」横幅引导你完成这一步。
 
 ### 验证
 
@@ -146,7 +146,7 @@ package.json / pnpm-workspace.yaml / pnpm-lock.yaml
 ## 安全
 
 - bridge 路径自带 token 认证；非回环远程拒绝特权方法（`settings/credentials/open-*`）。
-- Chrome 扩展本地回环免 token 依赖 `chrome-extension://` Origin（网页无法伪造）；`moz-extension://` Origin 是随机 UUID、不构成身份边界，故 Firefox 一律要求 token。
+- Firefox 扩展一律要求 token：`moz-extension://` Origin 是每次安装随机生成的 UUID，无法据此辨认扩展身份，不构成安全边界。
 - 密码、支付卡号等敏感字段在快照中一律掩码为 `••••`。
 - 导航/点击链接只在后台新建标签页，不覆盖、不抢用户当前页面。
 

@@ -13,7 +13,7 @@
 ## 安全
 
 - 桥路径自带 token 认证；非回环远程拒绝特权方法。
-- 本地免 token 依赖 `moz-extension://` / `chrome-extension://` Origin（网页无法伪造）。
+- Firefox 扩展一律要求 token：`moz-extension://` Origin 是每次安装随机生成的 UUID，不构成身份边界。
 
 ## 联系方式
 
