@@ -26,6 +26,19 @@ export interface SessionEventView {
   }
 }
 
+/**
+ * session/follow stream frame (only the fields the panel uses). The opening
+ * `snapshot` carries the history window as records (`{type:'event'}` raw
+ * events and `{type:'chunks'}` packed assistant deltas — the panel maps both
+ * to their `event`); later `event` frames are live appends.
+ */
+export interface SessionFollowFrameView {
+  type: 'snapshot' | 'event'
+  records?: { type: string; event: SessionEventView }[]
+  hasMore?: boolean
+  event?: SessionEventView
+}
+
 /** Extract model-visible text from content blocks (defensive: unknown block shapes degrade to markers). */
 export function textFromBlocks(blocks: unknown): string {
   if (!Array.isArray(blocks)) return String(blocks ?? '')

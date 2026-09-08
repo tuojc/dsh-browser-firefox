@@ -13,19 +13,28 @@ export interface SessionListItem {
   updatedAt: number
 }
 
-/** session.list item (only the fields the panel uses). */
+/** session/list item (only the fields the panel uses). */
 export interface SessionView {
   sessionId: string
   updatedAt: number
   projections?: { values?: { title?: string } }
 }
 
-/** workspace.list item (only the fields the panel uses). */
+/** workspace/follow item (only the fields the panel uses). */
 export interface WorkspaceView {
   workspaceId: string
   path: string
   title: string
   sessionIds?: string[]
+}
+
+/** workspace/follow stream frame (only the fields the panel uses). */
+export interface WorkspaceFollowFrameView {
+  type: 'baseline' | 'upsert' | 'remove' | 'order' | 'archived'
+  value?: { items: WorkspaceView[] }
+  workspace?: WorkspaceView
+  workspaceId?: string
+  workspaceIds?: string[]
 }
 
 /**
@@ -51,4 +60,30 @@ export function resolveBrowserSessions(
  */
 export function pickCurrentSession(list: SessionListItem[], persistedId: string | null): SessionListItem | null {
   return list.find((s) => s.sessionId === persistedId) ?? list[0] ?? null
+}
+
+/**
+ * Fold one workspace/follow frame into the cached workspace list (the panel's
+ * replacement for the removed `workspace.list` RPC). `archived` frames are
+ * ignored: the panel never renders the archive set.
+ */
+export function applyWorkspaceFrame(items: WorkspaceView[], frame: WorkspaceFollowFrameView): WorkspaceView[] {
+  switch (frame.type) {
+    case 'baseline':
+      return [...(frame.value?.items ?? [])]
+    case 'upsert': {
+      if (frame.workspace === undefined) return items
+      const index = items.findIndex((item) => item.workspaceId === frame.workspace!.workspaceId)
+      return index === -1 ? [...items, frame.workspace] : items.map((item, i) => (i === index ? frame.workspace! : item))
+    }
+    case 'remove':
+      return items.filter((item) => item.workspaceId !== frame.workspaceId)
+    case 'order': {
+      const rank = new Map((frame.workspaceIds ?? []).map((id, index) => [id, index]))
+      return [...items].sort((a, b) =>
+        (rank.get(a.workspaceId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.workspaceId) ?? Number.MAX_SAFE_INTEGER))
+    }
+    case 'archived':
+      return items
+  }
 }

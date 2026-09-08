@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { pickCurrentSession, resolveBrowserSessions, type SessionView, type WorkspaceView } from '../src/panel/sessions.ts'
+import { applyWorkspaceFrame, pickCurrentSession, resolveBrowserSessions, type SessionView, type WorkspaceView } from '../src/panel/sessions.ts'
 
 describe('resolveBrowserSessions', () => {
   const workspaces: WorkspaceView[] = [
@@ -49,5 +49,33 @@ describe('pickCurrentSession', () => {
 
   it('列表为空时返回 null（进入空状态）', () => {
     expect(pickCurrentSession([], 'anything')).toBeNull()
+  })
+})
+
+describe('applyWorkspaceFrame (workspace/follow 折叠)', () => {
+  const w = (id: string, title = id): WorkspaceView => ({ workspaceId: id, path: `/tmp/${id}`, title, sessionIds: [] })
+
+  it('baseline 替换整个列表', () => {
+    expect(applyWorkspaceFrame([w('old')], { type: 'baseline', value: { items: [w('a'), w('b')] } }).map((x) => x.workspaceId))
+      .toEqual(['a', 'b'])
+  })
+
+  it('upsert 更新已有项或追加新项', () => {
+    const renamed = applyWorkspaceFrame([w('a')], { type: 'upsert', workspace: w('a', 'renamed') })
+    expect(renamed).toHaveLength(1)
+    expect(renamed[0]!.title).toBe('renamed')
+    expect(applyWorkspaceFrame([w('a')], { type: 'upsert', workspace: w('b') }).map((x) => x.workspaceId)).toEqual(['a', 'b'])
+  })
+
+  it('remove 删除对应项，order 重排', () => {
+    const removed = applyWorkspaceFrame([w('a'), w('b')], { type: 'remove', workspaceId: 'a' })
+    expect(removed.map((x) => x.workspaceId)).toEqual(['b'])
+    const ordered = applyWorkspaceFrame([w('a'), w('b'), w('c')], { type: 'order', workspaceIds: ['c', 'a'] })
+    expect(ordered.map((x) => x.workspaceId)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('archived 帧不影响列表', () => {
+    const items = [w('a')]
+    expect(applyWorkspaceFrame(items, { type: 'archived' })).toBe(items)
   })
 })

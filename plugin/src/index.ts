@@ -4,11 +4,13 @@
  *
  * The bridge mounts its own upgrade route (`/ext/bridge`) on the host
  * webserver, OUTSIDE the /api trust fence — so it brings its own bearer-token
- * authentication (first frame `hello` within HELLO_TIMEOUT_MS). Gateway RPCs
- * from the extension are dispatched through the same fetch-shaped handler the
- * /api carrier uses, and session events are pumped per connection. Tools
- * execute by dispatching `tool.call` frames to the connected extension, which
- * performs the action in the user's active tab.
+ * authentication (first frame `hello` within HELLO_TIMEOUT_MS). The wire
+ * protocol IS the alpha Typert Remote dialect: unary `rpc` frames carry
+ * slash-joined endpoints and native args objects straight into
+ * `ctx.typertGateway.invoke`, and `stream.open` frames open
+ * `ctx.typertGateway.stream` subscriptions whose native follow frames flow
+ * back unmodified. Tools execute by dispatching `tool.call` frames to the
+ * connected extension, which performs the action in the user's active tab.
  *
  * Opt-in by design: nothing is registered unless this plugin appears in the
  * composition. No dsh core code is touched.
@@ -16,28 +18,24 @@
  * @module @deepseek-ai/dsh-bridge-browser
  */
 
-import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-host-apiproxy'
+import type {} from '@deepseek-ai/dsh-api-gateway/types'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
-import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
-import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
-import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
 import { registerBrowserTools } from './tools.ts'
-import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from './protocol.ts'
+import { BRIDGE_CONFIG_PATH, BRIDGE_PATH, type RemoteWireResult } from './protocol.ts'
 import { withSessionDeferral } from './session-deferral.ts'
-import { withSessionWorkspace } from './session-workspace.ts'
+import { withSessionWorkspace, type RpcDispatch } from './session-workspace.ts'
 import { resolveToken } from './token.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bridge-browser'
 
 /** Services required by this plugin. */
-export const inject = ['webServer', 'apiProxy', 'tools']
+export const inject = ['webServer', 'typertGateway', 'tools']
 
 /** Default per-tool-call budget (ms). */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
@@ -120,11 +118,27 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolved = resolveConfig(config)
 
   const tokenRes = await resolveToken(resolved.token)
-  // Workspace grouping wraps the gateway create; session deferral wraps the
+  // Base dispatch: split the slash-joined endpoint and invoke the Remote
+  // method; Remote failures are folded into the wire result (never thrown
+  // across the bridge), everything else is an internal failure.
+  const invoke: RpcDispatch = async (method, args, signal) => {
+    const slash = method.indexOf('/')
+    const namespace = slash === -1 ? method : method.slice(0, slash)
+    const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
+    try {
+      const value = await ctx.typertGateway.invoke({ namespace, method: remoteMethod, args, signal })
+      return { ok: true, value }
+    } catch (error: unknown) {
+      const failure = ctx.typertGateway.wireStream.failure(error)
+      const result: RemoteWireResult = { ok: false, error: failure }
+      return result
+    }
+  }
+  // Workspace grouping intercepts session/create; session deferral wraps the
   // result so materialization at first prompt still flows through grouping.
-  const api: ApiProxy = withSessionDeferral(
+  const dispatchRpc = withSessionDeferral(
     withSessionWorkspace(
-      ctx.apiProxy,
+      invoke,
       resolved.sessionWorkspacePath,
       message => { ctx.logger.warn(message) },
     ),
@@ -132,8 +146,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   )
   const server = new BridgeServer({
     token: tokenRes.token,
-    apiHandler: toFetchHandler(api),
-    openEvents: (signal) => api.events.mux({ rpcId: RpcId(randomUUID()), payload: {} }, signal),
+    dispatchRpc,
+    openStream: (method, args, signal) => {
+      const slash = method.indexOf('/')
+      const namespace = slash === -1 ? method : method.slice(0, slash)
+      const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
+      return ctx.typertGateway.stream({ namespace, method: remoteMethod, args, signal })
+    },
     toolTimeoutMs: resolved.toolTimeoutMs,
     caps: {
       textOnly: true,

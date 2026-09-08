@@ -6,18 +6,20 @@
  * plus a half-minute `alarms` keepalive that re-arms the reconnect loop.
  *
  * Panel port protocol (browser.runtime.connect, name "dsh-panel"):
- *   panel → bg: { type: 'rpc', id, method, payload }
+ *   panel → bg: { type: 'rpc', id, method, args }
+ *   panel → bg: { type: 'stream.open', id, method, args }
+ *   panel → bg: { type: 'stream.close', id }
  *   panel → bg: { type: 'settings', settings: Partial<Settings> }
  *   panel → bg: { type: 'request-status' }
- *   bg → panel: { type: 'rpc.result', id, ok, result? | error? }
+ *   bg → panel: { type: 'rpc.result', id, ok, value? | error? }
+ *   bg → panel: { type: 'stream.frame', id, frame }
+ *   bg → panel: { type: 'stream.error', id, message }
  *   bg → panel: { type: 'status', state: BridgeState, caps? }
- *   bg → panel: { type: 'event', frame: ServerFrame }
  *
  * @module
  */
 
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
-import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from 'dsh-browser-firefox/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
 import { createRpc } from './rpc.ts'
@@ -116,8 +118,12 @@ function broadcastStatus(): void {
   for (const port of [...panelPorts]) postToPort(port, payload)
 }
 
-function broadcastEvent(frame: ServerFrame): void {
-  for (const port of [...panelPorts]) postToPort(port, { type: 'event', frame })
+/** 面板流订阅 → 拥有它的 port（stream.frame/stream.error 按此路由回面板）。 */
+const streamOwners = new Map<string, chrome.runtime.Port>()
+
+/** 桥换代（新 socket）：旧订阅已被插件 abort，清路由表面板会在重连后重新订阅。 */
+function dropAllStreams(): void {
+  streamOwners.clear()
 }
 
 /** 把协商的快照预算下发到活动标签页的 content script（配置生效）。 */
@@ -382,10 +388,21 @@ async function startBridge(): Promise<void> {
   }
   if (bridge === null) {
     const client = new BridgeClient({
-      onStateChange: () => { broadcastStatus() },
+      onStateChange: (next) => {
+        // 每次新 socket（connecting）旧订阅即死；清表，面板侧重连后重订。
+        if (next === 'connecting') dropAllStreams()
+        broadcastStatus()
+      },
       onFrame: (frame) => {
-        if (frame.t === 'event') broadcastEvent(frame)
-        else if (frame.t === 'tool.call') routeToolCall(frame, frame.expiresAt, frame.sessionId, frame.title)
+        if (frame.t === 'stream.frame' || frame.t === 'stream.error') {
+          const owner = streamOwners.get(frame.id)
+          if (owner !== undefined) {
+            postToPort(owner, frame.t === 'stream.frame'
+              ? { type: 'stream.frame', id: frame.id, frame: frame.frame }
+              : { type: 'stream.error', id: frame.id, message: frame.message })
+          }
+          if (frame.t === 'stream.error') streamOwners.delete(frame.id)
+        } else if (frame.t === 'tool.call') routeToolCall(frame, frame.expiresAt, frame.sessionId, frame.title)
         else if (frame.t === 'tool.cancel') {
           const entry = inflightToolCalls.get(frame.id)
           if (entry !== undefined) entry.cancelled = true
@@ -404,12 +421,12 @@ async function startBridge(): Promise<void> {
   bridge.start(url, settings.token)
 }
 
-/** Gateway RPC with a helpful error when the bridge is down. */
-async function gatewayRpc(method: string, payload: unknown): Promise<unknown> {
+/** Remote RPC with a helpful error when the bridge is down. */
+async function gatewayRpc(method: string, args: Record<string, unknown>): Promise<unknown> {
   if (rpc === null || bridge === null || !bridge.connected) {
     throw new Error('未连接 dsh（请检查设置中的地址与 token）')
   }
-  return rpc.request(method, payload)
+  return rpc.request(method, args)
 }
 
 // ---- Panel ports ----
@@ -424,10 +441,10 @@ browser.runtime.onConnect.addListener((port) => {
     const msg = message as { type?: string }
     switch (msg.type) {
       case 'rpc': {
-        const rpcMsg = message as { id: string; method: string; payload?: unknown }
-        void gatewayRpc(rpcMsg.method, rpcMsg.payload).then(
-          (result) => {
-            try { port.postMessage({ type: 'rpc.result', id: rpcMsg.id, ok: true, result }) } catch { /* port closed */ }
+        const rpcMsg = message as { id: string; method: string; args?: Record<string, unknown> }
+        void gatewayRpc(rpcMsg.method, rpcMsg.args ?? {}).then(
+          (value) => {
+            try { port.postMessage({ type: 'rpc.result', id: rpcMsg.id, ok: true, value }) } catch { /* port closed */ }
           },
           (error: unknown) => {
             try {
@@ -440,6 +457,26 @@ browser.runtime.onConnect.addListener((port) => {
             } catch { /* port closed */ }
           },
         )
+        break
+      }
+      case 'stream.open': {
+        const openMsg = message as { id: string; method: string; args?: Record<string, unknown> }
+        if (bridge === null || !bridge.connected) {
+          postToPort(port, { type: 'stream.error', id: openMsg.id, message: '未连接 dsh（请检查设置中的地址与 token）' })
+          break
+        }
+        streamOwners.set(openMsg.id, port)
+        const sent = bridge.send({ t: 'stream.open', id: openMsg.id, method: openMsg.method, args: openMsg.args ?? {} })
+        if (!sent) {
+          streamOwners.delete(openMsg.id)
+          postToPort(port, { type: 'stream.error', id: openMsg.id, message: 'bridge socket closed before stream dispatch' })
+        }
+        break
+      }
+      case 'stream.close': {
+        const closeMsg = message as { id: string }
+        streamOwners.delete(closeMsg.id)
+        if (bridge !== null && bridge.connected) bridge.send({ t: 'stream.close', id: closeMsg.id })
         break
       }
       case 'settings': {
@@ -455,7 +492,15 @@ browser.runtime.onConnect.addListener((port) => {
         break
     }
   })
-  port.onDisconnect.addListener(() => { panelPorts.delete(port) })
+  port.onDisconnect.addListener(() => {
+    panelPorts.delete(port)
+    // 面板关闭：它名下的流订阅全部收回。
+    for (const [id, owner] of [...streamOwners]) {
+      if (owner !== port) continue
+      streamOwners.delete(id)
+      if (bridge !== null && bridge.connected) bridge.send({ t: 'stream.close', id })
+    }
+  })
 })
 
 // ---- Tab follow & group ----

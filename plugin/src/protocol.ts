@@ -2,12 +2,18 @@
  * Wire contract between the dsh bridge plugin and the browser extension.
  *
  * Zero-dependency module (pure types, constants, and a parser): both the
- * plugin (node) and the Chrome extension (browser bundle) import this file, so
- * the frame shapes can never drift between the two halves.
+ * plugin (node) and the Firefox extension (browser bundle) import this file,
+ * so the frame shapes can never drift between the two halves.
  *
  * Frames are one JSON object per WebSocket message, discriminated by `t`.
  * Correlation ids (`id`) are minted by the requestor and echoed by the
  * responder; they are opaque strings, never parsed.
+ *
+ * The RPC/stream vocabulary is the alpha Typert Remote dialect verbatim:
+ * methods are slash-joined endpoints (`session/create`), `args` is the Remote
+ * descriptor's native args object (`{ request: {...} }`, `{ _request: {} }`),
+ * and stream frames carry the native Session/Workspace follow frames
+ * unmodified.
  *
  * @module
  */
@@ -53,12 +59,28 @@ export interface BridgeCaps {
   maxInteractiveItems: number
 }
 
+/** One Remote failure as plain wire data (RemoteError's message is non-enumerable, so it is restated explicitly). */
+export interface RemoteWireFailure {
+  code: string
+  message: string
+  details?: object
+}
+
+/** The RemoteResult wire form answered to one `rpc` frame. */
+export type RemoteWireResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: RemoteWireFailure }
+
 /** Frames sent by the extension to the bridge plugin. */
 export type ClientFrame =
   /** First frame, within HELLO_TIMEOUT_MS of socket open. */
   | { t: 'hello'; token: string; caps: BridgeCaps }
-  /** Unary gateway RPC passthrough (method names from the apiproxy RpcMethodMap). */
-  | { t: 'rpc'; id: string; method: string; payload: unknown }
+  /** Unary Remote call: slash-joined endpoint plus the descriptor's native args object. */
+  | { t: 'rpc'; id: string; method: string; args: Record<string, unknown> }
+  /** Open one Remote stream (`session/follow`, `workspace/follow`); frames arrive as `stream.frame`. */
+  | { t: 'stream.open'; id: string; method: string; args: Record<string, unknown> }
+  /** Cancel one open stream. */
+  | { t: 'stream.close'; id: string }
   /** Result of a previously dispatched tool call. */
   | { t: 'tool.result'; id: string; ok: true; result: unknown }
   | { t: 'tool.result'; id: string; ok: false; error: ToolError }
@@ -69,11 +91,13 @@ export type ClientFrame =
 export type ServerFrame =
   /** Accepted after a valid `hello`. */
   | { t: 'hello.ok'; caps: BridgeCaps }
-  /** Reply to an `rpc` frame; `result` is the apiproxy ServerResponse envelope. */
-  | { t: 'rpc.result'; id: string; ok: true; result: unknown }
-  | { t: 'rpc.result'; id: string; ok: false; error: { code: string; message: string } }
-  /** One gateway event envelope (the same server-request shape the GUI's /api/events.mux carries). */
-  | { t: 'event'; frame: { rpcId: string; method: string; payload: unknown } }
+  /** Reply to an `rpc` frame: the RemoteResult wire form, flattened onto the frame. */
+  | { t: 'rpc.result'; id: string; ok: true; value: unknown }
+  | { t: 'rpc.result'; id: string; ok: false; error: RemoteWireFailure }
+  /** One native frame of an open stream (SessionFollowFrame / WorkspaceFollowFrame, unmodified). */
+  | { t: 'stream.frame'; id: string; frame: unknown }
+  /** A stream failed (or its open was rejected); the client may reopen it. */
+  | { t: 'stream.error'; id: string; message: string }
   /** A model-requested browser action to execute in the user-controlled tab. `expiresAt` (ms epoch) withdraws the call once the caller stops waiting. */
   | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; expiresAt?: number; sessionId?: string; title?: string }
   /** Withdraw a tool call that timed out or whose caller was cancelled. */
@@ -88,15 +112,16 @@ export type BridgeFrame = ClientFrame | ServerFrame
 
 /**
  * Type guard: is this frame one the SERVER may send? Client-only shapes
- * (hello/tool.result/pong) narrow out, so server-side consumers never
- * dispatch on their own request vocabulary.
+ * (hello/rpc/stream.open/stream.close/tool.result/pong) narrow out, so
+ * server-side consumers never dispatch on their own request vocabulary.
  * @param frame - parsed frame.
  * @returns true for server-sendable frames.
  */
 export function isServerFrame(frame: BridgeFrame): frame is ServerFrame {
   return frame.t === 'hello.ok'
     || frame.t === 'rpc.result'
-    || frame.t === 'event'
+    || frame.t === 'stream.frame'
+    || frame.t === 'stream.error'
     || frame.t === 'tool.call'
     || frame.t === 'tool.cancel'
     || frame.t === 'ping'
@@ -110,7 +135,17 @@ export function isServerFrame(frame: BridgeFrame): frame is ServerFrame {
  * @returns true for client-sendable frames.
  */
 export function isClientFrame(frame: BridgeFrame): frame is ClientFrame {
-  return frame.t === 'hello' || frame.t === 'rpc' || frame.t === 'tool.result' || frame.t === 'pong'
+  return frame.t === 'hello'
+    || frame.t === 'rpc'
+    || frame.t === 'stream.open'
+    || frame.t === 'stream.close'
+    || frame.t === 'tool.result'
+    || frame.t === 'pong'
+}
+
+/** Wire args must be a plain object (the Remote descriptor's named arguments). */
+function isArgs(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -135,9 +170,15 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
         ? { t: 'hello', token: frame.token, caps: frame.caps }
         : undefined
     case 'rpc':
-      return typeof frame.id === 'string' && typeof frame.method === 'string'
-        ? { t: 'rpc', id: frame.id, method: frame.method, payload: frame.payload }
+      return typeof frame.id === 'string' && typeof frame.method === 'string' && isArgs(frame.args)
+        ? { t: 'rpc', id: frame.id, method: frame.method, args: frame.args }
         : undefined
+    case 'stream.open':
+      return typeof frame.id === 'string' && typeof frame.method === 'string' && isArgs(frame.args)
+        ? { t: 'stream.open', id: frame.id, method: frame.method, args: frame.args }
+        : undefined
+    case 'stream.close':
+      return typeof frame.id === 'string' ? { t: 'stream.close', id: frame.id } : undefined
     case 'tool.result':
       if (typeof frame.id !== 'string') return undefined
       if (frame.ok === true && 'result' in frame) {
@@ -154,15 +195,19 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
         : undefined
     case 'rpc.result':
       if (typeof frame.id !== 'string') return undefined
-      if (frame.ok === true && 'result' in frame) {
-        return { t: 'rpc.result', id: frame.id, ok: true, result: frame.result }
+      if (frame.ok === true && 'value' in frame) {
+        return { t: 'rpc.result', id: frame.id, ok: true, value: frame.value }
       }
-      return typeof frame.error === 'object' && frame.error !== null
-        ? { t: 'rpc.result', id: frame.id, ok: false, error: frame.error as { code: string; message: string } }
+      return isWireFailure(frame.error)
+        ? { t: 'rpc.result', id: frame.id, ok: false, error: frame.error }
         : undefined
-    case 'event':
-      return typeof frame.frame === 'object' && frame.frame !== null
-        ? { t: 'event', frame: frame.frame as ServerFrame extends { t: 'event' } ? ServerFrame['frame'] : never }
+    case 'stream.frame':
+      return typeof frame.id === 'string'
+        ? { t: 'stream.frame', id: frame.id, frame: frame.frame }
+        : undefined
+    case 'stream.error':
+      return typeof frame.id === 'string' && typeof frame.message === 'string'
+        ? { t: 'stream.error', id: frame.id, message: frame.message }
         : undefined
     case 'tool.call':
       if (typeof frame.id !== 'string' || typeof frame.name !== 'string') return undefined
@@ -202,6 +247,12 @@ function isCaps(value: unknown): value is BridgeCaps {
 }
 
 function isToolError(value: unknown): value is ToolError {
+  return typeof value === 'object' && value !== null
+    && typeof (value as Record<string, unknown>).code === 'string'
+    && typeof (value as Record<string, unknown>).message === 'string'
+}
+
+function isWireFailure(value: unknown): value is RemoteWireFailure {
   return typeof value === 'object' && value !== null
     && typeof (value as Record<string, unknown>).code === 'string'
     && typeof (value as Record<string, unknown>).message === 'string'

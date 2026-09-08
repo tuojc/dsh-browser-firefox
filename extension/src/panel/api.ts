@@ -1,12 +1,16 @@
 /**
  * Panel ↔ background port client. The panel never touches the bridge or the
- * gateway directly; everything goes through the service worker's port.
+ * Typert gateway directly; everything goes through the service worker's port.
+ *
+ * The port dialect mirrors the alpha-native bridge protocol: unary calls carry
+ * slash-joined endpoints plus the Remote descriptor's `args` object and
+ * resolve to the business value; streams open explicitly and deliver native
+ * follow frames until closed or failed.
  *
  * @module
  */
 
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
-import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import type { Settings } from '../background/index.ts'
 
@@ -17,7 +21,7 @@ interface RpcResultMessage {
   type: 'rpc.result'
   id: string
   ok: boolean
-  result?: unknown
+  value?: unknown
   error?: { code: string; message: string }
 }
 
@@ -27,18 +31,30 @@ interface StatusMessage {
   caps: BridgeCaps | null
 }
 
-interface EventMessage {
-  type: 'event'
-  frame: ServerFrame
+interface StreamFrameMessage {
+  type: 'stream.frame'
+  id: string
+  frame: unknown
 }
 
-type BackgroundMessage = RpcResultMessage | StatusMessage | EventMessage
+interface StreamErrorMessage {
+  type: 'stream.error'
+  id: string
+  message: string
+}
+
+type BackgroundMessage = RpcResultMessage | StatusMessage | StreamFrameMessage | StreamErrorMessage
 
 /** The panel API surface. */
 export interface PanelApi {
-  rpc<T = unknown>(method: string, payload?: unknown): Promise<T>
+  rpc<T = unknown>(method: string, args?: Record<string, unknown>): Promise<T>
+  /**
+   * Open one Remote stream (e.g. `session/follow`). Frames arrive as native
+   * follow frames; `onError` fires once on stream failure (the subscription
+   * is then dead — reopen to resume). The returned function closes the stream.
+   */
+  openStream(method: string, args: Record<string, unknown>, onFrame: (frame: unknown) => void, onError: (message: string) => void): () => void
   onStatus(callback: (state: BridgeState, caps: BridgeCaps | null) => void): () => void
-  onEvent(callback: (frame: ServerFrame) => void): () => void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -47,8 +63,8 @@ export interface PanelApi {
 export function connectPanel(): PanelApi {
   type Port = ReturnType<typeof browser.runtime.connect>
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+  const streams = new Map<string, { onFrame: (frame: unknown) => void; onError: (message: string) => void }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
-  const eventListeners = new Set<(frame: ServerFrame) => void>()
 
   let port: Port | null = null
   let reconnectPromise: Promise<Port> | null = null
@@ -66,6 +82,12 @@ export function connectPanel(): PanelApi {
     }
   }
 
+  /** A dead port kills its streams: the background drops the routing entries with it. */
+  function failAllStreams(message: string): void {
+    for (const [, entry] of streams) entry.onError(message)
+    streams.clear()
+  }
+
   function attach(next: Port): Port {
     port = next
     next.onMessage.addListener(onMessage)
@@ -73,6 +95,7 @@ export function connectPanel(): PanelApi {
       if (port !== next) return
       port = null
       failAll(connectionError())
+      failAllStreams('background disconnected')
       // Firefox event pages and extension reloads can invalidate a live Port.
       // Reconnect once while the panel is still open; later sends share the
       // same attempt instead of opening competing ports.
@@ -98,6 +121,7 @@ export function connectPanel(): PanelApi {
     if (port !== stale) return
     port = null
     failAll(error, preserve)
+    failAllStreams(error.message)
   }
 
   /**
@@ -135,20 +159,25 @@ export function connectPanel(): PanelApi {
         const entry = pending.get(msg.id)
         if (entry === undefined) return
         pending.delete(msg.id)
-        // The bridge relays the gateway's ServerResponse envelope verbatim
-        // ({ type, rpcId, result: { ok, value | error } }); unwrap the value
-        // so callers get the business payload, and surface business errors.
-        const envelope = msg.result as { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } } | undefined
-        const business = envelope?.result
-        if (msg.ok && business?.ok !== false) entry.resolve(business?.value)
-        else entry.reject(new Error(business?.error?.message ?? msg.error?.message ?? 'rpc failed'))
+        // The background relays the RemoteResult wire form: ok carries the
+        // business value; failure carries `{ code, message }`.
+        if (msg.ok) entry.resolve(msg.value)
+        else entry.reject(new Error(msg.error !== undefined ? `${msg.error.code}: ${msg.error.message}` : 'rpc failed'))
+        break
+      }
+      case 'stream.frame': {
+        streams.get(msg.id)?.onFrame(msg.frame)
+        break
+      }
+      case 'stream.error': {
+        const entry = streams.get(msg.id)
+        if (entry === undefined) return
+        streams.delete(msg.id)
+        entry.onError(msg.message)
         break
       }
       case 'status':
         for (const listener of statusListeners) listener(msg.state, msg.caps)
-        break
-      case 'event':
-        for (const listener of eventListeners) listener(msg.frame)
         break
     }
   }
@@ -160,25 +189,35 @@ export function connectPanel(): PanelApi {
   }
 
   return {
-    rpc<T>(method: string, payload?: unknown): Promise<T> {
+    rpc<T>(method: string, args: Record<string, unknown> = {}): Promise<T> {
       const id = crypto.randomUUID()
       return new Promise<T>((resolve, reject) => {
         const entry = { resolve: (value: unknown) => resolve(value as T), reject }
         pending.set(id, entry)
-        void send({ type: 'rpc', id, method, payload }, { kind: 'rpc', id }).catch((error: unknown) => {
+        void send({ type: 'rpc', id, method, args }, { kind: 'rpc', id }).catch((error: unknown) => {
           if (pending.get(id) !== entry) return
           pending.delete(id)
           reject(connectionError(error))
         })
       })
     },
+    openStream(method, args, onFrame, onError) {
+      const id = crypto.randomUUID()
+      streams.set(id, { onFrame, onError })
+      void send({ type: 'stream.open', id, method, args }).catch((error: unknown) => {
+        const entry = streams.get(id)
+        if (entry === undefined) return
+        streams.delete(id)
+        entry.onError(connectionError(error).message)
+      })
+      return () => {
+        if (!streams.delete(id)) return
+        void send({ type: 'stream.close', id }).catch(() => {})
+      }
+    },
     onStatus(callback) {
       statusListeners.add(callback)
       return () => { statusListeners.delete(callback) }
-    },
-    onEvent(callback) {
-      eventListeners.add(callback)
-      return () => { eventListeners.delete(callback) }
     },
     updateSettings(next) {
       void send({ type: 'settings', settings: next }).catch(() => {})

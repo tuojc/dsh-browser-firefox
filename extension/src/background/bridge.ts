@@ -139,7 +139,7 @@ export class BridgeClient {
               this.clearAckTimer()
               resolve(true)
               this.sinks.onHelloOk(frame.caps)
-            } else if (frame.t === 'error' || frame.t === 'rpc.result' || frame.t === 'event') {
+            } else if (frame.t === 'error' || frame.t === 'rpc.result') {
               this.sinks.onFrame(frame)
             }
             return

@@ -1,20 +1,20 @@
 /**
- * Bridge WebSocket carrier: token-authenticated connection registry, gateway
- * RPC passthrough, per-connection event pump, and tool-call dispatch to the
+ * Bridge WebSocket carrier: token-authenticated connection registry, Typert
+ * Remote passthrough (unary + streams), and tool-call dispatch to the
  * connected browser extension.
  *
  * The route this server mounts (`/ext/bridge`) lives OUTSIDE the /api trust
  * fence (which only guards the client-connection routes), so the bridge brings
  * its own authentication: a bearer token presented in the `hello` frame within
- * HELLO_TIMEOUT_MS. Gateway RPCs are dispatched through the same fetch-shaped
- * handler the /api carrier uses (`toFetchHandler`), so schema validation and
- * error envelopes are identical to the GUI path. Methods the /api carrier
- * pins to loopback (`PRIVILEGED_METHODS`) stay loopback-only here regardless
- * of the token, defense in depth for `--host 0.0.0.0` deployments.
+ * HELLO_TIMEOUT_MS. RPC and stream frames speak the alpha Typert dialect
+ * verbatim: slash-joined endpoints, native `args` objects, and unmodified
+ * follow frames. Methods the bridge pins to loopback (`PRIVILEGED_METHODS`)
+ * stay loopback-only here regardless of the token, defense in depth for
+ * `--host 0.0.0.0` deployments.
  *
  * One active connection at a time: a new authenticated socket replaces the
- * previous one (the old socket is closed and its in-flight tool calls settle
- * as `bridge-closed`).
+ * previous one (the old socket is closed, its in-flight tool calls settle as
+ * `bridge-closed`, and its streams are aborted).
  *
  * @module
  */
@@ -23,7 +23,6 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
-import type { MuxFrame, RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import {
   HELLO_TIMEOUT_MS,
   PING_INTERVAL_MS,
@@ -31,33 +30,37 @@ import {
   type BridgeFrame,
   type BridgeCaps,
   type ClientFrame,
+  type RemoteWireResult,
   type ToolErrorCode,
 } from './protocol.ts'
 import { verifyToken } from './token.ts'
 
 /**
- * Gateway methods the /api carrier pins to loopback (mirror of
- * client-connection's PRIVILEGED_METHODS; kept verbatim so the two fences
- * cannot drift). The bridge rejects these for non-loopback remotes even with
- * a valid token.
+ * Gateway endpoints the bridge pins to loopback (the rc line's
+ * PRIVILEGED_METHODS, restated against the alpha Remote endpoint names:
+ * settings/credentials mutation and host-desktop/filesystem actions). The
+ * bridge rejects these for non-loopback remotes even with a valid token.
  */
 const PRIVILEGED_METHODS = new Set([
-  'host.pickDirectory',
-  'host.openPath',
-  'settings.describe',
-  'settings.openDocument',
-  'settings.update',
-  'settings.replace',
-  'settings.mutate',
-  'credentials.describe',
-  'credentials.set',
-  'credentials.unset',
+  'settings/describe',
+  'settings/openSettingsDocument',
+  'settings/openAgentPresetDirectory',
+  'settings/update',
+  'settings/replace',
+  'settings/mutate',
+  'credentials/describe',
+  'credentials/set',
+  'credentials/unset',
+  'directoryPicker/pick',
+  'directoryPicker/createDirectory',
+  'directoryPicker/list',
+  'session/openWorkspacePath',
 ])
 
 /** Session mutations whose WebSocket arrival order is behaviorally significant. */
 const ORDERED_SESSION_METHODS = new Set([
-  'session.prompt',
-  'session.cancel',
+  'session/prompt',
+  'session/cancel',
 ])
 
 /**
@@ -66,8 +69,9 @@ const ORDERED_SESSION_METHODS = new Set([
  */
 function orderedSessionId(frame: Extract<ClientFrame, { t: 'rpc' }>): string | undefined {
   if (!ORDERED_SESSION_METHODS.has(frame.method)) return undefined
-  if (typeof frame.payload !== 'object' || frame.payload === null || Array.isArray(frame.payload)) return undefined
-  const sessionId = (frame.payload as Record<string, unknown>).sessionId
+  const request = frame.args.request
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) return undefined
+  const sessionId = (request as Record<string, unknown>).sessionId
   return typeof sessionId === 'string' ? sessionId : undefined
 }
 
@@ -91,10 +95,14 @@ export class BridgeToolError extends Error {
 export interface BridgeServerDeps {
   /** Bearer token the extension must present in `hello`. */
   token: string
-  /** Fetch-shaped gateway carrier (from `toFetchHandler(ctx.apiProxy)`). */
-  apiHandler: { fetch: (request: Request) => Promise<Response> }
-  /** Per-connection event stream (usually `ctx.apiProxy.events.mux`). */
-  openEvents: (signal: AbortSignal) => AsyncIterable<RpcRequest<MuxFrame>>
+  /**
+   * Unary Remote dispatch (slash endpoint + native args), answering the
+   * RemoteResult wire form. Plugin-side interceptors (workspace grouping,
+   * session deferral) sit on this seam.
+   */
+  dispatchRpc: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<RemoteWireResult>
+  /** Open one Remote stream (slash endpoint + native args). */
+  openStream: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<AsyncIterable<unknown>>
   /** Default per-tool-call timeout in ms. */
   toolTimeoutMs: number
   /** Capabilities to echo in `hello.ok` (negotiated snapshot budgets). */
@@ -118,14 +126,21 @@ interface PendingTool {
   timer: NodeJS.Timeout
 }
 
+/** One open Remote stream owned by the current connection. */
+interface OpenStream {
+  abort: AbortController
+  pump: Promise<void>
+}
+
 /** A socket that passed authentication and owns the single active slot. */
 interface ReadyConnection {
   ws: WebSocket
   /** Remote address captured at upgrade time (loopback gate for privileged methods). */
   remoteAddress: string | undefined
   abort: AbortController
-  pump: Promise<void>
   ping: NodeJS.Timeout
+  /** Streams opened by this connection, keyed by the client-minted stream id. */
+  streams: Map<string, OpenStream>
 }
 
 function sendFrame(ws: WebSocket, frame: BridgeFrame): void {
@@ -240,7 +255,7 @@ export class BridgeServer {
 
   /**
    * Terminate the server: close the acceptor, drop all sockets, reject all
-   * in-flight tool calls.
+   * in-flight tool calls, abort all streams.
    * @returns a promise resolving after the acceptor and all pumps stop.
    */
   async close(): Promise<void> {
@@ -248,8 +263,8 @@ export class BridgeServer {
     // "The server is not running" when closing an already-closed server).
     if (this.closed) return
     this.closed = true
-    // Capture the live pump BEFORE replaceConnection nulls the connection.
-    const pumps = this.current === null ? [] : [this.current.pump]
+    // Capture the live stream pumps BEFORE replaceConnection clears the map.
+    const pumps = this.current === null ? [] : [...this.current.streams.values()].map((stream) => stream.pump)
     this.replaceConnection()
     for (const socket of this.wss.clients) socket.terminate()
     this.current = null
@@ -326,22 +341,7 @@ export class BridgeServer {
     this.replaceConnection()
     const abort = new AbortController()
     const ping = setInterval(() => { sendFrame(ws, { t: 'ping' }) }, this.deps.pingIntervalMs ?? PING_INTERVAL_MS)
-    const pump = (async () => {
-      try {
-        for await (const envelope of this.deps.openEvents(abort.signal)) {
-          if (ws.readyState !== WebSocket.OPEN) break
-          sendFrame(ws, {
-            t: 'event',
-            frame: { rpcId: envelope.rpcId, method: envelope.payload.type, payload: envelope.payload },
-          })
-        }
-      } catch (error: unknown) {
-        if (!abort.signal.aborted && ws.readyState === WebSocket.OPEN) {
-          sendFrame(ws, { t: 'error', code: 'stream-failed', message: String(error) })
-        }
-      }
-    })()
-    this.current = { ws, remoteAddress, abort, pump, ping }
+    this.current = { ws, remoteAddress, abort, ping, streams: new Map() }
     sendFrame(ws, { t: 'hello.ok', caps: this.deps.caps })
     ws.once('close', () => {
       clearInterval(ping)
@@ -354,6 +354,12 @@ export class BridgeServer {
       case 'rpc':
         this.routeRpc(frame)
         break
+      case 'stream.open':
+        this.openStream(frame)
+        break
+      case 'stream.close':
+        this.closeStream(frame.id)
+        break
       case 'tool.result':
         this.settleTool(frame.id, frame.ok, frame.ok ? frame.result : frame.error)
         break
@@ -361,7 +367,8 @@ export class BridgeServer {
       case 'hello':
       case 'hello.ok':
       case 'rpc.result':
-      case 'event':
+      case 'stream.frame':
+      case 'stream.error':
       case 'tool.call':
       case 'ping':
       case 'error':
@@ -394,39 +401,77 @@ export class BridgeServer {
     void task.then(clear, clear)
   }
 
+  /** Whether the connection owning this frame may call the endpoint at all. */
+  private forbidden(method: string): boolean {
+    const conn = this.current
+    return conn !== null && PRIVILEGED_METHODS.has(method) && !isLoopbackAddress(conn.remoteAddress)
+  }
+
   private async handleRpc(frame: Extract<ClientFrame, { t: 'rpc' }>): Promise<void> {
     const conn = this.current
     /* v8 ignore next -- replacement race: a frame can land between a socket
     replacement and the next promotion; the re-check keeps the handler total */
     if (conn === null) return
-    const forbidden = PRIVILEGED_METHODS.has(frame.method) && !isLoopbackAddress(conn.remoteAddress)
-    if (forbidden) {
+    if (this.forbidden(frame.method)) {
       sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: false, error: { code: 'forbidden', message: 'method is loopback-only' } })
       return
     }
-    const body = JSON.stringify({ type: 'client-request', rpcId: frame.id, method: frame.method, payload: frame.payload })
-    const request = new Request(new URL(`/api/${frame.method}`, 'http://dsh.internal'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body,
-    })
     try {
-      const response = await this.deps.apiHandler.fetch(request)
-      const text = await response.text()
-      if (!response.ok) {
-        sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: false, error: { code: 'http', message: text } })
-        return
+      const result = await this.deps.dispatchRpc(frame.method, frame.args, conn.abort.signal)
+      if (result.ok) {
+        sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: true, value: result.value })
+      } else {
+        sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: false, error: result.error })
       }
-      let result: unknown
-      try {
-        result = JSON.parse(text)
-      } catch {
-        result = text
-      }
-      sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: true, result })
     } catch (error: unknown) {
       sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: false, error: { code: 'internal', message: String(error) } })
     }
+  }
+
+  /** Open one Remote stream and pump its frames until closed, failed, or replaced. */
+  private openStream(frame: Extract<ClientFrame, { t: 'stream.open' }>): void {
+    const conn = this.current
+    if (conn === null) return
+    if (this.forbidden(frame.method)) {
+      sendFrame(conn.ws, { t: 'stream.error', id: frame.id, message: 'method is loopback-only' })
+      return
+    }
+    // A repeated stream id replaces the old subscription (protocol violation,
+    // but closing beats leaking).
+    this.closeStream(frame.id)
+    const ws = conn.ws
+    const abort = new AbortController()
+    conn.abort.signal.addEventListener('abort', () => { abort.abort() }, { once: true })
+    let pump!: Promise<void>
+    pump = (async () => {
+      try {
+        const iterable = await this.deps.openStream(frame.method, frame.args, abort.signal)
+        for await (const value of iterable) {
+          if (ws.readyState !== WebSocket.OPEN) break
+          sendFrame(ws, { t: 'stream.frame', id: frame.id, frame: value })
+        }
+      } catch (error: unknown) {
+        if (!abort.signal.aborted && ws.readyState === WebSocket.OPEN) {
+          sendFrame(ws, { t: 'stream.error', id: frame.id, message: String(error) })
+        }
+      } finally {
+        const current = this.current
+        if (current !== null && current.streams.get(frame.id)?.pump === pump) {
+          current.streams.delete(frame.id)
+        }
+      }
+    })()
+    conn.streams.set(frame.id, { abort, pump })
+  }
+
+  /** Abort one open stream (client `stream.close`). */
+  private closeStream(id: string): void {
+    const conn = this.current
+    if (conn === null) return
+    const stream = conn.streams.get(id)
+    if (stream === undefined) return
+    conn.streams.delete(id)
+    stream.abort.abort()
   }
 
   private settleTool(id: string, ok: boolean, payload: unknown): void {
@@ -438,13 +483,15 @@ export class BridgeServer {
     else pending.reject(new BridgeToolError(payloadCode(payload), payloadMessage(payload)))
   }
 
-  /** Close the current connection (if any) and settle its in-flight calls. */
+  /** Close the current connection (if any) and settle its in-flight calls and streams. */
   private replaceConnection(): void {
     const conn = this.current
     if (conn === null) return
     this.current = null
     clearInterval(conn.ping)
     conn.abort.abort()
+    for (const stream of conn.streams.values()) stream.abort.abort()
+    conn.streams.clear()
     if (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING) {
       conn.ws.close(4000, 'replaced')
     }

@@ -9,7 +9,6 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
-import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
@@ -23,7 +22,7 @@ import {
   rowFromEvent,
   toolSummary,
   type Row,
-  type SessionEventView,
+  type SessionFollowFrameView,
 } from './events.ts'
 
 const STATE_LABEL: Record<BridgeState, string> = {
@@ -111,7 +110,7 @@ const ToolActivity = memo(function ToolActivity({ row }: { row: Row }): React.JS
   )
 })
 
-import { pickCurrentSession, resolveBrowserSessions, type SessionListItem, type SessionView, type WorkspaceView } from './sessions.ts'
+import { applyWorkspaceFrame, pickCurrentSession, resolveBrowserSessions, type SessionListItem, type SessionView, type WorkspaceFollowFrameView, type WorkspaceView } from './sessions.ts'
 import { progressLabel } from './progress.ts'
 import { isAtBottom } from './scroll.ts'
 
@@ -120,7 +119,12 @@ export function App(): React.JSX.Element {
   const [state, setState] = useState<BridgeState>('stopped')
   const [caps, setCaps] = useState<BridgeCaps | null>(null)
   const [settings, setSettings] = useState<PanelSettings | null>(null)
-  const [sessions, setSessions] = useState<SessionListItem[]>([])
+  const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([])
+  const [sessionViews, setSessionViews] = useState<SessionView[]>([])
+  /** 本会话内新建、尚未出现在 session/list 里的会话（deferred：首个 prompt 才落库）。 */
+  const [localNew, setLocalNew] = useState<SessionListItem[]>([])
+  const [workspaceReady, setWorkspaceReady] = useState(false)
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false)
   const [hostPermission, setHostPermission] = useState<boolean | null>(null)
@@ -137,8 +141,19 @@ export function App(): React.JSX.Element {
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const cardRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
+  /** 当前会话的 session/follow 订阅关闭函数。 */
+  const followCloseRef = useRef<(() => void) | null>(null)
+  /** 当前会话的 follow 流是否已死（provisional 会话未物化 / 流失败）。 */
+  const followDeadRef = useRef(false)
 
   const nextSeq = (): number => { seqRef.current += 1; return seqRef.current }
+
+  /** 面板会话列表 = 本地新建（未落库） ∪ browser-sessions 工作区里的宿主会话。 */
+  const sessions = useMemo(() => {
+    const listed = resolveBrowserSessions(workspaces, sessionViews)
+    const known = new Set(listed.map((s) => s.sessionId))
+    return [...localNew.filter((s) => !known.has(s.sessionId)), ...listed]
+  }, [workspaces, sessionViews, localNew])
 
   // Firefox MV3：host 权限是可选权限，读取页面前需已授予。
   useEffect(() => {
@@ -166,7 +181,8 @@ export function App(): React.JSX.Element {
     })
   }, [])
 
-  // 断线重连/设置变更会重置连接；重新连上后恢复会话列表与当前会话（不自动新建）。
+  // 断线重连/设置变更会重置连接；每次进入 connected 或 stopped 都推进 epoch，
+  // 驱动会话列表重载与流重订（follow 流是连接代的，重连后必须重开）。
   const [sessionEpoch, setSessionEpoch] = useState(0)
   const lastStateRef = useRef<BridgeState | null>(null)
   useEffect(() => {
@@ -175,23 +191,210 @@ export function App(): React.JSX.Element {
       setCaps(nextCaps)
       const previous = lastStateRef.current
       lastStateRef.current = next
-      if (previous !== null && next !== previous && next === 'stopped') {
+      if (next === previous) return
+      if (next === 'connected') {
+        setSessionEpoch((epoch) => epoch + 1)
+      } else if (previous !== null && next === 'stopped') {
+        followCloseRef.current?.()
+        followCloseRef.current = null
         sessionRef.current = null
         setRows([])
         setWorking(false)
+        setWorkspaceReady(false)
+        setSessionsLoaded(false)
         setSessionEpoch((epoch) => epoch + 1)
       }
     })
-    const offEvent = api.onEvent((frame) => { void onFrame(frame) })
     api.requestStatus()
-    return () => { offStatus(); offEvent() }
+    return () => { offStatus() }
   }, [api])
 
-  useEffect(() => {
-    if (state === 'connected') {
-      void loadSessions()
+  /**
+   * 带重试的流订阅：首帧到达即视为健康（重置重试）；连续失败 5 次后放弃
+   * （onFatalError）。provisional 会话的 session/follow 在物化前必然失败，
+   * 首个 prompt 成功后由 send() 主动重开。
+   */
+  function subscribeWithRetry(
+    method: string,
+    args: Record<string, unknown>,
+    onFrame: (frame: unknown) => void,
+    onFatalError: (message: string) => void,
+  ): () => void {
+    let closed = false
+    let retries = 0
+    let closeCurrent: (() => void) | null = null
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const open = (): void => {
+      if (closed) return
+      closeCurrent = api.openStream(method, args,
+        (frame) => { retries = 0; onFrame(frame) },
+        (message) => {
+          if (closed) return
+          retries += 1
+          if (retries > 5) { onFatalError(message); return }
+          timer = setTimeout(open, 1_000)
+        })
     }
+    open()
+    return () => {
+      closed = true
+      if (timer !== undefined) clearTimeout(timer)
+      closeCurrent?.()
+    }
+  }
+
+  // workspace 列表：连上后订阅 workspace/follow，本地折 baseline/upsert/remove/order。
+  useEffect(() => {
+    if (state !== 'connected') return
+    const close = subscribeWithRetry('workspace/follow', {},
+      (frame) => {
+        const f = frame as WorkspaceFollowFrameView
+        setWorkspaces((prev) => applyWorkspaceFrame(prev, f))
+        if (f.type === 'baseline') setWorkspaceReady(true)
+      },
+      (message) => { setError(`workspace/follow: ${message}`) })
+    return close
+    // subscribeWithRetry 每次渲染重建，但它只在挂载时调用；依赖只认连接代。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, sessionEpoch])
+
+  // 会话列表：连上后拉 session/list（args 键是 `_request`）。
+  useEffect(() => {
+    if (state !== 'connected') return
+    let stale = false
+    api.rpc<{ items: SessionView[] }>('session/list', { _request: {} })
+      .then((result) => {
+        if (stale) return
+        setSessionViews(result.items)
+        setSessionsLoaded(true)
+      })
+      .catch((cause: unknown) => { if (!stale) setError(cause instanceof Error ? cause.message : String(cause)) })
+    return () => { stale = true }
+  }, [state, sessionEpoch])
+
+  // 自动选择当前会话：列表数据（baseline + session/list）齐备后每个 epoch 选一次。
+  const pickedEpochRef = useRef(-1)
+  useEffect(() => {
+    if (state !== 'connected' || !workspaceReady || !sessionsLoaded) return
+    if (pickedEpochRef.current === sessionEpoch) return
+    pickedEpochRef.current = sessionEpoch
+    void (async () => {
+      const persisted = await restorePersistedSessionId()
+      const current = pickCurrentSession(sessions, persisted)
+      if (current !== null) {
+        selectSession(current.sessionId)
+      } else {
+        sessionRef.current = null
+        setRows([])
+        setCurrentSessionId(null)
+      }
+    })()
+    // selectSession/sessions 的重建不触发重选：epoch 守卫只认连接代。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, sessionEpoch, workspaceReady, sessionsLoaded, sessions])
+
+  // 会话历史与实时事件：session/follow 的首帧 snapshot 渲染历史，后续
+  // event 帧实时追加；流无缺口，turn/end 不再需要 history 对账。
+  function onFollowFrame(sessionId: string, frame: unknown): void {
+    if (sessionRef.current !== sessionId) return
+    const f = frame as SessionFollowFrameView
+    if (f.type === 'snapshot') {
+      followDeadRef.current = false
+      setRows(mergeHistoryRows((f.records ?? []).map((record) => record.event), nextSeq))
+      return
+    }
+    const event = f.event
+    if (f.type !== 'event' || event === undefined) return
+    if (event.type === 'turn/start') {
+      setWorking(true)
+      return
+    }
+    const row = rowFromEvent(event)
+    if (row !== null) {
+      setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq()))
+      if (row.kind === 'assistant') setWorking(false)
+      return
+    }
+    if (event.type === 'tool/call') {
+      setWorking(true)
+      const name = event.data?.name ?? 'tool'
+      if (name === 'run_code') return // 内层页面操作由 tool/code-dispatch-start 提供
+      const summary = toolSummary(name, event.data?.arguments)
+      setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
+      return
+    }
+    if (event.type === 'tool/code-dispatch-start') {
+      // run_code 内部的真实页面操作（browser_navigate / browser_snapshot …）。
+      setWorking(true)
+      const summary = toolSummary(event.data?.name ?? 'tool', event.data?.arguments)
+      setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
+      return
+    }
+    if (event.type === 'tool/result') {
+      // 运行中的工具行标记完成；纯代码 run_code（无内层操作）补一行「执行代码」（连续纯代码去重）。
+      setRows((prev) => {
+        const last = prev[prev.length - 1]
+        if (last?.kind === 'tool' && last.status === 'running') return completeLastTool(prev, nextSeq())
+        if (last?.kind === 'tool' && last.text.endsWith('执行代码')) return prev
+        return completeLastTool(appendLiveRow(prev, 'tool', '执行代码', nextSeq()), nextSeq())
+      })
+      return
+    }
+    if (event.type === 'turn/end') {
+      setWorking(false)
+    }
+  }
+
+  /** 打开（或重开）当前会话的 session/follow 订阅。 */
+  function openFollow(id: string): void {
+    followCloseRef.current?.()
+    followDeadRef.current = false
+    followCloseRef.current = subscribeWithRetry('session/follow',
+      { request: { address: { kind: 'session', sessionId: id } } },
+      (frame) => { onFollowFrame(id, frame) },
+      (message) => {
+        // 重试耗尽：标记为死（首个 prompt 成功后 send() 会重开）。
+        followDeadRef.current = true
+        console.warn('[dsh-browser] session/follow failed:', message)
+      })
+  }
+
+  // 断线重连后：当前会话的 follow 是旧连接代的，必须重开。
+  useEffect(() => {
+    if (state !== 'connected') return
+    const id = sessionRef.current
+    if (id === null) return
+    openFollow(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, sessionEpoch])
+
+  /** 切换当前会话并打开其 follow 流（snapshot 即历史）。 */
+  function selectSession(id: string): void {
+    sessionRef.current = id
+    setCurrentSessionId(id)
+    void persistSessionId(id)
+    setRows([])
+    setWorking(false)
+    openFollow(id)
+  }
+
+  /** 在 browser-sessions 新建一个会话并置为当前（deferred 到首次 prompt）。 */
+  async function createSession(): Promise<void> {
+    try {
+      const created = await api.rpc<{ sessionId: string }>('session/create', { request: {} })
+      sessionRef.current = created.sessionId
+      setCurrentSessionId(created.sessionId)
+      setRows([])
+      setWorking(false)
+      void persistSessionId(created.sessionId)
+      setLocalNew((prev) => [{ sessionId: created.sessionId, title: '新会话', updatedAt: Date.now() }, ...prev])
+      setSessionPickerOpen(false)
+      // provisional 会话的 follow 必然先失败几次（物化前），重试足够覆盖到首个 prompt。
+      openFollow(created.sessionId)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
 
   const lastRowText = rows[rows.length - 1]?.text
 
@@ -253,109 +456,6 @@ export function App(): React.JSX.Element {
     }
   }, [sessionPickerOpen])
 
-  /** Live frame handling: session events append rows; turn/end reconciles with history. */
-  async function onFrame(frame: ServerFrame): Promise<void> {
-    if (frame.t !== 'event') return
-    const payload = frame.frame.payload as { sessionId?: string; event?: SessionEventView } | undefined
-    if (payload?.sessionId !== sessionRef.current || payload.event === undefined) return
-    if (payload.event.type === 'turn/start') {
-      setWorking(true)
-      return
-    }
-    const row = rowFromEvent(payload.event)
-    if (row !== null) {
-      setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq()))
-      if (row.kind === 'assistant') setWorking(false)
-      return
-    }
-    if (payload.event.type === 'tool/call') {
-      setWorking(true)
-      const name = payload.event.data?.name ?? 'tool'
-      if (name === 'run_code') return // 内层页面操作由 tool/code-dispatch-start 提供
-      const summary = toolSummary(name, payload.event.data?.arguments)
-      setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
-      return
-    }
-    if (payload.event.type === 'tool/code-dispatch-start') {
-      // run_code 内部的真实页面操作（browser_navigate / browser_snapshot …）。
-      setWorking(true)
-      const summary = toolSummary(payload.event.data?.name ?? 'tool', payload.event.data?.arguments)
-      setRows((prev) => appendLiveRow(prev, 'tool', summary, nextSeq()))
-      return
-    }
-    if (payload.event.type === 'tool/result') {
-      // 运行中的工具行标记完成；纯代码 run_code（无内层操作）补一行「执行代码」（连续纯代码去重）。
-      setRows((prev) => {
-        const last = prev[prev.length - 1]
-        if (last?.kind === 'tool' && last.status === 'running') return completeLastTool(prev, nextSeq())
-        if (last?.kind === 'tool' && last.text.endsWith('执行代码')) return prev
-        return completeLastTool(appendLiveRow(prev, 'tool', '执行代码', nextSeq()), nextSeq())
-      })
-      return
-    }
-    if (payload.event.type === 'turn/end') {
-      setWorking(false)
-      await refreshHistory()
-    }
-  }
-
-  async function refreshHistory(): Promise<void> {
-    const id = sessionRef.current
-    if (id === null) return
-    try {
-      const result = await api.rpc<{ events: { event: SessionEventView }[] }>('session.history', { sessionId: id })
-      setRows(mergeHistoryRows(result.events.map((entry) => entry.event), nextSeq))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }
-
-  /** 列出 browser-sessions 工作区里的会话，恢复/选择当前会话（不自动新建）。 */
-  async function loadSessions(): Promise<void> {
-    try {
-      const [workspaces, allSessions] = await Promise.all([
-        api.rpc<{ items: WorkspaceView[] }>('workspace.list', {}),
-        api.rpc<{ items: SessionView[] }>('session.list', {}),
-      ])
-      const list = resolveBrowserSessions(workspaces.items, allSessions.items)
-      setSessions(list)
-      const persisted = await restorePersistedSessionId()
-      const current = pickCurrentSession(list, persisted)
-      if (current !== null) {
-        await selectSession(current.sessionId)
-      } else {
-        sessionRef.current = null
-        setRows([])
-        setCurrentSessionId(null)
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }
-
-  /** 切换当前会话并加载其历史。 */
-  async function selectSession(id: string): Promise<void> {
-    sessionRef.current = id
-    setCurrentSessionId(id)
-    void persistSessionId(id)
-    await refreshHistory()
-  }
-
-  /** 在 browser-sessions 新建一个会话并置为当前（deferred 到首次 prompt）。 */
-  async function createSession(): Promise<void> {
-    try {
-      const created = await api.rpc<{ sessionId: string }>('session.create', {})
-      sessionRef.current = created.sessionId
-      setCurrentSessionId(created.sessionId)
-      setRows([])
-      void persistSessionId(created.sessionId)
-      setSessions((prev) => [{ sessionId: created.sessionId, title: '新会话', updatedAt: Date.now() }, ...prev])
-      setSessionPickerOpen(false)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }
-
   async function restorePersistedSessionId(): Promise<string | null> {
     try {
       const stored = await browser.storage.local.get('dshPanelSessionId')
@@ -382,11 +482,17 @@ export function App(): React.JSX.Element {
     setError(null)
     // 不渲染乐观行：live user/message 事件即时回显，避免同一消息出现两行。
     try {
-      await api.rpc('session.prompt', {
-        sessionId: sessionRef.current,
-        mode: 'queue',
-        content: [{ type: 'text', text }],
+      await api.rpc('session/prompt', {
+        request: {
+          sessionId: sessionRef.current,
+          requestId: crypto.randomUUID(),
+          mode: 'queue',
+          content: [{ type: 'text', text }],
+        },
       })
+      // 首个 prompt 会物化 deferred 会话：若此前的 follow 已死（物化前必然
+      // 失败），现在重开即可拿到含该消息的 snapshot 与后续 live 帧。
+      if (followDeadRef.current && sessionRef.current !== null) openFollow(sessionRef.current)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
       setWorking(false)
@@ -396,14 +502,14 @@ export function App(): React.JSX.Element {
     }
   }
 
-  /** 终止当前回合（session.cancel），并把面板恢复为可输入。 */
+  /** 终止当前回合（session/cancel），并把面板恢复为可输入。 */
   async function cancelTurn(): Promise<void> {
     const id = sessionRef.current
     if (id === null) return
     try {
-      await api.rpc('session.cancel', { sessionId: id })
+      await api.rpc('session/cancel', { request: { sessionId: id } })
     } catch (error) {
-      console.error('[dsh-browser] session.cancel failed:', error)
+      console.error('[dsh-browser] session/cancel failed:', error)
     } finally {
       setWorking(false)
       setBusy(false)

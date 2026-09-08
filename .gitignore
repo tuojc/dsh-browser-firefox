@@ -25,3 +25,4 @@ extension/manifest.json
 
 # local vision-toolkit temp artifacts
 .dsh-vision-toolkit/
+AGENTS.md

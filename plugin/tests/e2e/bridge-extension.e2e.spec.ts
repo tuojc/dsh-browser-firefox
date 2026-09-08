@@ -1,9 +1,10 @@
 /**
- * End-to-end: the real Chrome extension connects to a REAL dsh composition.
+ * End-to-end: the real Chrome extension connects to a REAL bridge composition.
  *
  * Boots the bridge composition through the vendored Loader (webserver +
- * minimal spine + api host + workspace/storage plugins + bridge plugin, same
- * shape as composition.spec), launches a real Chromium with the built
+ * tools spine + a test-only alpha host providing `ctx.connection` /
+ * `ctx.typertGateway` with the real alpha wire semantics + bridge plugin,
+ * same shape as composition.spec), launches a real Chromium with the built
  * extension (`--load-extension`), pins the bridge through the panel's real
  * settings UI (URL + token, so the extension targets THIS composition instead
  * of whatever auto-discovery finds on the machine), and asserts the full
@@ -17,7 +18,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -27,47 +28,15 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import { chromium, type BrowserContext } from 'playwright-core'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
-import SessionStore from '@deepseek-ai/dsh-session'
-import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
-import LlmService from '@deepseek-ai/dsh-llm'
-import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import UserQuestionService from '@deepseek-ai/dsh-user-questions'
-import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
-import Storage from '@deepseek-ai/dsh-storage'
-import * as StorageJson from '@deepseek-ai/dsh-storage-json'
-import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
-import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import * as BridgeBrowser from '../../src/index.ts'
+import { createFakeAlphaHost, type FakeStore } from '../helpers/alpha-host.ts'
 
 const BRIDGE = '@deepseek-ai/dsh-bridge-browser'
 const TOKEN = 'e2e0e2e0e2e0e2e0e2e0e2e0e2e0e2e0'
 
-/** Header-only persistence peer required by the real Workspace registry. */
-const SessionPersistenceStub = {
-  name: 'session-persistence-stub',
-  apply(ctx: Context): void {
-    ctx.provide('sessionPersistence', { list: () => Promise.resolve([]) } as never)
-  },
-}
-
-/** The gateway over the minimal spine, provided as ctx.apiProxy (model routing stubbed). */
-const ApiHost = {
-  name: 'api-host',
-  // Mirrors ApiProxyService.inject for the services this composition provides;
-  // 'workspaceRegistry' is REQUIRED — the gateway's workspace domain calls
-  // the service property, which Cordis gates on the inject list.
-  inject: ['sessions', 'userQuestions', 'agents', 'workspaceRegistry'],
-  apply(ctx: Context, config: { cwd: string }): void {
-    ctx.provide('apiProxy', createApiProxy(ctx, {
-      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
-      cwd: config.cwd,
-    }))
-  },
-}
-
-async function bootComposition(): Promise<{ ctx: Context; port: number; root: string }> {
+async function bootComposition(): Promise<{ ctx: Context; port: number; root: string; store: FakeStore }> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-e2e-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -75,25 +44,9 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
     '  config:',
     "    host: '127.0.0.1'",
     '    port: 3090',
-    "- name: '@deepseek-ai/dsh-session'",
-    "- name: '@deepseek-ai/dsh-user-questions'",
-    "- name: '@deepseek-ai/dsh-agent'",
     "- name: '@deepseek-ai/dsh-system-prompt'",
     "- name: '@deepseek-ai/dsh-tools'",
-    "- name: '@deepseek-ai/dsh-llm'",
-    "- name: '@deepseek-ai/dsh-agent-loop'",
-    "- name: '@deepseek-ai/dsh-storage'",
-    "- name: '@deepseek-ai/dsh-storage-json'",
-    '  config:',
-    `    root: '${join(root, 'storage')}'`,
-    "- name: '@deepseek-ai/dsh-storage-domain'",
-    '  config:',
-    "    backend: 'json'",
-    "- name: 'test:session-persistence'",
-    "- name: '@deepseek-ai/dsh-workspace'",
-    "- name: 'test:api-host'",
-    '  config:',
-    `    cwd: '${root}'`,
+    "- name: 'test:alpha-host'",
     `- name: '${BRIDGE}'`,
     '  config:',
     `    token: '${TOKEN}'`,
@@ -101,25 +54,16 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
     '',
   ].join('\n'))
 
+  const host = createFakeAlphaHost()
   const context = new Context()
   context.baseUrl = pathToFileURL(root).href + '/'
   await context.plugin(Loader)
   context.loader.builtins.include = Include
   const modules = new Map<string, unknown>([
     ['@deepseek-ai/dsh-host-webserver', WebServer],
-    ['@deepseek-ai/dsh-session', SessionStore],
-    ['@deepseek-ai/dsh-user-questions', UserQuestionService],
-    ['@deepseek-ai/dsh-agent', AgentRegistry],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-tools', ToolRegistry],
-    ['@deepseek-ai/dsh-llm', LlmService],
-    ['@deepseek-ai/dsh-agent-loop', AgentLoop],
-    ['@deepseek-ai/dsh-storage', Storage],
-    ['@deepseek-ai/dsh-storage-json', StorageJson],
-    ['@deepseek-ai/dsh-storage-domain', StorageDomain],
-    ['test:session-persistence', SessionPersistenceStub],
-    ['@deepseek-ai/dsh-workspace', WorkspaceRegistry],
-    ['test:api-host', ApiHost],
+    ['test:alpha-host', host.plugin],
     [BRIDGE, BridgeBrowser],
   ])
   context.loader.internal = {
@@ -132,7 +76,7 @@ async function bootComposition(): Promise<{ ctx: Context; port: number; root: st
   await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await context.loader.await()
   const port = (context.get('webServer') as { port: number }).port
-  return { ctx: context, port, root }
+  return { ctx: context, port, root, store: host.store }
 }
 
 /** Locate a usable Chromium executable (env override, then the Playwright cache). */
@@ -158,6 +102,7 @@ const EXTENSION_DIR = resolve(import.meta.dirname, '../../../../../extensions/ds
 let context: Context | undefined
 let root: string | undefined
 let port: number | undefined
+let store: FakeStore | undefined
 let browser: BrowserContext | undefined
 let executable: string | undefined
 
@@ -169,6 +114,7 @@ beforeAll(async () => {
   context = booted.ctx
   root = booted.root
   port = booted.port
+  store = booted.store
   // Extensions require a persistent context; channel 'chromium' selects the
   // new headless mode, which supports MV3 extensions.
   browser = await chromium.launchPersistentContext(join(root, 'chrome-profile'), {
@@ -229,11 +175,8 @@ describe('extension ↔ bridge e2e', () => {
     // bridge than this composition and the store assertions would be void.
     // The URL is entered WITHOUT the /ext/bridge path: the extension must
     // normalize it (regression guard for manual address entry).
-    const sessions = context.get('sessions') as {
-      list(): Array<{ id: string; header: { cwd?: string } }>
-    }
-    const initialSessions = sessions.list()
-    const initialIds = new Set(initialSessions.map(session => session.id))
+    const fakeStore = store!
+    const initialIds = new Set([...fakeStore.sessions.keys()])
 
     await panel.click('button[aria-label="打开设置"]')
     await panel.fill('input[placeholder*="自动检测"]', `ws://127.0.0.1:${port}`)
@@ -262,18 +205,20 @@ describe('extension ↔ bridge e2e', () => {
     // store must still equal the pre-save baseline (zero trace).
     await panel.waitForSelector('.context-card', { timeout: 30_000 })
     await panel.waitForTimeout(1_200)
-    expect(sessions.list().length).toBe(initialSessions.length)
+    expect(fakeStore.sessions.size).toBe(initialIds.size)
 
     // The first message materializes the session through the real bridge.
     await panel.fill('textarea', '你好')
     await panel.press('textarea', 'Enter')
-    await expect.poll(() => sessions.list().length, { timeout: 30_000 }).toBeGreaterThan(initialSessions.length)
+    await expect.poll(() => fakeStore.sessions.size, { timeout: 30_000 }).toBeGreaterThan(initialIds.size)
 
-    const createdSession = sessions.list().find(session => !initialIds.has(session.id))
-    const workspace = (context.get('workspaceRegistry') as WorkspaceRegistry).list()[0]
-    expect(workspace?.path).toBe(await realpath(join(root as string, 'browser-sessions')))
-    expect(workspace?.sessionIds).toContain(createdSession?.id)
-    expect(createdSession?.header.cwd).toBe(workspace?.path)
+    const createdSession = [...fakeStore.sessions.values()].find(session => !initialIds.has(session.sessionId))
+    const workspace = [...fakeStore.workspaces.values()][0]
+    expect(workspace?.path).toBe(join(root as string, 'browser-sessions'))
+    expect(workspace?.sessionIds).toContain(createdSession?.sessionId)
+    // Grouping replaces the session cwd with the workspace directory.
+    expect(createdSession?.workspaceId).toBe(workspace?.workspaceId)
+    expect(fakeStore.prompts.some((prompt) => prompt.sessionId === createdSession?.sessionId)).toBe(true)
 
     expect(statusText).toContain('已连接')
 

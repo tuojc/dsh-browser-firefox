@@ -1,49 +1,52 @@
 /**
  * Defer real session creation until the first prompt.
  *
- * The panel calls `session.create` as soon as it connects, but a session that
+ * The panel calls `session/create` as soon as it connects, but a session that
  * is opened and never used should leave zero trace in the store/GUI. This
- * wrapper answers `session.create` with a provisional id (minted locally,
- * nothing persisted), serves `session.history` for provisional ids as empty,
- * and materializes the real session — same id, original create payload — on
- * the first `session.prompt` for that id. Abandoned provisional ids are
- * pruned after {@link PROVISIONAL_TTL_MS}.
+ * interceptor answers `session/create` with a provisional id (minted locally,
+ * nothing persisted) and materializes the real session — same id, original
+ * create request — on the first `session/prompt` for that id. Abandoned
+ * provisional ids are pruned after {@link PROVISIONAL_TTL_MS}.
  *
  * @module @deepseek-ai/dsh-bridge-browser/src/session-deferral
  */
 
 import { randomUUID } from 'node:crypto'
-import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
-import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { RemoteWireResult } from './protocol.ts'
+import type { RpcDispatch } from './session-workspace.ts'
 
 /** Provisional entries older than this are dropped on the next create. */
 const PROVISIONAL_TTL_MS = 30 * 60_000
 
-type CreateRequest = Parameters<ApiProxy['sessions']['create']>[0]
-type HistoryRequest = Parameters<ApiProxy['sessions']['history']>[0]
-type PromptRequest = Parameters<ApiProxy['sessions']['prompt']>[0]
-
 interface ProvisionalEntry {
-  /** The original create payload, replayed at materialization (keeps cwd/workspaceId). */
-  payload: CreateRequest['payload']
+  /** The original create request, replayed at materialization (keeps cwd/workspaceId). */
+  request: Record<string, unknown>
   createdAt: number
 }
 
-/**
- * Wrap the gateway sessions API so `session.create` returns a provisional id
- * without creating anything; the real session materializes on the first
- * `session.prompt` for that id.
- *
- * @param api - Gateway API implementation.
- * @param enabled - Whether deferral is active; false returns the API untouched.
- * @returns the original API when disabled, otherwise the wrapped API.
- */
-export function withSessionDeferral(api: ApiProxy, enabled: boolean): ApiProxy {
-  if (!enabled) return api
+/** Extract the `request` arg object from one dispatch's native args, when present. */
+function requestArg(args: Record<string, unknown>): Record<string, unknown> {
+  const request = args.request
+  return typeof request === 'object' && request !== null && !Array.isArray(request)
+    ? request as Record<string, unknown>
+    : {}
+}
 
-  const provisional = new Map<SessionId, ProvisionalEntry>()
-  const materializing = new Map<SessionId, ReturnType<ApiProxy['sessions']['create']>>()
+/**
+ * Intercept the Remote dispatch so `session/create` returns a provisional id
+ * without creating anything; the real session materializes on the first
+ * `session/prompt` for that id.
+ *
+ * @param dispatch - Inner Remote dispatch.
+ * @param enabled - Whether deferral is active; false returns the dispatch untouched.
+ * @returns the original dispatch when disabled, otherwise the intercepting dispatch.
+ */
+export function withSessionDeferral(dispatch: RpcDispatch, enabled: boolean): RpcDispatch {
+  if (!enabled) return dispatch
+
+  const provisional = new Map<string, ProvisionalEntry>()
+  const materializing = new Map<string, Promise<RemoteWireResult>>()
 
   const prune = (): void => {
     const cutoff = Date.now() - PROVISIONAL_TTL_MS
@@ -52,48 +55,38 @@ export function withSessionDeferral(api: ApiProxy, enabled: boolean): ApiProxy {
     }
   }
 
-  const mintedId = (payload: CreateRequest['payload']): SessionId =>
-    payload.sessionId ?? `session-${randomUUID()}` as SessionId
-
-  return {
-    ...api,
-    sessions: {
-      ...api.sessions,
-      async create(request: CreateRequest) {
-        prune()
-        const sessionId = mintedId(request.payload)
-        provisional.set(sessionId, { payload: { ...request.payload }, createdAt: Date.now() })
-        return { rpcId: request.rpcId, result: { ok: true, value: { sessionId } } }
-      },
-      async history(request: HistoryRequest) {
-        if (!provisional.has(request.payload.sessionId)) return api.sessions.history(request)
-        return { rpcId: request.rpcId, result: { ok: true, value: { events: [], hasMore: false } } }
-      },
-      async prompt(request: PromptRequest) {
-        const entry = provisional.get(request.payload.sessionId)
-        if (entry === undefined) return api.sessions.prompt(request)
-        const existing = materializing.get(request.payload.sessionId)
-        const pending = existing ?? api.sessions.create({
-          rpcId: RpcId(randomUUID()),
-          payload: { ...entry.payload, sessionId: request.payload.sessionId },
-        })
-        if (existing === undefined) {
-          materializing.set(request.payload.sessionId, pending)
-          void pending.then(
-            () => { materializing.delete(request.payload.sessionId) },
-            () => { materializing.delete(request.payload.sessionId) },
-          )
-        }
-        const created = await pending
-        if (!created.result.ok) {
-          // The create failure value shape differs from prompt's success
-          // shape; the carrier relays only result.ok/error, so the value
-          // side is irrelevant here.
-          return created as unknown as Awaited<ReturnType<ApiProxy['sessions']['prompt']>>
-        }
-        provisional.delete(request.payload.sessionId)
-        return api.sessions.prompt(request)
-      },
-    },
+  return async (method, args, signal): Promise<RemoteWireResult> => {
+    if (method === 'session/create') {
+      prune()
+      const request = requestArg(args)
+      const sessionId = typeof request.sessionId === 'string' ? request.sessionId : `session-${randomUUID()}`
+      provisional.set(sessionId, { request: { ...request }, createdAt: Date.now() })
+      return { ok: true, value: { sessionId: sessionId as SessionId } }
+    }
+    if (method === 'session/prompt') {
+      const request = requestArg(args)
+      const sessionId = typeof request.sessionId === 'string' ? request.sessionId : undefined
+      const entry = sessionId === undefined ? undefined : provisional.get(sessionId)
+      if (sessionId === undefined || entry === undefined) return dispatch(method, args, signal)
+      const existing = materializing.get(sessionId)
+      const pending = existing ?? dispatch('session/create', { request: { ...entry.request, sessionId } }, signal)
+      if (existing === undefined) {
+        materializing.set(sessionId, pending)
+        void pending.then(
+          () => { materializing.delete(sessionId) },
+          () => { materializing.delete(sessionId) },
+        )
+      }
+      const created = await pending
+      if (!created.ok) {
+        // Materialization failed: relay the failure as the prompt answer so
+        // the extension surfaces the real reason; the provisional entry
+        // survives and the next prompt retries.
+        return { ok: false, error: created.error }
+      }
+      provisional.delete(sessionId)
+      return dispatch(method, args, signal)
+    }
+    return dispatch(method, args, signal)
   }
 }

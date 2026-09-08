@@ -1,194 +1,173 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SessionId } from '@deepseek-ai/dsh-session'
-import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
-import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { RemoteWireResult } from '../src/protocol.ts'
 import { withSessionDeferral } from '../src/session-deferral.ts'
+import type { RpcDispatch } from '../src/session-workspace.ts'
 
-type CreateRequest = Parameters<ApiProxy['sessions']['create']>[0]
-type HistoryRequest = Parameters<ApiProxy['sessions']['history']>[0]
-type PromptRequest = Parameters<ApiProxy['sessions']['prompt']>[0]
+type DispatchMock = ReturnType<typeof vi.fn> & RpcDispatch
 
-const PROMPT = (sessionId: ReturnType<typeof SessionId>, rpcId: string): PromptRequest => ({
-  rpcId: RpcId(rpcId),
-  payload: { sessionId, mode: 'queue', content: [] },
-})
+const SIGNAL = new AbortController().signal
 
-function apiHarness() {
-  const sessionCreate = vi.fn(async (request: CreateRequest) => ({
-    rpcId: request.rpcId,
-    result: { ok: true as const, value: { sessionId: request.payload.sessionId as ReturnType<typeof SessionId> } },
-  }))
-  const sessionHistory = vi.fn(async (request: HistoryRequest) => ({
-    rpcId: request.rpcId,
-    result: { ok: true as const, value: { events: [{ event: { type: 'user/message' } }], hasMore: false } },
-  }))
-  const sessionPrompt = vi.fn(async (request: PromptRequest) => ({
-    rpcId: request.rpcId,
-    result: { ok: true as const, value: { accepted: true } },
-  }))
-  const api = {
-    sessions: { create: sessionCreate, history: sessionHistory, prompt: sessionPrompt },
-  } as unknown as ApiProxy
-  return { api, sessionCreate, sessionHistory, sessionPrompt }
+function dispatchHarness() {
+  const calls: Array<{ method: string; args: Record<string, unknown> }> = []
+  const dispatch = vi.fn(async (method: string, args: Record<string, unknown>): Promise<RemoteWireResult> => {
+    calls.push({ method, args })
+    if (method === 'session/create') {
+      return { ok: true, value: { sessionId: (args.request as { sessionId?: string }).sessionId } }
+    }
+    if (method === 'session/prompt') return { ok: true, value: { accepted: true } }
+    return { ok: true, value: null }
+  }) as DispatchMock
+  return { dispatch, calls }
 }
 
-async function provisionalId(wrapped: ApiProxy, rpcId = 'create-rpc'): Promise<ReturnType<typeof SessionId>> {
-  const response = await wrapped.sessions.create({ rpcId: RpcId(rpcId), payload: {} })
-  if (!response.result.ok) throw new Error('unreachable: provisional create must succeed')
-  return response.result.value.sessionId
+const PROMPT_ARGS = (sessionId: string): Record<string, unknown> => ({
+  request: { sessionId, requestId: 'req-1', mode: 'queue', content: [] },
+})
+
+async function provisionalId(wrapped: RpcDispatch): Promise<string> {
+  const result = await wrapped('session/create', { request: {} }, SIGNAL)
+  if (!result.ok) throw new Error('unreachable: provisional create must succeed')
+  return (result.value as { sessionId: string }).sessionId
 }
 
 describe('withSessionDeferral', () => {
   afterEach(() => { vi.useRealTimers() })
 
   it('answers create with a provisional id without touching the gateway', async () => {
-    const { api, sessionCreate } = apiHarness()
-    const wrapped = withSessionDeferral(api, true)
+    const { dispatch, calls } = dispatchHarness()
+    const wrapped = withSessionDeferral(dispatch, true)
 
     const id = await provisionalId(wrapped)
 
     expect(id).toMatch(/^session-/)
-    expect(sessionCreate).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
   })
 
   it('honors an explicit session id from the caller', async () => {
-    const { api } = apiHarness()
-    const wrapped = withSessionDeferral(api, true)
+    const { dispatch } = dispatchHarness()
+    const wrapped = withSessionDeferral(dispatch, true)
 
-    const response = await wrapped.sessions.create({
-      rpcId: RpcId('r1'),
-      payload: { sessionId: SessionId('session-fixed') },
-    })
+    const result = await wrapped('session/create', { request: { sessionId: 'session-fixed' } }, SIGNAL)
 
-    expect(response.result).toEqual({ ok: true, value: { sessionId: SessionId('session-fixed') } })
+    expect(result).toEqual({ ok: true, value: { sessionId: 'session-fixed' } })
   })
 
-  it('serves empty history for a provisional id and passes other ids through', async () => {
-    const { api, sessionHistory } = apiHarness()
-    const wrapped = withSessionDeferral(api, true)
-    const id = await provisionalId(wrapped)
+  it('materializes the session on the first prompt, replaying the create request', async () => {
+    const { dispatch, calls } = dispatchHarness()
+    const wrapped = withSessionDeferral(dispatch, true)
+    const created = await wrapped('session/create', { request: { cwd: '/work' } }, SIGNAL)
+    if (!created.ok) throw new Error('unreachable: provisional create must succeed')
+    const id = (created.value as { sessionId: string }).sessionId
 
-    const empty = await wrapped.sessions.history({ rpcId: RpcId('r2'), payload: { sessionId: id } })
-    expect(empty.result).toEqual({ ok: true, value: { events: [], hasMore: false } })
-    expect(sessionHistory).not.toHaveBeenCalled()
+    await wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)
 
-    await wrapped.sessions.history({ rpcId: RpcId('r3'), payload: { sessionId: SessionId('session-real') } })
-    expect(sessionHistory).toHaveBeenCalledWith(
-      expect.objectContaining({ payload: { sessionId: SessionId('session-real') } }),
-    )
-  })
-
-  it('materializes the session on the first prompt, replaying the create payload', async () => {
-    const { api, sessionCreate, sessionPrompt, sessionHistory } = apiHarness()
-    const wrapped = withSessionDeferral(api, true)
-    const created = await wrapped.sessions.create({ rpcId: RpcId('r1'), payload: { cwd: '/work' } })
-    if (!created.result.ok) throw new Error('unreachable: provisional create must succeed')
-    const id = created.result.value.sessionId
-    const prompt = PROMPT(id, 'r2')
-
-    await wrapped.sessions.prompt(prompt)
-
-    expect(sessionCreate).toHaveBeenCalledWith({
-      rpcId: expect.anything(),
-      payload: { cwd: '/work', sessionId: id },
-    })
-    expect(sessionPrompt).toHaveBeenCalledWith(prompt)
-
-    // Materialized: history now reaches the gateway.
-    await wrapped.sessions.history({ rpcId: RpcId('r3'), payload: { sessionId: id } })
-    expect(sessionHistory).toHaveBeenCalledTimes(1)
+    expect(calls[0]).toMatchObject({ method: 'session/create', args: { request: { cwd: '/work', sessionId: id } } })
+    expect(calls[1]).toEqual({ method: 'session/prompt', args: PROMPT_ARGS(id) })
   })
 
   it('passes prompts for unknown sessions through untouched', async () => {
-    const { api, sessionPrompt } = apiHarness()
-    const wrapped = withSessionDeferral(api, true)
+    const { dispatch, calls } = dispatchHarness()
+    const wrapped = withSessionDeferral(dispatch, true)
 
-    await wrapped.sessions.prompt(PROMPT(SessionId('session-existing'), 'r1'))
+    await wrapped('session/prompt', PROMPT_ARGS('session-existing'), SIGNAL)
 
-    expect(sessionPrompt).toHaveBeenCalledTimes(1)
+    expect(calls).toEqual([{ method: 'session/prompt', args: PROMPT_ARGS('session-existing') }])
   })
 
   it('deduplicates concurrent prompts into one materialization', async () => {
-    const { api, sessionCreate, sessionPrompt } = apiHarness()
+    const methods: string[] = []
     let release!: () => void
-    sessionCreate.mockImplementationOnce(async (request: CreateRequest) => {
-      await new Promise<void>((resolve) => { release = resolve })
-      return {
-        rpcId: request.rpcId,
-        result: { ok: true as const, value: { sessionId: request.payload.sessionId as ReturnType<typeof SessionId> } },
+    const dispatch = vi.fn(async (method: string, args: Record<string, unknown>): Promise<RemoteWireResult> => {
+      methods.push(method)
+      if (method === 'session/create') {
+        await new Promise<void>((resolve) => { release = resolve })
+        return { ok: true, value: { sessionId: (args.request as { sessionId?: string }).sessionId } }
       }
-    })
-    const wrapped = withSessionDeferral(api, true)
+      return { ok: true, value: { accepted: true } }
+    }) as DispatchMock
+    const wrapped = withSessionDeferral(dispatch, true)
     const id = await provisionalId(wrapped)
 
-    const first = wrapped.sessions.prompt(PROMPT(id, 'p1'))
-    const second = wrapped.sessions.prompt(PROMPT(id, 'p2'))
+    const first = wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)
+    const second = wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)
     release()
     await Promise.all([first, second])
 
-    expect(sessionCreate).toHaveBeenCalledTimes(1)
-    expect(sessionPrompt).toHaveBeenCalledTimes(2)
+    expect(methods.filter((method) => method === 'session/create')).toHaveLength(1)
+    expect(methods.filter((method) => method === 'session/prompt')).toHaveLength(2)
   })
 
   it('propagates a materialization failure without forwarding the prompt, and retries later', async () => {
-    const { api, sessionCreate, sessionPrompt } = apiHarness()
-    sessionCreate.mockResolvedValueOnce({
-      rpcId: RpcId('materialize'),
-      result: {
-        ok: false as const,
-        error: { code: 'internal' as const, message: 'boom', details: {} },
-      },
-    })
-    const wrapped = withSessionDeferral(api, true)
+    let creates = 0
+    const dispatch = vi.fn(async (method: string): Promise<RemoteWireResult> => {
+      if (method === 'session/create') {
+        creates += 1
+        if (creates === 1) {
+          return { ok: false, error: { code: 'internal', message: 'boom', details: {} } }
+        }
+        return { ok: true, value: { sessionId: 'session-x' } }
+      }
+      return { ok: true, value: { accepted: true } }
+    }) as DispatchMock
+    const wrapped = withSessionDeferral(dispatch, true)
     const id = await provisionalId(wrapped)
 
-    const failed = await wrapped.sessions.prompt(PROMPT(id, 'p1'))
-    expect(failed.result).toEqual({
+    const failed = await wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)
+    expect(failed).toEqual({
       ok: false,
       error: { code: 'internal', message: 'boom', details: {} },
     })
-    expect(sessionPrompt).not.toHaveBeenCalled()
+    expect(dispatch.mock.calls.filter((call) => call[0] === 'session/prompt')).toHaveLength(0)
 
     // The entry survives the failure: a later prompt retries materialization.
-    await wrapped.sessions.prompt(PROMPT(id, 'p2'))
-    expect(sessionCreate).toHaveBeenCalledTimes(2)
-    expect(sessionPrompt).toHaveBeenCalledTimes(1)
+    await wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)
+    expect(creates).toBe(2)
+    expect(dispatch.mock.calls.filter((call) => call[0] === 'session/prompt')).toHaveLength(1)
   })
 
   it('propagates a thrown materialization failure and keeps the entry for retry', async () => {
-    const { api, sessionCreate, sessionPrompt } = apiHarness()
-    sessionCreate.mockRejectedValueOnce(new Error('create exploded'))
-    const wrapped = withSessionDeferral(api, true)
+    let creates = 0
+    const dispatch = vi.fn(async (method: string): Promise<RemoteWireResult> => {
+      if (method === 'session/create') {
+        creates += 1
+        if (creates === 1) throw new Error('create exploded')
+        return { ok: true, value: { sessionId: 'session-x' } }
+      }
+      return { ok: true, value: { accepted: true } }
+    }) as DispatchMock
+    const wrapped = withSessionDeferral(dispatch, true)
     const id = await provisionalId(wrapped)
 
-    await expect(wrapped.sessions.prompt(PROMPT(id, 'p1'))).rejects.toThrow('create exploded')
-    expect(sessionPrompt).not.toHaveBeenCalled()
+    await expect(wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)).rejects.toThrow('create exploded')
+    expect(dispatch.mock.calls.filter((call) => call[0] === 'session/prompt')).toHaveLength(0)
 
     // The cleanup ran: a later prompt retries materialization.
-    await wrapped.sessions.prompt(PROMPT(id, 'p2'))
-    expect(sessionCreate).toHaveBeenCalledTimes(2)
-    expect(sessionPrompt).toHaveBeenCalledTimes(1)
+    await wrapped('session/prompt', PROMPT_ARGS(id), SIGNAL)
+    expect(creates).toBe(2)
+    expect(dispatch.mock.calls.filter((call) => call[0] === 'session/prompt')).toHaveLength(1)
   })
 
   it('prunes stale provisional entries on the next create', async () => {
     vi.useFakeTimers()
-    const { api, sessionHistory } = apiHarness()
-    const wrapped = withSessionDeferral(api, true)
-    const first = await provisionalId(wrapped, 'c1')
+    const { dispatch, calls } = dispatchHarness()
+    const wrapped = withSessionDeferral(dispatch, true)
+    const first = await provisionalId(wrapped)
 
     vi.advanceTimersByTime(31 * 60_000)
-    const second = await provisionalId(wrapped, 'c2')
+    const second = await provisionalId(wrapped)
 
-    // The stale id now reaches the gateway; the fresh id stays provisional.
-    await wrapped.sessions.history({ rpcId: RpcId('h1'), payload: { sessionId: first } })
-    expect(sessionHistory).toHaveBeenCalledTimes(1)
-    await wrapped.sessions.history({ rpcId: RpcId('h2'), payload: { sessionId: second } })
-    expect(sessionHistory).toHaveBeenCalledTimes(1)
+    // The stale id now reaches the gateway on prompt; the fresh id is still provisional.
+    await wrapped('session/prompt', PROMPT_ARGS(first), SIGNAL)
+    expect(calls.filter((call) => call.method === 'session/prompt')).toHaveLength(1)
+    const fresh = await wrapped('session/prompt', PROMPT_ARGS(second), SIGNAL)
+    expect(fresh).toEqual({ ok: true, value: { accepted: true } })
+    // The fresh prompt materialized first, so the gateway saw create then prompt.
+    expect(calls.filter((call) => call.method === 'session/create')).toHaveLength(1)
   })
 
-  it('returns the original API when disabled', () => {
-    const { api } = apiHarness()
+  it('returns the original dispatch when disabled', () => {
+    const { dispatch } = dispatchHarness()
 
-    expect(withSessionDeferral(api, false)).toBe(api)
+    expect(withSessionDeferral(dispatch, false)).toBe(dispatch)
   })
 })

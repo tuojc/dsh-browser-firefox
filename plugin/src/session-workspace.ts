@@ -1,34 +1,47 @@
 /**
  * Best-effort workspace grouping for sessions created through the browser
- * bridge. The wrapper changes only implicit `session.create` requests;
- * explicit workspace choices and every other gateway method pass through.
+ * bridge. The interceptor changes only implicit `session/create` requests;
+ * explicit workspace choices and every other Remote endpoint pass through.
  * @module @deepseek-ai/dsh-bridge-browser/src/session-workspace
  */
 
-import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
-import type { ApiProxy, WorkspaceId } from '@deepseek-ai/dsh-host-apiproxy/api'
-import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/types'
+import type { RemoteWireResult } from './protocol.ts'
+
+/**
+ * Unary Remote dispatch seam: slash-joined endpoint, native args object,
+ * RemoteResult wire form. The bridge server and the interceptors share it.
+ */
+export type RpcDispatch = (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<RemoteWireResult>
 
 type Warn = (message: string) => void
 
+/** Extract the `request` arg object from one dispatch's native args, when present. */
+function requestArg(args: Record<string, unknown>): Record<string, unknown> {
+  const request = args.request
+  return typeof request === 'object' && request !== null && !Array.isArray(request)
+    ? request as Record<string, unknown>
+    : {}
+}
+
 /**
- * Add a dedicated Workspace to implicit session creation without making
+ * Add the dedicated Workspace to implicit session creation without making
  * grouping a session-creation dependency. The first implicit create mkdirs
- * and registers the configured path; that result, including failure, is
- * cached for the wrapper lifetime.
+ * and registers the configured path (`workspace/create`); that result,
+ * including failure, is cached for the interceptor lifetime.
  *
- * @param api - Injected gateway API implementation.
+ * @param dispatch - Inner Remote dispatch.
  * @param workspacePath - Dedicated directory, or an empty string to opt out.
  * @param warn - Logger called once when grouping cannot be established.
- * @returns the original API for opt-out, otherwise an API with wrapped session creation.
+ * @returns the original dispatch for opt-out, otherwise a dispatch with intercepted session creation.
  */
 export function withSessionWorkspace(
-  api: ApiProxy,
+  dispatch: RpcDispatch,
   workspacePath: string,
   warn: Warn,
-): ApiProxy {
-  if (workspacePath === '') return api
+): RpcDispatch {
+  if (workspacePath === '') return dispatch
 
   let workspacePromise: Promise<WorkspaceId | undefined> | undefined
   const ensureWorkspace = (): Promise<WorkspaceId | undefined> => {
@@ -36,23 +49,21 @@ export function withSessionWorkspace(
     workspacePromise = (async () => {
       try {
         await mkdir(workspacePath, { recursive: true })
-        const workspaceApi = (api as { workspace?: ApiProxy['workspace'] }).workspace
-        if (workspaceApi === undefined) {
-          warn(`browser bridge: workspace API is unavailable; sessions will remain ungrouped`)
-          return undefined
-        }
-        const response = await workspaceApi.create({
-          rpcId: RpcId(randomUUID()),
-          payload: { path: workspacePath },
-        })
-        if (!response.result.ok) {
+        const result = await dispatch('workspace/create', { request: { path: workspacePath } }, new AbortController().signal)
+        if (!result.ok) {
           warn(
-            `browser bridge: workspace.create failed for "${workspacePath}" `
-            + `(${response.result.error.code}: ${response.result.error.message}); sessions will remain ungrouped`,
+            `browser bridge: workspace/create failed for "${workspacePath}" `
+            + `(${result.error.code}: ${result.error.message}); sessions will remain ungrouped`,
           )
           return undefined
         }
-        return response.result.value.workspace.workspaceId
+        const workspace = (result.value as { workspace?: { workspaceId?: unknown } }).workspace
+        const workspaceId = workspace?.workspaceId
+        if (typeof workspaceId !== 'string') {
+          warn(`browser bridge: workspace/create for "${workspacePath}" returned no workspace id; sessions will remain ungrouped`)
+          return undefined
+        }
+        return workspaceId as WorkspaceId
       } catch (error: unknown) {
         warn(
           `browser bridge: could not prepare session workspace "${workspacePath}": `
@@ -64,18 +75,14 @@ export function withSessionWorkspace(
     return workspacePromise
   }
 
-  return {
-    ...api,
-    sessions: {
-      ...api.sessions,
-      async create(request) {
-        if (request.payload.workspaceId !== undefined) return api.sessions.create(request)
-        const workspaceId = await ensureWorkspace()
-        if (workspaceId === undefined) return api.sessions.create(request)
-        const payload = { ...request.payload, workspaceId }
-        delete payload.cwd
-        return api.sessions.create({ ...request, payload })
-      },
-    },
+  return async (method, args, signal) => {
+    if (method !== 'session/create') return dispatch(method, args, signal)
+    const request = requestArg(args)
+    if (request.workspaceId !== undefined) return dispatch(method, args, signal)
+    const workspaceId = await ensureWorkspace()
+    if (workspaceId === undefined) return dispatch(method, args, signal)
+    const next: Record<string, unknown> = { ...request, workspaceId }
+    delete next.cwd
+    return dispatch(method, { ...args, request: next }, signal)
   }
 }
