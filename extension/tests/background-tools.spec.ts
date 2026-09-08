@@ -45,7 +45,7 @@ describe('dispatchToolCall', () => {
   it('uses an already-loaded content script without injecting', async () => {
     const chromeMock = mockChrome({ tab: { id: 7, url: 'https://example.com' } })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toEqual(OK)
+    await expect(dispatchToolCall(CALL)).resolves.toEqual(OK)
     expect(chromeMock.sendMessage).toHaveBeenCalledTimes(1)
     expect(chromeMock.executeScript).not.toHaveBeenCalled()
   })
@@ -57,13 +57,33 @@ describe('dispatchToolCall', () => {
       responses: [new Error('Could not establish connection. Receiving end does not exist.'), { ok: true }, OK],
     })
 
-    await expect(dispatchToolCall(CALL, 'ask', budget)).resolves.toEqual(OK)
+    await expect(dispatchToolCall(CALL, budget)).resolves.toEqual(OK)
     expect(chromeMock.executeScript).toHaveBeenCalledWith({
       target: { tabId: 7 },
       files: ['content.js'],
     })
     expect(chromeMock.sendMessage).toHaveBeenCalledTimes(3)
-    expect(chromeMock.sendMessage).toHaveBeenNthCalledWith(2, 7, { type: 'DSH_BUDGET', budget })
+    expect(chromeMock.sendMessage).toHaveBeenNthCalledWith(2, 7, { type: 'DSH_BUDGET', budget }, { frameId: 0 })
+  })
+
+  it('routes actions to the requested iframe via frameId', async () => {
+    const chromeMock = mockChrome({ tab: { id: 7, url: 'https://example.com' } })
+
+    await expect(dispatchToolCall(CALL, undefined, undefined, 3)).resolves.toEqual(OK)
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith(7, expect.objectContaining({ type: 'DSH_ACTION' }), { frameId: 3 })
+  })
+
+  it('injects into the requested iframe only when recovering', async () => {
+    const chromeMock = mockChrome({
+      tab: { id: 7, url: 'https://example.com' },
+      responses: [new Error('no receiver'), OK],
+    })
+
+    await expect(dispatchToolCall(CALL, undefined, undefined, 5)).resolves.toEqual(OK)
+    expect(chromeMock.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 7, frameIds: [5] },
+      files: ['content.js'],
+    })
   })
 
   it('reloads a discarded tab before injecting the content script', async () => {
@@ -72,7 +92,7 @@ describe('dispatchToolCall', () => {
       responses: [new Error('no receiver'), OK],
     })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toEqual(OK)
+    await expect(dispatchToolCall(CALL)).resolves.toEqual(OK)
     expect(chromeMock.reload).toHaveBeenCalledWith(9)
     expect(chromeMock.executeScript).toHaveBeenCalledWith({ target: { tabId: 9 }, files: ['content.js'] })
   })
@@ -83,7 +103,7 @@ describe('dispatchToolCall', () => {
       responses: [new Error('no receiver')],
     })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toMatchObject({
+    await expect(dispatchToolCall(CALL)).resolves.toMatchObject({
       ok: false,
       error: { code: 'content-unavailable', message: expect.stringContaining('http/https') },
     })
@@ -97,19 +117,9 @@ describe('dispatchToolCall', () => {
       injectionError: new Error('Cannot access contents of the page'),
     })
 
-    await expect(dispatchToolCall(CALL, 'ask')).resolves.toMatchObject({
+    await expect(dispatchToolCall(CALL)).resolves.toMatchObject({
       ok: false,
       error: { code: 'content-unavailable', message: expect.stringContaining('Cannot access contents of the page') },
     })
-  })
-
-  it('keeps the page-sharing privacy boundary ahead of tab access', async () => {
-    const chromeMock = mockChrome({ tab: { id: 7, url: 'https://example.com' } })
-
-    await expect(dispatchToolCall(CALL, 'off')).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'action-failed' },
-    })
-    expect(chromeMock.query).not.toHaveBeenCalled()
   })
 })

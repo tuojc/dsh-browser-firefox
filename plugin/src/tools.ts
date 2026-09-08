@@ -58,7 +58,7 @@ async function saveScreenshot(dataUrl: string, workspacePath: string): Promise<s
   if (encoded === undefined) throw new Error('data URL 缺少 base64 内容')
   const dir = screenshotDir(workspacePath)
   await mkdir(dir, { recursive: true })
-  const file = join(dir, `screenshot-${Date.now()}.png`)
+  const file = join(dir, `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`)
   await writeFile(file, Buffer.from(encoded, 'base64'))
   await pruneScreenshots(dir)
   return file
@@ -68,7 +68,7 @@ async function saveScreenshot(dataUrl: string, workspacePath: string): Promise<s
 async function pruneScreenshots(dir: string): Promise<void> {
   let files: string[]
   try {
-    files = (await readdir(dir)).filter((f) => /^screenshot-\d+\.png$/.test(f)).sort()
+    files = (await readdir(dir)).filter((f) => /^screenshot-\d+(?:-[a-z0-9]+)?\.png$/.test(f)).sort()
   } catch {
     return
   }
@@ -132,6 +132,9 @@ export const BROWSER_TOOL_NAMES = [
   'browser_evaluate',
   'browser_screenshot',
   'browser_list_tabs',
+  'browser_open_tab',
+  'browser_follow_tab',
+  'browser_close_tab',
 ] as const
 
 /**
@@ -236,6 +239,7 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     name: 'browser_snapshot',
     description: '读取当前浏览器页面的结构化文本快照（无截图）：标题、URL、正文摘要、带编号的可交互元素清单、表单字段。'
       + '编号是后续 browser_click/browser_type 等操作的定位依据。页面未变化时设置 delta=true 只返回变化部分，节省上下文。'
+      + '页面含 iframe 时自动聚合：主帧占 80% 预算，各 iframe 小节附在后面（其编号配合 frame 参数使用）。'
       + UNTRUSTED_CONTENT_WARNING,
     parameters: argsSchema({
       delta: { type: 'boolean', description: 'true 时只返回相对上次快照的变化（编号、URL、标题）。默认 false 返回完整快照。' },
@@ -258,6 +262,7 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     parameters: argsSchema({
       index: { type: 'number', description: 'browser_snapshot 清单中的元素编号（与 selector 二选一）。' },
       selector: { type: 'string', description: 'CSS 选择器（与 index 二选一）。' },
+      frame: { type: 'number', description: '目标 iframe 的 frameId（默认 0=主帧；iframe 内元素编号见快照的 iframe 小节）。' },
     }),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
@@ -272,15 +277,17 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
       index: { type: 'number', description: '表单字段编号（来自 browser_snapshot 的 forms 清单）。' },
       text: { type: 'string', description: '要输入的文本。' },
       replace: { type: 'boolean', description: 'true 时清空现有值后输入。默认追加。' },
+      frame: { type: 'number', description: '目标 iframe 的 frameId（默认 0=主帧）。' },
     }, ['index', 'text']),
     timeoutMs: options.toolTimeoutMs,
     output: TEXT_OUTPUT,
     execute: (args, exec) => {
-      const a = args as { index: number; text: string; replace?: boolean }
+      const a = args as { index: number; text: string; replace?: boolean; frame?: number }
       return call(exec, 'browser_type', {
         index: a.index,
         text: a.text,
         ...a.replace !== undefined ? { replace: a.replace } : {},
+        ...a.frame !== undefined ? { frame: a.frame } : {},
       })
     },
   })
@@ -372,6 +379,7 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
       action: { type: 'string', enum: ['count', 'getText', 'click', 'setValue', 'querySelectorAll'], description: '操作类型。' },
       selector: { type: 'string', description: 'CSS 选择器。' },
       index: { type: 'number', description: '匹配元素的序号（默认 0）。' },
+      frame: { type: 'number', description: '目标 iframe 的 frameId（默认 0=主帧）。' },
       value: { type: 'string', description: 'setValue 时设置的值。' },
     }, ['action', 'selector']),
     timeoutMs: options.toolTimeoutMs,
@@ -393,5 +401,46 @@ function defineTools(call: Call, options: BrowserToolsOptions): ToolDefinition[]
     wait(),
     evaluate(),
     simple('browser_list_tabs', '列出当前会话标签页组中的所有标签页（id、标题、URL，当前工作的用 * 标记）。'),
+    ...tabOps(call, options),
+  ]
+}
+
+/** 标签页管理三件套：open_tab 开新页、follow_tab 切换工作页、close_tab 关闭本会话的页。 */
+function tabOps(call: Call, options: BrowserToolsOptions): ToolDefinition[] {
+  return [
+    {
+      name: 'browser_open_tab',
+      description: '在后台新标签页打开一个 URL（归入当前会话的标签页组），返回标签页 id。'
+        + '要操作其中内容需先用 browser_follow_tab 或直接 browser_navigate（自带快照）。',
+      parameters: argsSchema({
+        url: { type: 'string', description: '完整 http/https URL。' },
+        title: { type: 'string', description: '任务标题（用于标签页组命名，可选）。' },
+      }, ['url']),
+      timeoutMs: options.toolTimeoutMs,
+      output: TEXT_OUTPUT,
+      execute: (args, exec) => call(exec, 'browser_open_tab', args as Record<string, unknown>),
+    },
+    {
+      name: 'browser_follow_tab',
+      description: '把当前会话的工作标签页切换到指定 id（后续 snapshot/click 等操作都作用于它）。'
+        + '用 browser_list_tabs 查看可用 id。',
+      parameters: argsSchema({
+        tabId: { type: 'number', description: '目标标签页 id。' },
+      }, ['tabId']),
+      timeoutMs: options.toolTimeoutMs,
+      output: TEXT_OUTPUT,
+      execute: (args, exec) => call(exec, 'browser_follow_tab', args as Record<string, unknown>),
+    },
+    {
+      name: 'browser_close_tab',
+      description: '关闭一个标签页（默认当前工作页）。只能关闭本会话打开/归入本组的标签页，'
+        + '用户自己的标签页会被拒绝。',
+      parameters: argsSchema({
+        tabId: { type: 'number', description: '要关闭的标签页 id（缺省为当前工作页）。' },
+      }, []),
+      timeoutMs: options.toolTimeoutMs,
+      output: TEXT_OUTPUT,
+      execute: (args, exec) => call(exec, 'browser_close_tab', args as Record<string, unknown>),
+    },
   ]
 }

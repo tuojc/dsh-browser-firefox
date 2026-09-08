@@ -1251,3 +1251,178 @@ textarea:focus-visible {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ---- 图片附件 ---- */
+.chip-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.image-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 8px 0;
+}
+
+.image-chip {
+  position: relative;
+  display: inline-flex;
+}
+
+.image-chip img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.image-chip .chip-close {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: var(--danger, #b42318);
+  color: #fff;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.image-error {
+  margin: 4px 8px 0;
+  color: var(--danger, #b42318);
+  font-size: 11px;
+}
+
+/* ---- 审批浮层 ---- */
+.attach-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.composer {
+  position: relative;
+}
+
+/* 菜单脱离 composer-box（overflow:hidden 会裁切）：相对 footer 居中展开。 */
+.attach-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 200px;
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+  border: 1px solid #222d43;
+  border-radius: 12px;
+  background: #141c2e;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.attach-menu-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px 8px;
+  font-size: 12px;
+}
+
+.attach-menu-field > span {
+  opacity: 0.75;
+}
+
+.attach-menu-field select {
+  width: 100%;
+}
+
+/* ---- 文本附件 chip ---- */
+.file-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 22px 5px 8px;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+  font-size: 11.5px;
+  max-width: 180px;
+}
+
+.file-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip .chip-close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+}
+
+/* ---- 输入区按钮组（回形针/盾牌/发送靠拢） ---- */
+.composer-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.composer-buttons .icon-button {
+  border-radius: 8px;
+}
+
+/* ---- 用户消息复制按钮（悬停显现） ---- */
+.row.user {
+  position: relative;
+}
+
+.copy-btn {
+  position: absolute;
+  top: -9px;
+  right: 2px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--canvas, #fff);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease, color 150ms ease;
+}
+
+.copy-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.row.user .body:hover ~ .copy-btn,
+.copy-btn:hover,
+.copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--ink);
+}
+
+.attach-menu-hint {
+  font-size: 10.5px;
+  opacity: 0.65;
+  line-height: 1.4;
+}

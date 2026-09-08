@@ -29,6 +29,7 @@ interface StatusMessage {
   type: 'status'
   state: BridgeState
   caps: BridgeCaps | null
+  update?: { version: string; url: string } | null
 }
 
 interface StreamFrameMessage {
@@ -55,6 +56,8 @@ export interface PanelApi {
    */
   openStream(method: string, args: Record<string, unknown>, onFrame: (frame: unknown) => void, onError: (message: string) => void): () => void
   onStatus(callback: (state: BridgeState, caps: BridgeCaps | null) => void): () => void
+  /** 订阅 AMO 更新信息（随 status 推送）。 */
+  onUpdateAvailable(callback: (update: { version: string; url: string } | null) => void): () => void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -65,6 +68,7 @@ export function connectPanel(): PanelApi {
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   const streams = new Map<string, { onFrame: (frame: unknown) => void; onError: (message: string) => void }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
+  const updateListeners = new Set<(update: { version: string; url: string } | null) => void>()
 
   let port: Port | null = null
   let reconnectPromise: Promise<Port> | null = null
@@ -178,6 +182,7 @@ export function connectPanel(): PanelApi {
       }
       case 'status':
         for (const listener of statusListeners) listener(msg.state, msg.caps)
+        for (const listener of updateListeners) listener(msg.update ?? null)
         break
     }
   }
@@ -218,6 +223,10 @@ export function connectPanel(): PanelApi {
     onStatus(callback) {
       statusListeners.add(callback)
       return () => { statusListeners.delete(callback) }
+    },
+    onUpdateAvailable(callback) {
+      updateListeners.add(callback)
+      return () => { updateListeners.delete(callback) }
     },
     updateSettings(next) {
       void send({ type: 'settings', settings: next }).catch(() => {})

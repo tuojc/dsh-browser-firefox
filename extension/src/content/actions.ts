@@ -92,9 +92,9 @@ export async function runAction(action: string, args: Record<string, unknown>, c
     case 'browser_type':
       return typeAction(args, ctx)
     case 'browser_press':
-      return pressAction(args)
+      return pressAction(args, ctx)
     case 'browser_scroll':
-      return scrollAction(args)
+      return scrollAction(args, ctx)
     case 'browser_navigate':
       return navigateAction(args)
     case 'browser_back':
@@ -110,27 +110,70 @@ export async function runAction(action: string, args: Record<string, unknown>, c
     case 'browser_wait':
       return waitAction(args)
     case 'browser_evaluate':
-      return evaluateAction(args)
+      return evaluateAction(args, ctx)
     default:
       throw new ActionError('bad-args', `未知动作: ${action}`)
   }
 }
 
+/** 单次快照的预算覆盖（iframe 聚合时 background 给每个 frame 分配子预算）。 */
+function budgetOverride(args: Record<string, unknown>): SnapshotBudget | undefined {
+  const raw = args.budget
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const b = raw as Record<string, unknown>
+  const positive = (v: unknown): number | undefined => typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined
+  const maxItems = positive(b.maxItems)
+  const maxForms = positive(b.maxForms)
+  const maxChars = positive(b.maxChars)
+  if (maxItems === undefined || maxForms === undefined || maxChars === undefined) return undefined
+  return { maxItems, maxForms, maxChars }
+}
+
 function snapshotAction(args: Record<string, unknown>, ctx: ActionContext): ActionResult {
   const delta = args.delta === true
   const region = typeof args.region === 'string' && args.region !== '' ? args.region : undefined
+  const budget = budgetOverride(args) ?? ctx.budget
   // 基线在每次快照后都更新：delta 调用才能相对上一次（无论是否 delta）比较。
-  const view = buildSnapshot(ctx.ids, { delta, region, budget: ctx.budget }, lastSnapshot)
+  // 预算也随基线记住：autoDelta 必须用同一预算，否则 capped 清单不一致误报 removed。
+  const view = buildSnapshot(ctx.ids, { delta, region, budget }, lastSnapshot)
   lastSnapshot = view
+  lastSnapshotBudget = budget
   return { text: renderSnapshot(view, delta) }
 }
 
 /** Module-level last snapshot state for delta mode (content-script lifetime). */
 let lastSnapshot: ReturnType<typeof buildSnapshot> | null = null
+/** 基线快照使用的预算（autoDelta 与之保持一致）。 */
+let lastSnapshotBudget: SnapshotBudget | null = null
+
+/** 自动 delta 渲染预算：delta 只列变化项，正文极小；封顶只是兜底。 */
+const AUTO_DELTA_MAX_CHARS = 2_000
+
+/**
+ * 动作后自动附 DOM delta：模型不必再花一轮 browser_snapshot 确认结果。
+ * 无基线（本 tab 还没拍过快照）或无可见变化时不附加；快照失败不影响动作结果。
+ */
+function autoDelta(ctx: ActionContext): string {
+  if (lastSnapshot === null) return ''
+  try {
+    const budget = lastSnapshotBudget ?? ctx.budget
+    const view = buildSnapshot(ctx.ids, { delta: true, budget }, lastSnapshot)
+    lastSnapshot = view
+    if (!view.reindexed && view.changed.length === 0 && view.removed.length === 0) return ''
+    const rendered = renderSnapshot(view, true)
+    const capped = rendered.length <= AUTO_DELTA_MAX_CHARS
+      ? rendered
+      : `${rendered.slice(0, AUTO_DELTA_MAX_CHARS)}…(自动 delta 已截断)`
+    return `\n\n${capped}`
+  } catch {
+    return ''
+  }
+}
 
 /** Invalidate delta state after navigation (new document). */
 function resetDeltaState(): void {
   lastSnapshot = null
+  lastSnapshotBudget = null
 }
 
 async function clickAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
@@ -142,7 +185,7 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
     if (el === undefined) throw new ActionError('action-failed', `未找到匹配元素 ${selector}[${selIndex}]`)
     ;(el as HTMLElement).click()
     await settle()
-    return { text: `已点击 ${selector}[${selIndex}]` }
+    return { text: `已点击 ${selector}[${selIndex}]${autoDelta(ctx)}` }
   }
   const index = numberArg(args, 'index')
   const el = elementOrThrow(ctx.ids, index)
@@ -157,14 +200,14 @@ async function clickAction(args: Record<string, unknown>, ctx: ActionContext): P
     }
     el.click()
     await settle()
-    return { text: `已点击 [${index}] "${name}"。` }
+    return { text: `已点击 [${index}] "${name}"。${autoDelta(ctx)}` }
   }
   if (el instanceof HTMLButtonElement && el.disabled) {
     throw new ActionError('action-failed', `按钮 [${index}] "${name}" 处于禁用状态`)
   }
   ;(el as HTMLElement).click()
   await settle()
-  return { text: `已点击 [${index}] "${name}"。` }
+  return { text: `已点击 [${index}] "${name}"。${autoDelta(ctx)}` }
 }
 
 async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
@@ -187,10 +230,10 @@ async function typeAction(args: Record<string, unknown>, ctx: ActionContext): Pr
     setNativeValue(el, `${el.value}${text}`)
   }
   await settle()
-  return { text: `已向 [${index}] "${name}" 输入 ${text.length} 字符。` }
+  return { text: `已向 [${index}] "${name}" 输入 ${text.length} 字符。${autoDelta(ctx)}` }
 }
 
-async function pressAction(args: Record<string, unknown>): Promise<ActionResult> {
+async function pressAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const key = typeof args.key === 'string' && args.key !== '' ? args.key : ''
   if (key === '') throw new ActionError('bad-args', 'key 不能为空')
   const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body
@@ -200,10 +243,10 @@ async function pressAction(args: Record<string, unknown>): Promise<ActionResult>
     target.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   }
   await settle()
-  return { text: `已发送按键 ${key}。` }
+  return { text: `已发送按键 ${key}。${autoDelta(ctx)}` }
 }
 
-async function scrollAction(args: Record<string, unknown>): Promise<ActionResult> {
+async function scrollAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const direction = typeof args.direction === 'string' ? args.direction : ''
   const amount = typeof args.amount === 'number' ? args.amount : Math.floor(window.innerHeight * 0.8)
   switch (direction) {
@@ -223,7 +266,7 @@ async function scrollAction(args: Record<string, unknown>): Promise<ActionResult
       throw new ActionError('bad-args', `direction 必须是 up/down/top/bottom，收到 "${direction}"`)
   }
   await settle()
-  return { text: `已滚动（${direction}）。` }
+  return { text: `已滚动（${direction}）。${autoDelta(ctx)}` }
 }
 
 async function navigateAction(args: Record<string, unknown>): Promise<ActionResult> {
@@ -270,7 +313,7 @@ async function waitAction(args: Record<string, unknown>): Promise<ActionResult> 
 
 /** 在页面上下文执行任意 JS（支持 async/await），返回 JSON 序列化结果。 */
 /** 受限 DOM 操作：Firefox MV3 禁止 eval，用预编译操作代替任意 JS。 */
-function evaluateAction(args: Record<string, unknown>): ActionResult {
+async function evaluateAction(args: Record<string, unknown>, ctx: ActionContext): Promise<ActionResult> {
   const action = typeof args.action === 'string' ? args.action : ''
   const selector = typeof args.selector === 'string' && args.selector !== '' ? args.selector : ''
   const index = typeof args.index === 'number' && Number.isInteger(args.index) && args.index >= 0 ? args.index : 0
@@ -289,7 +332,8 @@ function evaluateAction(args: Record<string, unknown>): ActionResult {
       const el = document.querySelectorAll(selector)[index]
       if (el === undefined) throw new ActionError('action-failed', `未找到匹配元素 ${selector}[${index}]`)
       ;(el as HTMLElement).click()
-      return { text: `已点击 ${selector}[${index}]` }
+      await settle()
+      return { text: `已点击 ${selector}[${index}]${autoDelta(ctx)}` }
     }
     case 'setValue': {
       if (selector === '') throw new ActionError('bad-args', 'selector 不能为空')
@@ -306,7 +350,8 @@ function evaluateAction(args: Record<string, unknown>): ActionResult {
       } else {
         throw new ActionError('action-failed', `元素 ${selector}[${index}] 不是可输入元素`)
       }
-      return { text: `已设置 ${selector}[${index}] 的值` }
+      await settle()
+      return { text: `已设置 ${selector}[${index}] 的值${autoDelta(ctx)}` }
     }
     case 'querySelectorAll': {
       if (selector === '') throw new ActionError('bad-args', 'selector 不能为空')

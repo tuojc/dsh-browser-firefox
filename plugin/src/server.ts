@@ -40,8 +40,11 @@ import { verifyToken } from './token.ts'
  * PRIVILEGED_METHODS, restated against the alpha Remote endpoint names:
  * settings/credentials mutation and host-desktop/filesystem actions). The
  * bridge rejects these for non-loopback remotes even with a valid token.
+ * Exported so tests can tripwire the list against accidental shrinkage —
+ * when the host line adds new privileged endpoints, extend this set in the
+ * same commit.
  */
-const PRIVILEGED_METHODS = new Set([
+export const PRIVILEGED_METHODS = new Set([
   'settings/describe',
   'settings/openSettingsDocument',
   'settings/openAgentPresetDirectory',
@@ -62,6 +65,46 @@ const ORDERED_SESSION_METHODS = new Set([
   'session/prompt',
   'session/cancel',
 ])
+
+/** Default cap on one incoming WebSocket message (the ws library default of 100MiB is an unauthenticated DoS surface). */
+const DEFAULT_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
+
+/** Default pump backpressure threshold: pause forwarding when the socket buffer grows past this. */
+const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024
+
+/** Default grace period for stream pumps during close(); a wedged gateway iterator must not stall teardown forever. */
+const DEFAULT_CLOSE_PUMP_TIMEOUT_MS = 5_000
+
+/** Default pong budget: a connection missing this many consecutive ping cycles is terminated as a zombie. */
+const DEFAULT_MISSED_PONGS_ALLOWED = 3
+
+/** Poll cadence while a flooded socket drains. */
+const DRAIN_POLL_MS = 50
+
+/** Millisecond delay whose timer never keeps the process alive. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
+}
+
+/**
+ * Race one promise against an abort signal. Resolves `undefined` when the
+ * signal wins; the loser's handlers are always attached, so a late rejection
+ * cannot surface as an unhandled rejection.
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined)
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = (): void => { resolve(undefined) }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
+}
 
 /**
  * Extract the session id ordering key from an rpc frame, or undefined when
@@ -117,6 +160,14 @@ export interface BridgeServerDeps {
   helloTimeoutMs?: number
   /** Server ping cadence; defaults to PING_INTERVAL_MS. */
   pingIntervalMs?: number
+  /** Cap on one incoming message in bytes; defaults to 4MiB. */
+  maxPayloadBytes?: number
+  /** Pump backpressure threshold (ws bufferedAmount) in bytes; defaults to 4MiB. */
+  maxBufferedBytes?: number
+  /** Grace period for stream pumps during close(); defaults to 5000. */
+  closePumpTimeoutMs?: number
+  /** Consecutive missed ping cycles before a zombie connection is terminated; defaults to 3. */
+  missedPongsAllowed?: number
 }
 
 /** One in-flight tool call awaiting the extension's `tool.result`. */
@@ -139,6 +190,8 @@ interface ReadyConnection {
   remoteAddress: string | undefined
   abort: AbortController
   ping: NodeJS.Timeout
+  /** Last protocol pong timestamp (ms); refreshed by the client's answer to each ping. */
+  lastPong: number
   /** Streams opened by this connection, keyed by the client-minted stream id. */
   streams: Map<string, OpenStream>
 }
@@ -168,13 +221,20 @@ export function messageToText(data: Buffer | ArrayBuffer | Buffer[]): string {
  * dispose with {@link close}.
  */
 export class BridgeServer {
-  private readonly wss = new WebSocketServer({ noServer: true })
+  private readonly wss: WebSocketServer
   private current: ReadyConnection | null = null
   private readonly pendingTools = new Map<string, PendingTool>()
   private readonly orderedSessionRpcs = new Map<string, Promise<void>>()
   private closed = false
 
-  constructor(private readonly deps: BridgeServerDeps) {}
+  constructor(private readonly deps: BridgeServerDeps) {
+    // Cap incoming frames: the default 100MiB ws payload limit lets any
+    // socket (pre-auth included) force a full JSON.parse of a huge body.
+    this.wss = new WebSocketServer({
+      noServer: true,
+      maxPayload: this.deps.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
+    })
+  }
 
   /**
    * Handle one HTTP upgrade for the bridge path.
@@ -277,7 +337,13 @@ export class BridgeServer {
         else reject(error)
       })
     })
-    await Promise.all(pumps)
+    // Pumps should settle on abort promptly, but a wedged gateway iterator
+    // (one that never answers its pending next()) must not stall HMR/unload
+    // forever — bound the wait and leave the leak to the host process.
+    await Promise.race([
+      Promise.allSettled(pumps),
+      delay(this.deps.closePumpTimeoutMs ?? DEFAULT_CLOSE_PUMP_TIMEOUT_MS),
+    ])
   }
 
   /** @returns whether an authenticated extension is currently connected. */
@@ -340,8 +406,21 @@ export class BridgeServer {
   private promote(ws: WebSocket, remoteAddress: string | undefined): void {
     this.replaceConnection()
     const abort = new AbortController()
-    const ping = setInterval(() => { sendFrame(ws, { t: 'ping' }) }, this.deps.pingIntervalMs ?? PING_INTERVAL_MS)
-    this.current = { ws, remoteAddress, abort, ping, streams: new Map() }
+    const intervalMs = this.deps.pingIntervalMs ?? PING_INTERVAL_MS
+    const allowed = this.deps.missedPongsAllowed ?? DEFAULT_MISSED_PONGS_ALLOWED
+    const conn: ReadyConnection = { ws, remoteAddress, abort, ping: undefined as unknown as NodeJS.Timeout, lastPong: Date.now(), streams: new Map() }
+    const ping = setInterval(() => {
+      // Zombie guard: a client whose event loop is wedged keeps the TCP
+      // socket open but never answers pings; terminate it so a healthy
+      // reconnect can take the single active slot.
+      if (Date.now() - conn.lastPong > allowed * intervalMs) {
+        ws.terminate()
+        return
+      }
+      sendFrame(ws, { t: 'ping' })
+    }, intervalMs)
+    conn.ping = ping
+    this.current = conn
     sendFrame(ws, { t: 'hello.ok', caps: this.deps.caps })
     ws.once('close', () => {
       clearInterval(ping)
@@ -363,7 +442,12 @@ export class BridgeServer {
       case 'tool.result':
         this.settleTool(frame.id, frame.ok, frame.ok ? frame.result : frame.error)
         break
-      case 'pong':
+      case 'pong': {
+        // Liveness bookkeeping for the zombie-connection guard in promote().
+        const conn = this.current
+        if (conn !== null) conn.lastPong = Date.now()
+        break
+      }
       case 'hello':
       case 'hello.ok':
       case 'rpc.result':
@@ -444,17 +528,31 @@ export class BridgeServer {
     conn.abort.signal.addEventListener('abort', () => { abort.abort() }, { once: true })
     let pump!: Promise<void>
     pump = (async () => {
+      let iterator: AsyncIterator<unknown> | undefined
       try {
         const iterable = await this.deps.openStream(frame.method, frame.args, abort.signal)
-        for await (const value of iterable) {
+        iterator = iterable[Symbol.asyncIterator]()
+        for (;;) {
+          // Race every next() against abort: an idle follow stream can sit in
+          // next() for hours, and abort-as-advice alone would leave the pump
+          // (and close()) hanging until the gateway feels like answering.
+          const next = await raceAbort(iterator.next(), abort.signal)
+          if (next === undefined || next.done === true) break
           if (ws.readyState !== WebSocket.OPEN) break
-          sendFrame(ws, { t: 'stream.frame', id: frame.id, frame: value })
+          if (!await this.waitForDrain(ws, abort.signal)) break
+          sendFrame(ws, { t: 'stream.frame', id: frame.id, frame: next.value })
         }
       } catch (error: unknown) {
         if (!abort.signal.aborted && ws.readyState === WebSocket.OPEN) {
           sendFrame(ws, { t: 'stream.error', id: frame.id, message: String(error) })
         }
       } finally {
+        // Withdraw the subscription explicitly: for-await's implicit return()
+        // never runs when we broke out of the raw-iterator loop above, and a
+        // gateway iterator left open keeps the follow registration alive.
+        if (iterator !== undefined) {
+          try { await iterator.return?.() } catch { /* teardown best effort */ }
+        }
         const current = this.current
         if (current !== null && current.streams.get(frame.id)?.pump === pump) {
           current.streams.delete(frame.id)
@@ -462,6 +560,21 @@ export class BridgeServer {
       }
     })()
     conn.streams.set(frame.id, { abort, pump })
+  }
+
+  /**
+   * Backpressure gate for stream pumps. Returns false when the wait ended
+   * because the socket died or the pump was aborted (the caller then stops).
+   */
+  private async waitForDrain(ws: WebSocket, signal: AbortSignal): Promise<boolean> {
+    const limit = this.deps.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES
+    for (;;) {
+      if (signal.aborted || ws.readyState !== WebSocket.OPEN) return false
+      if (ws.bufferedAmount <= limit) return true
+      // ws exposes no 'drain' event; poll on a short cadence instead.
+      const elapsed = await raceAbort(delay(DRAIN_POLL_MS), signal)
+      if (elapsed === undefined) return false
+    }
   }
 
   /** Abort one open stream (client `stream.close`). */

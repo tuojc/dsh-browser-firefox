@@ -26,6 +26,9 @@ function emptyState(): SessionTabState {
 /** Key for the anonymous session (tool calls without a sessionId). */
 const ANONYMOUS = ''
 
+/** LRU 上限：长期运行时见过的 sessionId 会无限累积，超出后淘汰最久未用的非当前会话。 */
+const MAX_TRACKED_SESSIONS = 50
+
 /**
  * Tracks tab state per dsh session. Switching sessions never discards the
  * other sessions' state: returning to a session restores its working tab,
@@ -33,7 +36,7 @@ const ANONYMOUS = ''
  */
 export class TabSessionManager {
   private readonly sessions = new Map<string, SessionTabState>()
-  private currentKey = ANONYMOUS
+  private currentKeyInner = ANONYMOUS
 
   /**
    * Make `sessionId` the current session and return its state, creating a
@@ -43,18 +46,40 @@ export class TabSessionManager {
    */
   ensure(sessionId: string | undefined): SessionTabState {
     const key = sessionId ?? ANONYMOUS
-    this.currentKey = key
+    this.currentKeyInner = key
     let state = this.sessions.get(key)
-    if (state === undefined) {
+    if (state !== undefined) {
+      // LRU touch：Map 保持插入序，重插移到最新端。
+      this.sessions.delete(key)
+      this.sessions.set(key, state)
+    } else {
       state = emptyState()
       this.sessions.set(key, state)
+      this.evictOverflow()
     }
     return state
   }
 
+  /** 淘汰最久未使用的非当前会话（当前会话永不淘汰）。 */
+  private evictOverflow(): void {
+    while (this.sessions.size > MAX_TRACKED_SESSIONS) {
+      let victim: string | undefined
+      for (const key of this.sessions.keys()) {
+        if (key !== this.currentKeyInner) { victim = key; break }
+      }
+      if (victim === undefined) return
+      this.sessions.delete(victim)
+    }
+  }
+
+  /** 当前会话的 key（匿名会话为空串）——亲和/信任等模块据此索引。 */
+  get currentKey(): string {
+    return this.currentKeyInner
+  }
+
   /** @returns the current session's state (created on demand). */
   current(): SessionTabState {
-    return this.ensure(this.currentKey === ANONYMOUS ? undefined : this.currentKey)
+    return this.ensure(this.currentKeyInner === ANONYMOUS ? undefined : this.currentKeyInner)
   }
 
   /**

@@ -64,6 +64,8 @@ export function withSessionDeferral(dispatch: RpcDispatch, enabled: boolean): Rp
       return { ok: true, value: { sessionId: sessionId as SessionId } }
     }
     if (method === 'session/prompt') {
+      // prune 也挂在 prompt 路径：长期没有新建会话时，过期条目同样要清理。
+      prune()
       const request = requestArg(args)
       const sessionId = typeof request.sessionId === 'string' ? request.sessionId : undefined
       const entry = sessionId === undefined ? undefined : provisional.get(sessionId)

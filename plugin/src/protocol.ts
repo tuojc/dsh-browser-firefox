@@ -41,6 +41,8 @@ export type ToolErrorCode =
   | 'timeout'
   | 'bridge-closed'
   | 'bad-args'
+  | 'approval-denied'
+  | 'cancelled'
   | 'internal'
 
 /** One tool-call failure: stable machine code plus human text for the model. */

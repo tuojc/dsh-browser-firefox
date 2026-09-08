@@ -119,10 +119,15 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
   // first snapshot on a fresh document always adds everything.
   const reindexed = last !== null && added + removed > elements.length * 0.5
 
+  // Viewport membership is a layout read; compute it once per element instead
+  // of inside the sort comparator (which would re-read it O(n log n) times).
+  const viewportFlags = new Map<Element, boolean>()
+  for (const el of elements) viewportFlags.set(el, isInViewport(el))
+
   // Viewport-first ordering keeps the most relevant items inside the budget.
   const ordered = [...elements].sort((a, b) => {
-    const av = isInViewport(a) ? 0 : 1
-    const bv = isInViewport(b) ? 0 : 1
+    const av = viewportFlags.get(a) === true ? 0 : 1
+    const bv = viewportFlags.get(b) === true ? 0 : 1
     return av - bv
   })
 
@@ -134,7 +139,7 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
       index,
       role: roleOf(el),
       name: accessibleName(el),
-      inViewport: isInViewport(el),
+      inViewport: viewportFlags.get(el) === true,
     }
     if (el instanceof HTMLButtonElement && el.disabled) item.disabled = true
     if (el instanceof HTMLInputElement) {
@@ -182,6 +187,7 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
   const changed: number[] = []
   const removedIds: number[] = []
   if (options.delta === true && last !== null) {
+    const currentIndexes = new Set(items.map((item) => item.index))
     if (last.main !== main.text || last.url !== location.href || last.title !== document.title) {
       changed.push(-1) // -1 = 正文/标题/URL 变化（渲染时说明）
     }
@@ -190,7 +196,7 @@ export function buildSnapshot(ids: ElementIds, options: SnapshotOptions, last: S
       if (before === undefined || !sameItem(before, item)) changed.push(item.index)
     }
     for (const index of lastItems.keys()) {
-      if (items.every((item) => item.index !== index)) removedIds.push(index)
+      if (!currentIndexes.has(index)) removedIds.push(index)
     }
     for (const form of forms) {
       const before = lastForms.get(form.index)
@@ -248,9 +254,26 @@ export function renderSnapshot(view: SnapshotView, delta: boolean): string {
   const lines: string[] = []
   if (delta) {
     lines.push(`页面变化 v${view.version} (${view.url})`)
+    if (view.reindexed) lines.push('（元素编号已重排，请以最新快照编号为准）')
     if (view.changed.includes(-1)) lines.push('正文/标题/URL 发生变化')
     const elementChanges = view.changed.filter((id) => id !== -1)
-    if (elementChanges.length > 0) lines.push(`变化的元素: ${elementChanges.join(', ')}`)
+    if (elementChanges.length > 0) {
+      // 带上名称/角色：只列编号的话模型还得再花一轮快照才知道变了什么。
+      lines.push('变化的元素:')
+      for (const id of elementChanges) {
+        const item = view.items.find((i) => i.index === id)
+        if (item !== undefined) {
+          lines.push(`  [${id}] ${item.role} "${item.name}"${item.href !== undefined ? ` → ${item.href}` : ''}`)
+          continue
+        }
+        const form = view.forms.find((f) => f.index === id)
+        if (form !== undefined) {
+          lines.push(`  [${id}] 表单 ${form.label} (${form.kind}) 值="${form.masked ? '••••' : form.value}"`)
+          continue
+        }
+        lines.push(`  [${id}]`)
+      }
+    }
     if (view.removed.length > 0) lines.push(`消失的元素: ${view.removed.join(', ')}`)
     if (view.changed.length === 0 && view.removed.length === 0) lines.push('(无可见变化)')
     lines.push('如需完整快照，请不带 delta 重新调用 browser_snapshot。')

@@ -11,6 +11,8 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
+import { MAX_ATTACHMENTS_PER_MESSAGE, readDraft, renderTextAttachment, toImageContent, type Draft } from './attachments.ts'
+import { PERMISSION_LEVEL_HINTS, PERMISSION_LEVEL_LABELS, type PermissionLevel } from './permissions.ts'
 import { renderMarkdown } from './markdown.ts'
 import whaleUrl from '../../assets/icons/deepseek-256.png'
 
@@ -31,6 +33,23 @@ const STATE_LABEL: Record<BridgeState, string> = {
   reconnecting: '重连中…',
   stopped: '未连接',
   unauthorized: '需要 Token',
+}
+
+function PaperclipIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M13.8 4.2 8.1 9.9a2.1 2.1 0 0 0 3 3l5.3-5.4a3.8 3.8 0 1 0-5.4-5.3L5.2 7.9a5.4 5.4 0 0 0 7.6 7.6l4.9-4.8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function ShieldIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 2.6 4.4 4.7v4.5c0 3.5 2.3 6.6 5.6 8.2 3.3-1.6 5.6-4.7 5.6-8.2V4.7L10 2.6Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M7.4 9.8l1.9 1.9 3.4-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
 function SettingsIcon(): React.JSX.Element {
@@ -88,6 +107,43 @@ function BackIcon(): React.JSX.Element {
  * the array but reuse row objects), so markdown is re-parsed only when a
  * row's text actually changes — typing must not re-render every message.
  */
+function CopyIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="7" y="7" width="9.5" height="10.5" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M4.5 12.5V4.8a2 2 0 0 1 2-2h6.2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** 用户消息上的复制按钮：点击复制原文，短暂显示对勾反馈。 */
+function CopyButton({ text }: { text: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => { if (timerRef.current !== undefined) clearTimeout(timerRef.current) }, [])
+  async function copy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // clipboard API 被拒时退回 execCommand（老内核/权限受限场景）。
+      const ta = document.createElement('textarea')
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      ta.remove()
+    }
+    setCopied(true)
+    if (timerRef.current !== undefined) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 1_200)
+  }
+  return (
+    <button className="copy-btn" onClick={() => void copy()} aria-label="复制消息" title={copied ? '已复制' : '复制'}>
+      {copied ? '✓' : <CopyIcon />}
+    </button>
+  )
+}
+
 const MessageBody = memo(function MessageBody({ row }: { row: Row }): React.JSX.Element {
   if (row.kind === 'user' || row.kind === 'assistant') {
     return <div className="body md" dangerouslySetInnerHTML={{ __html: renderMarkdown(row.text) }} />
@@ -110,7 +166,7 @@ const ToolActivity = memo(function ToolActivity({ row }: { row: Row }): React.JS
   )
 })
 
-import { applyWorkspaceFrame, pickCurrentSession, resolveBrowserSessions, type SessionListItem, type SessionView, type WorkspaceFollowFrameView, type WorkspaceView } from './sessions.ts'
+import { applyWorkspaceFrame, pickCurrentSession, rememberSessionContext, resolveBrowserSessions, sessionContextKey, type SessionListItem, type SessionView, type WorkspaceFollowFrameView, type WorkspaceView } from './sessions.ts'
 import { progressLabel } from './progress.ts'
 import { isAtBottom } from './scroll.ts'
 
@@ -135,6 +191,8 @@ export function App(): React.JSX.Element {
   const [working, setWorking] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 待审批的工具调用队列。 */
+  /** 待决的标签交接询问。 */
   const seqRef = useRef(0)
   const sessionRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -172,14 +230,50 @@ export function App(): React.JSX.Element {
   // Settings: seed from storage, then let the panel own the form.
   useEffect(() => {
     void browser.storage.local.get('dshSettings').then((stored) => {
-      const raw = stored.dshSettings as Partial<PanelSettings> | undefined
+      const raw = stored.dshSettings as (Partial<PanelSettings> & { pageActions?: string }) | undefined
       setSettings({
         bridgeUrl: raw?.bridgeUrl ?? '',
         token: raw?.token ?? '',
-        sharePageContent: raw?.sharePageContent ?? 'ask',
+        // 与 background loadSettings 相同的旧版推导：无级别键时 pageActions:auto→读写。
+        permissionLevel: raw?.permissionLevel ?? (raw?.pageActions === 'auto' ? 'readwrite' : 'read'),
       })
     })
   }, [])
+
+
+  /** 待发送的附件草稿（图片/文本）。 */
+  const [drafts, setDrafts] = useState<Draft[]>([])
+  const [imageError, setImageError] = useState<string | null>(null)
+  /** 盾牌审批浮层开关。 */
+  const [permMenuOpen, setPermMenuOpen] = useState(false)
+
+  /** 粘贴/选择文件加入草稿（图片与文本文件分流，逐张校验，超限跳过并提示）。 */
+  async function addAttachmentFiles(files: Iterable<File>): Promise<void> {
+    setImageError(null)
+    for (const file of files) {
+      try {
+        const draft = await readDraft(file)
+        setDrafts((prev) => {
+          if (prev.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+            setImageError(`每条消息最多 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件`)
+            return prev
+          }
+          return [...prev, draft]
+        })
+      } catch (cause) {
+        setImageError(cause instanceof Error ? cause.message : '附件读取失败')
+      }
+    }
+  }
+
+  /** 权限级别快选：立即持久化（不重启桥，见 background settings 处理）。 */
+  function applyPermissionLevel(level: PermissionLevel): void {
+    setSettings((prev) => prev === null ? prev : { ...prev, permissionLevel: level })
+    api.updateSettings({ permissionLevel: level })
+  }
+
+  /** AMO 上的新版本（有可更新时置位）。 */
+  const [update, setUpdate] = useState<{ version: string; url: string } | null>(null)
 
   // 断线重连/设置变更会重置连接；每次进入 connected 或 stopped 都推进 epoch，
   // 驱动会话列表重载与流重订（follow 流是连接代的，重连后必须重开）。
@@ -205,8 +299,9 @@ export function App(): React.JSX.Element {
         setSessionEpoch((epoch) => epoch + 1)
       }
     })
+    const offUpdate = api.onUpdateAvailable(setUpdate)
     api.requestStatus()
-    return () => { offStatus() }
+    return () => { offStatus(); offUpdate() }
   }, [api])
 
   /**
@@ -423,6 +518,28 @@ export function App(): React.JSX.Element {
     return () => observer.disconnect()
   }, [])
 
+  // 审批浮层：点击外部或按 Escape 关闭。
+  const permAnchorRef = useRef<HTMLDivElement | null>(null)
+  const permMenuRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!permMenuOpen) return
+    const onPointerDown = (e: PointerEvent): void => {
+      const target = e.target as Node
+      if (permAnchorRef.current?.contains(target) === true) return
+      if (permMenuRef.current?.contains(target) === true) return
+      setPermMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setPermMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [permMenuOpen])
+
   function onMessagesScroll(): void {
     const el = scrollRef.current
     if (el === null) return
@@ -456,8 +573,26 @@ export function App(): React.JSX.Element {
     }
   }, [sessionPickerOpen])
 
+  /** 当前窗口活动 tab 的页面上下文键（侧边栏是按窗口的）。 */
+  async function currentContextKey(): Promise<string | null> {
+    try {
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
+      return sessionContextKey(tab?.windowId, tab?.url)
+    } catch {
+      return null
+    }
+  }
+
   async function restorePersistedSessionId(): Promise<string | null> {
     try {
+      // 页面上下文优先：同一窗口同一站点重开侧边栏回到对应会话；否则全局上次会话。
+      const context = await currentContextKey()
+      if (context !== null) {
+        const stored = await browser.storage.local.get('dshPanelSessionContexts')
+        const map = stored.dshPanelSessionContexts as Record<string, unknown> | undefined
+        const id = map?.[context]
+        if (typeof id === 'string' && id !== '') return id
+      }
       const stored = await browser.storage.local.get('dshPanelSessionId')
       const id = stored.dshPanelSessionId
       return typeof id === 'string' && id !== '' ? id : null
@@ -468,18 +603,31 @@ export function App(): React.JSX.Element {
 
   function persistSessionId(id: string): void {
     void browser.storage.local.set({ dshPanelSessionId: id }).catch(() => {})
+    void (async () => {
+      const context = await currentContextKey()
+      if (context === null) return
+      const stored = await browser.storage.local.get('dshPanelSessionContexts')
+      const map = (stored.dshPanelSessionContexts as Record<string, string> | undefined) ?? {}
+      await browser.storage.local.set({ dshPanelSessionContexts: rememberSessionContext(map, context, id) })
+    })().catch(() => {})
   }
 
   const sendingRef = useRef(false)
   async function send(textOverride?: string): Promise<void> {
-    const text = (textOverride ?? input).trim()
+    const rawText = (textOverride ?? input).trim()
+    const pending = drafts
     // busy state 是异步的：连续回车可能都通过 state 检查——用 ref 同步锁。
-    if (text === '' || busy || sendingRef.current || sessionRef.current === null) return
+    if ((rawText === '' && pending.length === 0) || busy || sendingRef.current || sessionRef.current === null) return
     sendingRef.current = true
     setInput('')
+    setDrafts([])
     setBusy(true)
     setWorking(true)
     setError(null)
+    // 文本附件 fenced 拼入消息文本；图片走多模态 content 块。
+    const textAttachments = pending.filter((d): d is Extract<Draft, { kind: 'text' }> => d.kind === 'text')
+    const imageAttachments = pending.filter((d): d is Extract<Draft, { kind: 'image' }> => d.kind === 'image')
+    const text = rawText + textAttachments.map(renderTextAttachment).join('')
     // 不渲染乐观行：live user/message 事件即时回显，避免同一消息出现两行。
     try {
       await api.rpc('session/prompt', {
@@ -487,7 +635,7 @@ export function App(): React.JSX.Element {
           sessionId: sessionRef.current,
           requestId: crypto.randomUUID(),
           mode: 'queue',
-          content: [{ type: 'text', text }],
+          content: [...imageAttachments.map(toImageContent), { type: 'text', text }],
         },
       })
       // 首个 prompt 会物化 deferred 会话：若此前的 follow 已死（物化前必然
@@ -546,7 +694,7 @@ export function App(): React.JSX.Element {
             <input
               value={settings?.bridgeUrl ?? ''}
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, bridgeUrl: e.target.value })}
-              placeholder="自动检测 3080 / 3081 / 3090"
+              placeholder="自动检测 3080 / 3081 / 3090 / 14389 / 43189"
             />
           </label>
           <label>
@@ -558,18 +706,6 @@ export function App(): React.JSX.Element {
               onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, token: e.target.value })}
               placeholder="~/.dsh/ext-bridge-token 的内容"
             />
-          </label>
-          <label>
-            <span>页面内容共享</span>
-            <small>控制助手何时可以读取页面文字</small>
-            <select
-              value={settings?.sharePageContent ?? 'ask'}
-              onChange={(e) => setSettings((prev) => prev === null ? prev : { ...prev, sharePageContent: e.target.value as PanelSettings['sharePageContent'] })}
-            >
-              <option value="ask">每次询问</option>
-              <option value="auto">自动共享</option>
-              <option value="off">关闭</option>
-            </select>
           </label>
         </div>
         <div className="settings-actions">
@@ -595,6 +731,13 @@ export function App(): React.JSX.Element {
         <div className="auth-banner" role="alert">
           连接被拒绝：需要访问令牌。请打开设置，将 <code>~/.dsh/ext-bridge-token</code> 文件的内容粘贴到 Token 一栏后保存。
           <button className="secondary" onClick={() => setShowSettings(true)}>打开设置</button>
+        </div>
+      )}
+      {update !== null && (
+        <div className="auth-banner update-banner" role="status">
+          新版本 {update.version} 已在 Firefox 附加组件站上架。
+          <button className="secondary" onClick={() => { void browser.tabs.create({ url: update.url }) }}>查看更新</button>
+          <button className="chip-close" onClick={() => setUpdate(null)} aria-label="忽略本次更新提示">×</button>
         </div>
       )}
       {hostPermission === false && (
@@ -649,6 +792,7 @@ export function App(): React.JSX.Element {
           <div key={row.seq} className={`row ${row.kind}`}>
             {row.kind === 'assistant' && <span className="assistant-avatar"><img src={whaleUrl} alt="助手" /></span>}
             {row.kind === 'tool' ? <ToolActivity row={row} /> : <MessageBody row={row} />}
+            {row.kind === 'user' && <CopyButton text={row.text} />}
           </div>
         ))}
         {working && (
@@ -666,6 +810,19 @@ export function App(): React.JSX.Element {
       {error !== null && <div className="error">{error}</div>}
       <footer className="composer">
         <div className="composer-box">
+          {drafts.length > 0 && (
+            <div className="image-chips">
+              {drafts.map((draft) => (
+                <span key={draft.id} className={draft.kind === 'image' ? 'image-chip' : 'file-chip'}>
+                  {draft.kind === 'image'
+                    ? <img src={`data:${draft.mediaType};base64,${draft.data}`} alt={draft.name ?? '图片附件'} />
+                    : <span className="file-chip-name" title={draft.name}>📄 {draft.name}</span>}
+                  <button className="chip-close" onClick={() => setDrafts((prev) => prev.filter((d) => d.id !== draft.id))} aria-label="移除附件">×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {imageError !== null && <div className="image-error" role="alert">{imageError}</div>}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -676,19 +833,59 @@ export function App(): React.JSX.Element {
                 void send()
               }
             }}
-            placeholder={state === 'connected' ? '告诉我你想在这个会话里做什么…' : '连接 dsh 后即可开始'}
+            onPaste={(e) => {
+              const files = [...e.clipboardData.files]
+              if (files.length > 0) {
+                e.preventDefault()
+                void addAttachmentFiles(files)
+              }
+            }}
+            placeholder={state === 'connected' ? '告诉我你想在这个会话里做什么…（可直接粘贴附件）' : '连接 dsh 后即可开始'}
             disabled={state !== 'connected'}
             rows={2}
           />
           <div className="composer-actions">
             <span>Enter 发送 · Shift + Enter 换行</span>
-            {working ? (
-              <button className="stop" onClick={() => { void cancelTurn() }} aria-label="停止" title="停止生成">■</button>
-            ) : (
-              <button onClick={() => void send()} disabled={state !== 'connected' || busy || input.trim() === ''} aria-label="发送消息"><SendIcon /></button>
-            )}
+            <div className="composer-buttons">
+              <label className="icon-button" aria-label="添加附件" title="添加附件（图片或文本文件，也可直接粘贴）">
+                <PaperclipIcon />
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.markdown,.json,.jsonl,.log,.csv,.tsv,.xml,.yaml,.yml,.toml,.ini,.ts,.tsx,.js,.jsx,.py,.sh,.css,.html,.sql,.diff,.patch,text/*" multiple hidden
+                  onChange={(e) => {
+                    const files = [...(e.target.files ?? [])]
+                    e.target.value = ''
+                    void addAttachmentFiles(files)
+                  }} />
+              </label>
+              <div className="attach-anchor" ref={permAnchorRef}>
+                <button className="icon-button" onClick={() => setPermMenuOpen((v) => !v)}
+                  aria-haspopup="menu" aria-expanded={permMenuOpen} aria-label="权限级别" title="权限级别">
+                  <ShieldIcon />
+                </button>
+              </div>
+              {working ? (
+                <button className="stop" onClick={() => { void cancelTurn() }} aria-label="停止" title="停止生成">■</button>
+              ) : (
+                <button onClick={() => void send()} disabled={state !== 'connected' || busy || (input.trim() === '' && drafts.length === 0)} aria-label="发送消息"><SendIcon /></button>
+              )}
+            </div>
           </div>
         </div>
+        {permMenuOpen && (
+          <div className="attach-menu" role="menu" aria-label="权限级别" ref={permMenuRef}>
+            <label className="attach-menu-field">
+              <span>权限级别</span>
+              <select
+                value={settings?.permissionLevel ?? 'read'}
+                onChange={(e) => applyPermissionLevel(e.target.value as PermissionLevel)}
+              >
+                {(Object.keys(PERMISSION_LEVEL_LABELS) as PermissionLevel[]).map((level) => (
+                  <option key={level} value={level}>{PERMISSION_LEVEL_LABELS[level]}</option>
+                ))}
+              </select>
+              <small className="attach-menu-hint">{PERMISSION_LEVEL_HINTS[settings?.permissionLevel ?? 'read']}</small>
+            </label>
+          </div>
+        )}
       </footer>
     </div>
   )

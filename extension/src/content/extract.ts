@@ -43,10 +43,12 @@ const MAX_ITEM_NAME_CHARS = 80
  */
 export function isVisible(el: Element): boolean {
   if (!(el instanceof HTMLElement)) return false
+  // display:none 元素的 rect 全零，先查 rect 可以省掉一次 getComputedStyle。
+  const rect = el.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return false
   const style = getComputedStyle(el)
   if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false
-  const rect = el.getBoundingClientRect()
-  return rect.width > 0 && rect.height > 0
+  return true
 }
 
 /**
@@ -198,8 +200,9 @@ export function mainText(doc: Document): string {
   for (const candidate of doc.querySelectorAll('section, div, [role="main"]')) {
     const paragraphs = candidate.querySelectorAll('p').length
     if (paragraphs < 2) continue
-    const text = elementText(candidate)
-    const score = text.length * Math.min(paragraphs, 5)
+    // textContent 只做评分（不强制布局、不复制渲染文本）；innerText 只对
+    // 最终胜者调一次。嵌套 div 场景下旧实现逐级重复提取子树，是真实 O(n²)。
+    const score = (candidate.textContent?.length ?? 0) * Math.min(paragraphs, 5)
     if (score > bestScore) {
       bestScore = score
       best = candidate

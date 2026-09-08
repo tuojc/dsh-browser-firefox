@@ -62,6 +62,32 @@ export function pickCurrentSession(list: SessionListItem[], persistedId: string 
   return list.find((s) => s.sessionId === persistedId) ?? list[0] ?? null
 }
 
+/** 页面上下文 → 会话 的映射最多保留的条数（LRU 由写入侧整体回写维护）。 */
+export const MAX_SESSION_CONTEXTS = 50
+
+/**
+ * 页面上下文键：windowId + 页面 origin。同一窗口同一站点重开侧边栏时
+ * 恢复上次会话；非网页（about:* 等）返回 null，回退到全局「上次会话」。
+ */
+export function sessionContextKey(windowId: number | undefined, url: string | undefined): string | null {
+  if (windowId === undefined || url === undefined || !/^https?:\/\//.test(url)) return null
+  try {
+    return `${windowId}|${new URL(url).origin}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 写入一条上下文映射并裁剪到上限：Map 插入序即最近使用序，
+ * 重插已有 key 视为 touch。
+ */
+export function rememberSessionContext(map: Record<string, string>, key: string, sessionId: string): Record<string, string> {
+  const entries = Object.entries(map).filter(([k]) => k !== key)
+  entries.push([key, sessionId])
+  return Object.fromEntries(entries.slice(-MAX_SESSION_CONTEXTS))
+}
+
 /**
  * Fold one workspace/follow frame into the cached workspace list (the panel's
  * replacement for the removed `workspace.list` RPC). `archived` frames are

@@ -103,16 +103,20 @@ export function toolSummary(name: string, argsJson: unknown): string {
   return summary
 }
 
+/** live 行上限：每个事件都整体复制数组，长会话的累计成本是 O(n²)；封顶后回到线性。 */
+const MAX_LIVE_ROWS = 500
+
 /** live 合并：若最后一行是工具行则并入（连续工具调用不刷屏），否则新增一行。 */
 export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq: number): Row[] {
+  const capped = rows.length >= MAX_LIVE_ROWS ? rows.slice(rows.length - MAX_LIVE_ROWS + 1) : rows
   if (kind === 'tool') {
-    const last = rows[rows.length - 1]
+    const last = capped[capped.length - 1]
     if (last?.kind === 'tool') {
-      return [...rows.slice(0, -1), { seq, kind: 'tool', text: `${last.text} → ${text}`, status: 'running' }]
+      return [...capped.slice(0, -1), { seq, kind: 'tool', text: `${last.text} → ${text}`, status: 'running' }]
     }
-    return [...rows, { seq, kind, text, status: 'running' }]
+    return [...capped, { seq, kind, text, status: 'running' }]
   }
-  return [...rows, { seq, kind, text }]
+  return [...capped, { seq, kind, text }]
 }
 
 /** 标记最后一行工具调用已完成（并入，不新增行）。 */

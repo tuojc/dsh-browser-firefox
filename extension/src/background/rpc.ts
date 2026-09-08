@@ -41,6 +41,20 @@ export function createRpc(bridge: BridgeClient): { request(method: string, args:
     else entry.reject(new Error(`${frame.error.code}: ${frame.error.message}`))
   }
 
+  // Fail-fast: a dropped socket can never answer outstanding requests, so
+  // settle them immediately instead of letting callers hang until the 30s
+  // timeout (the panel shows a stalled click for the full window otherwise).
+  const previousState = bridge.sinks.onStateChange
+  bridge.sinks.onStateChange = (state) => {
+    previousState?.(state)
+    if (state === 'connected') return
+    for (const [id, entry] of pending) {
+      pending.delete(id)
+      clearTimeout(entry.timer)
+      entry.reject(new Error(`bridge connection lost (state: ${state})`))
+    }
+  }
+
   return {
     request(method: string, args: Record<string, unknown>): Promise<unknown> {
       if (!bridge.connected) {

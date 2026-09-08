@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
-import { BridgeServer, BridgeToolError, isLoopbackAddress, messageToText, payloadCode, payloadMessage } from '../src/server.ts'
+import { BridgeServer, BridgeToolError, isLoopbackAddress, messageToText, payloadCode, payloadMessage, PRIVILEGED_METHODS } from '../src/server.ts'
 import type { BridgeFrame, RemoteWireResult } from '../src/protocol.ts'
 
 const TOKEN = 'deadbeefdeadbeefdeadbeefdeadbeef'
@@ -577,5 +577,101 @@ describe('BridgeServer', () => {
     const allowed = frames.find((f): f is Extract<BridgeFrame, { t: 'rpc.result' }> => f.t === 'rpc.result' && f.id === 'priv-2')!
     expect(allowed.ok).toBe(true)
     ws.close()
+  })
+
+  it('settles an idle stream pump on stream.close via iterator.return', async () => {
+    // 永不 yield 的空闲流：abort 只是建议，泵必须 raceAbort 退出并显式 return()。
+    let nextCalled = false
+    let returned = false
+    const idle: AsyncIterable<unknown> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => { nextCalled = true; return new Promise<IteratorResult<unknown>>(() => {}) },
+          return: () => { returned = true; return Promise.resolve({ done: true, value: undefined }) },
+        }
+      },
+    }
+    const h = await startBridge({ openStream: async () => idle })
+    harnesses.push(h)
+    const { ws, frames } = await connect(h.url)
+    await hello(ws, frames)
+    send(ws, { t: 'stream.open', id: 'st-idle', method: 'session/follow', args: {} })
+    await waitFor(() => nextCalled)
+    send(ws, { t: 'stream.close', id: 'st-idle' })
+    await waitFor(() => returned)
+    ws.close()
+  })
+
+  it('bounds close() when a wedged gateway iterator never answers return()', async () => {
+    const wedged: AsyncIterable<unknown> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => new Promise<IteratorResult<unknown>>(() => {}),
+          return: () => new Promise<IteratorResult<unknown>>(() => {}),
+        }
+      },
+    }
+    let nextCalled = false
+    const h = await startBridge({
+      closePumpTimeoutMs: 300,
+      openStream: async () => {
+        const inner = wedged[Symbol.asyncIterator]()
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => { nextCalled = true; return inner.next() },
+              return: () => inner.return!(),
+            }
+          },
+        }
+      },
+    })
+    const { ws, frames } = await connect(h.url)
+    await hello(ws, frames)
+    send(ws, { t: 'stream.open', id: 'st-wedged', method: 'workspace/follow', args: {} })
+    await waitFor(() => nextCalled)
+    const start = Date.now()
+    await h.bridge.close()
+    expect(Date.now() - start).toBeLessThan(3_000)
+    ws.close()
+    await new Promise<void>((resolve) => { h.server.close(() => resolve()) })
+  })
+
+  it('drops frames exceeding the configured maxPayload', async () => {
+    const h = await startBridge({ maxPayloadBytes: 256 })
+    harnesses.push(h)
+    const { ws, frames, done } = await connect(h.url)
+    await hello(ws, frames)
+    // 超过 256B 的合法帧也会被 ws 层以 1009 断开。
+    send(ws, { t: 'rpc', id: `big-${'x'.repeat(500)}`, method: 'session/list', args: {} })
+    await done
+    expect(ws.readyState).toBe(WebSocket.CLOSED)
+  })
+
+  it('terminates zombie connections that never answer pings, keeps ponging ones', async () => {
+    const h = await startBridge({ pingIntervalMs: 100, missedPongsAllowed: 2 })
+    harnesses.push(h)
+    // 不应答 ping 的连接：约 3 个周期内被 terminate。
+    const zombie = await connect(h.url)
+    await hello(zombie.ws, zombie.frames)
+    await waitFor(() => zombie.ws.readyState === WebSocket.CLOSED, 3_000)
+    // 正常应答的连接保持活跃（替换僵尸后占用连接槽）。
+    const alive = await connect(h.url)
+    await hello(alive.ws, alive.frames)
+    alive.ws.on('message', (data) => {
+      const frame = JSON.parse(data.toString()) as BridgeFrame
+      if (frame.t === 'ping') alive.ws.send(JSON.stringify({ t: 'pong' }))
+    })
+    await new Promise((resolve) => { setTimeout(resolve, 450) })
+    expect(alive.ws.readyState).toBe(WebSocket.OPEN)
+    alive.ws.close()
+  })
+
+  it('tripwires the privileged endpoint families against accidental shrinkage', () => {
+    // 宿主 alpha 线新增特权端点时必须同步扩展该名单；此测试防误删。
+    for (const family of ['settings/', 'credentials/', 'directoryPicker/']) {
+      expect([...PRIVILEGED_METHODS].some((m) => m.startsWith(family))).toBe(true)
+    }
+    expect(PRIVILEGED_METHODS.has('session/openWorkspacePath')).toBe(true)
   })
 })

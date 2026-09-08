@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { applyWorkspaceFrame, pickCurrentSession, resolveBrowserSessions, type SessionView, type WorkspaceView } from '../src/panel/sessions.ts'
+import { applyWorkspaceFrame, pickCurrentSession, rememberSessionContext, resolveBrowserSessions, sessionContextKey, type SessionView, type WorkspaceView } from '../src/panel/sessions.ts'
 
 describe('resolveBrowserSessions', () => {
   const workspaces: WorkspaceView[] = [
@@ -77,5 +77,27 @@ describe('applyWorkspaceFrame (workspace/follow 折叠)', () => {
   it('archived 帧不影响列表', () => {
     const items = [w('a')]
     expect(applyWorkspaceFrame(items, { type: 'archived' })).toBe(items)
+  })
+})
+
+describe('session context continuity', () => {
+  it('keys contexts by window and origin, rejecting non-web pages', () => {
+    expect(sessionContextKey(3, 'https://example.com/a/b?x=1')).toBe('3|https://example.com')
+    expect(sessionContextKey(3, 'https://other.example/')).toBe('3|https://other.example')
+    expect(sessionContextKey(4, 'https://example.com/')).toBe('4|https://example.com')
+    expect(sessionContextKey(3, 'about:newtab')).toBeNull()
+    expect(sessionContextKey(undefined, 'https://example.com')).toBeNull()
+    expect(sessionContextKey(3, undefined)).toBeNull()
+  })
+
+  it('rememberSessionContext touches existing keys and caps the map', () => {
+    let map: Record<string, string> = {}
+    map = rememberSessionContext(map, '1|https://a.example', 's1')
+    map = rememberSessionContext(map, '1|https://b.example', 's2')
+    map = rememberSessionContext(map, '1|https://a.example', 's3')
+    expect(map['1|https://a.example']).toBe('s3')
+    expect(Object.keys(map)).toEqual(['1|https://b.example', '1|https://a.example'])
+    for (let i = 0; i < 60; i += 1) map = rememberSessionContext(map, `w|https://site${i}.example`, `s${i}`)
+    expect(Object.keys(map).length).toBe(50)
   })
 })
