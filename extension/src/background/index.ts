@@ -90,6 +90,8 @@ const STORAGE_KEY = 'dshSettings'
 
 let settings: Settings = { ...SETTINGS_DEFAULTS }
 let caps: BridgeCaps | null = null
+/** 对端插件版本（hello.ok 带回；0.4.6+，旧插件为 undefined）。 */
+let pluginVersion: string | undefined
 let bridge: BridgeClient | null = null
 let rpc: ReturnType<typeof createRpc> | null = null
 /** AMO 上的更新版本（有更新时置位，随 status 广播给面板）。 */
@@ -141,7 +143,13 @@ function postToPort(port: chrome.runtime.Port, message: unknown): void {
 }
 
 function broadcastStatus(): void {
-  const payload = { type: 'status', state: bridge?.state ?? ('stopped' as BridgeState), caps, update: amoUpdate ?? null }
+  const payload = {
+    type: 'status',
+    state: bridge?.state ?? ('stopped' as BridgeState),
+    caps,
+    update: amoUpdate ?? null,
+    pluginVersion: pluginVersion ?? null,
+  }
   for (const port of [...panelPorts]) postToPort(port, payload)
 }
 
@@ -530,6 +538,7 @@ async function startBridge(): Promise<void> {
         if (next === 'connecting') {
           dropAllStreams()
           transientQuestions.clear()
+          pluginVersion = undefined
         }
         broadcastStatus()
       },
@@ -553,8 +562,9 @@ async function startBridge(): Promise<void> {
         }
         // rpc.result is settled by the rpc facade (wrapped below).
       },
-      onHelloOk: (negotiated) => {
+      onHelloOk: (negotiated, version) => {
         caps = negotiated
+        pluginVersion = version
         broadcastStatus()
         void pushBudgetToTabs(negotiated)
       },

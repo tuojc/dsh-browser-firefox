@@ -32,6 +32,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-api-gateway/types'
 import type {} from '@deepseek-ai/dsh-user-questions/types'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
+import { readFileSync } from 'node:fs'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
 import { registerBrowserTools } from './tools.ts'
@@ -175,6 +176,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }
     return result
   }
+  // Plugin version for the hello.ok handshake (extension flags a mismatch in
+  // the sidebar). src/ and lib/ layouts both resolve to the same package.json.
+  let pluginVersion: string | undefined
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: unknown }
+    pluginVersion = typeof pkg.version === 'string' ? pkg.version : undefined
+  } catch {
+    pluginVersion = undefined
+  }
+
   const questions = new QuestionBridge({
     // Late-bound through the closure: server is constructed right below.
     push: (frame) => { server.push(frame) },
@@ -195,6 +206,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         : questions.answer(parsed)
     },
     onConnectionLost: () => { questions.delegateAll() },
+    version: pluginVersion,
+    onVersionMismatch: (clientVersion) => {
+      ctx.logger.warn(`browser extension version ${clientVersion} != plugin version ${pluginVersion ?? '?'}; both components must be updated together`)
+    },
     toolTimeoutMs: resolved.toolTimeoutMs,
     caps: {
       snapshotMaxChars: resolved.snapshotMaxChars,

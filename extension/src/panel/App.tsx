@@ -36,6 +36,7 @@ import {
 } from './models.ts'
 import { QuestionCard } from './QuestionCard.tsx'
 import { questionReceiptReason, removePendingQuestion, upsertPendingQuestion } from './pending-questions.ts'
+import { versionMismatch } from './version-check.ts'
 import type { QuestionAnswer } from './questions.ts'
 import { PERMISSION_LEVEL_HINTS, PERMISSION_LEVEL_LABELS, PERMISSION_LEVEL_SHORT, type PermissionLevel } from './permissions.ts'
 import { renderMarkdown } from './markdown.ts'
@@ -286,6 +287,10 @@ export function App(): React.JSX.Element {
   /** deferred 会话未物化时暂存的选择，首个 prompt 成功后补发。 */
   const pendingModelRef = useRef<ModelSelectionView | null>(null)
   const [modelBusy, setModelBusy] = useState(false)
+  /** 对端插件版本（status 广播；0.4.6+）。 */
+  const [pluginVersion, setPluginVersion] = useState<string | null>(null)
+  /** 扩展自身版本（manifest）。 */
+  const extensionVersion = useMemo(() => browser.runtime.getManifest().version, [])
   /** 盾牌审批浮层开关。 */
   const [permMenuOpen, setPermMenuOpen] = useState(false)
 
@@ -334,9 +339,10 @@ export function App(): React.JSX.Element {
   const [sessionEpoch, setSessionEpoch] = useState(0)
   const lastStateRef = useRef<BridgeState | null>(null)
   useEffect(() => {
-    const offStatus = api.onStatus((next, nextCaps) => {
+    const offStatus = api.onStatus((next, nextCaps, nextPluginVersion) => {
       setState(next)
       setCaps(nextCaps)
+      setPluginVersion(nextPluginVersion)
       const previous = lastStateRef.current
       lastStateRef.current = next
       if (next === previous) return
@@ -945,6 +951,11 @@ export function App(): React.JSX.Element {
           新版本 {update.version} 已在 Firefox 附加组件站上架。
           <button className="secondary" onClick={() => { void browser.tabs.create({ url: update.url }) }}>查看更新</button>
           <button className="chip-close" onClick={() => setUpdate(null)} aria-label="忽略本次更新提示">×</button>
+        </div>
+      )}
+      {versionMismatch(extensionVersion, pluginVersion) && (
+        <div className="auth-banner mismatch-banner" role="alert">
+          组件版本不一致：插件 {pluginVersion} / 扩展 {extensionVersion}。请同时更新两端（插件经 npm 或 dsh plugin 更新，扩展在附加组件站更新或重新载入）。
         </div>
       )}
       {hostPermission === false && (

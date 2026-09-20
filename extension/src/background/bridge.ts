@@ -19,7 +19,7 @@ export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped
 export interface BridgeSinks {
   onStateChange(state: BridgeState): void
   onFrame(frame: ServerFrame): void
-  onHelloOk(caps: BridgeCaps): void
+  onHelloOk(caps: BridgeCaps, pluginVersion?: string): void
 }
 
 /** Resolve whether opening a WebSocket is expected to succeed. */
@@ -125,6 +125,8 @@ export class BridgeClient {
         t: 'hello',
         token: this.token,
         caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60, questions: true },
+        // 扩展版本：插件据此检测两端版本不一致（0.4.6+，旧插件忽略此键）。
+        version: browser.runtime.getManifest().version,
       } satisfies ClientFrame))
 
       let authed = false
@@ -138,7 +140,7 @@ export class BridgeClient {
               authed = true
               this.clearAckTimer()
               resolve(true)
-              this.sinks.onHelloOk(frame.caps)
+              this.sinks.onHelloOk(frame.caps, frame.version)
             } else if (frame.t === 'error' || frame.t === 'rpc.result') {
               this.sinks.onFrame(frame)
             }

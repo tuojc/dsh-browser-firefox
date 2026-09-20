@@ -103,8 +103,8 @@ export interface QuestionItem {
 
 /** Frames sent by the extension to the bridge plugin. */
 export type ClientFrame =
-  /** First frame, within HELLO_TIMEOUT_MS of socket open. */
-  | { t: 'hello'; token: string; caps: BridgeCaps }
+  /** First frame, within HELLO_TIMEOUT_MS of socket open. `version` (extension version) lets the plugin detect a version mismatch; absent on pre-0.4.6 clients. */
+  | { t: 'hello'; token: string; caps: BridgeCaps; version?: string }
   /** Unary Remote call: slash-joined endpoint plus the descriptor's native args object. */
   | { t: 'rpc'; id: string; method: string; args: Record<string, unknown> }
   /** Open one Remote stream (`session/follow`, `workspace/follow`); frames arrive as `stream.frame`. */
@@ -119,8 +119,8 @@ export type ClientFrame =
 
 /** Frames sent by the bridge plugin to the extension. */
 export type ServerFrame =
-  /** Accepted after a valid `hello`. */
-  | { t: 'hello.ok'; caps: BridgeCaps }
+  /** Accepted after a valid `hello`. `version` (plugin version) lets the extension detect a version mismatch; absent on pre-0.4.6 servers. */
+  | { t: 'hello.ok'; caps: BridgeCaps; version?: string }
   /** Reply to an `rpc` frame: the RemoteResult wire form, flattened onto the frame. */
   | { t: 'rpc.result'; id: string; ok: true; value: unknown }
   | { t: 'rpc.result'; id: string; ok: false; error: RemoteWireFailure }
@@ -208,10 +208,14 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
   if (typeof frame.t !== 'string') return undefined
   switch (frame.t) {
     case 'hello':
-      return typeof frame.token === 'string'
-        && isCaps(frame.caps)
-        ? { t: 'hello', token: frame.token, caps: frame.caps }
-        : undefined
+      if (typeof frame.token !== 'string' || !isCaps(frame.caps)) return undefined
+      if (frame.version !== undefined && typeof frame.version !== 'string') return undefined
+      return {
+        t: 'hello',
+        token: frame.token,
+        caps: frame.caps,
+        ...(frame.version === undefined ? {} : { version: frame.version as string }),
+      }
     case 'rpc':
       return typeof frame.id === 'string' && typeof frame.method === 'string' && isArgs(frame.args)
         ? { t: 'rpc', id: frame.id, method: frame.method, args: frame.args }
@@ -233,9 +237,13 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
     case 'pong':
       return { t: 'pong' }
     case 'hello.ok':
-      return isCaps(frame.caps)
-        ? { t: 'hello.ok', caps: frame.caps }
-        : undefined
+      if (!isCaps(frame.caps)) return undefined
+      if (frame.version !== undefined && typeof frame.version !== 'string') return undefined
+      return {
+        t: 'hello.ok',
+        caps: frame.caps,
+        ...(frame.version === undefined ? {} : { version: frame.version as string }),
+      }
     case 'rpc.result':
       if (typeof frame.id !== 'string') return undefined
       if (frame.ok === true && 'value' in frame) {

@@ -166,6 +166,45 @@ describe('BridgeServer', () => {
     expect(ws.readyState).toBe(WebSocket.CLOSED)
   })
 
+  it('echoes the plugin version in hello.ok and flags a client version mismatch', async () => {
+    const mismatches: string[] = []
+    const { server, url } = await startBridge({
+      version: '0.4.6',
+      onVersionMismatch: (v) => { mismatches.push(v) },
+    })
+    try {
+      const { ws, frames } = await connect(url)
+      send(ws, { t: 'hello', token: TOKEN, caps: CAPS, version: '0.4.5' })
+      await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+      expect(frames.find((f) => f.t === 'hello.ok')).toEqual({ t: 'hello.ok', caps: CAPS, version: '0.4.6' })
+      expect(mismatches).toEqual(['0.4.5'])
+      ws.close()
+      await waitFor(() => false, 30).catch(() => {})
+
+      // 同版本不告警
+      const again = await connect(url)
+      send(again.ws, { t: 'hello', token: TOKEN, caps: CAPS, version: '0.4.6' })
+      await waitFor(() => again.frames.some((f) => f.t === 'hello.ok'))
+      expect(mismatches).toEqual(['0.4.5'])
+      again.ws.close()
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('omits version in hello.ok when the plugin version is unknown', async () => {
+    const { server, url } = await startBridge()
+    try {
+      const { ws, frames } = await connect(url)
+      send(ws, { t: 'hello', token: TOKEN, caps: CAPS })
+      await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
+      expect(frames.find((f) => f.t === 'hello.ok')).toEqual({ t: 'hello.ok', caps: CAPS })
+      ws.close()
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
   it('closes sockets that never present hello', async () => {
     const h = await startBridge({ helloTimeoutMs: 500 })
     harnesses.push(h)

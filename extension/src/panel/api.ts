@@ -42,6 +42,8 @@ interface StatusMessage {
   state: BridgeState
   caps: BridgeCaps | null
   update?: { version: string; url: string } | null
+  /** 对端插件版本（hello.ok 带回；0.4.6+，旧插件为 null）。 */
+  pluginVersion?: string | null
 }
 
 interface StreamFrameMessage {
@@ -73,7 +75,7 @@ export interface PanelApi {
    * is then dead — reopen to resume). The returned function closes the stream.
    */
   openStream(method: string, args: Record<string, unknown>, onFrame: (frame: unknown) => void, onError: (message: string) => void): () => void
-  onStatus(callback: (state: BridgeState, caps: BridgeCaps | null) => void): () => void
+  onStatus(callback: (state: BridgeState, caps: BridgeCaps | null, pluginVersion: string | null) => void): () => void
   /** 订阅 AMO 更新信息（随 status 推送）。 */
   onUpdateAvailable(callback: (update: { version: string; url: string } | null) => void): () => void
   /** 订阅桥推送的 ask_user_question 帧（question.requested/question.resolved）。 */
@@ -87,7 +89,7 @@ export function connectPanel(): PanelApi {
   type Port = ReturnType<typeof browser.runtime.connect>
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   const streams = new Map<string, { onFrame: (frame: unknown) => void; onError: (message: string) => void }>()
-  const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
+  const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null, pluginVersion: string | null) => void>()
   const updateListeners = new Set<(update: { version: string; url: string } | null) => void>()
   const questionListeners = new Set<(frame: ServerFrame) => void>()
 
@@ -207,7 +209,7 @@ export function connectPanel(): PanelApi {
         break
       }
       case 'status':
-        for (const listener of statusListeners) listener(msg.state, msg.caps)
+        for (const listener of statusListeners) listener(msg.state, msg.caps, msg.pluginVersion ?? null)
         for (const listener of updateListeners) listener(msg.update ?? null)
         break
     }

@@ -7,6 +7,18 @@ describe('parseBridgeFrame', () => {
     expect(frame).toEqual({ t: 'hello', token: 'abc123', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60, questions: true } })
   })
 
+  it('parses hello/hello.ok with optional version; rejects non-string version', () => {
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'a', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 }, version: '0.4.6' })))
+      .toEqual({ t: 'hello', token: 'a', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 }, version: '0.4.6' })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 }, version: '0.4.6' })))
+      .toEqual({ t: 'hello.ok', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 }, version: '0.4.6' })
+    // 旧对端不带版本号：正常解析（增量兼容）
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 } })))
+      .toEqual({ t: 'hello.ok', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 } })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'a', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 }, version: 46 }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { snapshotMaxChars: 1, maxInteractiveItems: 1 }, version: null }))).toBeUndefined()
+  })
+
   it('rejects hello with wrong caps shape', () => {
     expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { maxInteractiveItems: 10 } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { snapshotMaxChars: 0, maxInteractiveItems: 10 } }))).toBeUndefined()

@@ -12,6 +12,7 @@
  * stream passthrough are the real plugin code under test.
  */
 
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -155,10 +156,11 @@ describe('real Loader composition', () => {
     const client = await connect(port)
     send(client.ws, { t: 'hello', token: '', caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60 } })
     await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
-    expect(client.frames.find((f) => f.t === 'hello.ok')).toEqual({
-      t: 'hello.ok',
-      caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 120 },
-    })
+    const helloOk = client.frames.find((f) => f.t === 'hello.ok') as { t: 'hello.ok'; caps: unknown; version?: string }
+    expect(helloOk).toBeDefined()
+    expect(helloOk.caps).toEqual({ snapshotMaxChars: 12_000, maxInteractiveItems: 120 })
+    // hello.ok 回带插件自身版本（0.4.6+ 版本互查）。
+    expect(helloOk.version).toBe(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version)
 
     // session/create flows through workspace grouping onto the fake alpha host.
     send(client.ws, { t: 'rpc', id: 'c-1', method: 'session/create', args: { request: { cwd: root } } })

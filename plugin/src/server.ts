@@ -151,6 +151,10 @@ export interface BridgeServerDeps {
   toolTimeoutMs: number
   /** Capabilities to echo in `hello.ok` (negotiated snapshot budgets). */
   caps: BridgeCaps
+  /** Plugin version echoed in `hello.ok` so the extension can flag a mismatch (0.4.6+). */
+  version?: string | undefined
+  /** An authenticated client arrived with a version different from ours. */
+  onVersionMismatch?: (clientVersion: string) => void
   /**
    * Plugin-local endpoint `bridge/questionAnswer`: settle one pending
    * ask_user_question the bridge pushed to this extension. Answered as the
@@ -415,7 +419,7 @@ export class BridgeServer {
         }
         clearTimeout(helloTimer)
         helloTimer = undefined
-        this.promote(ws, remoteAddress, frame.caps)
+        this.promote(ws, remoteAddress, frame.caps, frame.version)
         return
       }
       this.handleReadyFrame(frame)
@@ -430,8 +434,11 @@ export class BridgeServer {
   }
 
   /** Promote an authenticated socket to the single active slot. */
-  private promote(ws: WebSocket, remoteAddress: string | undefined, clientCaps: BridgeCaps): void {
+  private promote(ws: WebSocket, remoteAddress: string | undefined, clientCaps: BridgeCaps, clientVersion?: string): void {
     this.replaceConnection()
+    if (clientVersion !== undefined && this.deps.version !== undefined && clientVersion !== this.deps.version) {
+      this.deps.onVersionMismatch?.(clientVersion)
+    }
     const abort = new AbortController()
     const intervalMs = this.deps.pingIntervalMs ?? PING_INTERVAL_MS
     const allowed = this.deps.missedPongsAllowed ?? DEFAULT_MISSED_PONGS_ALLOWED
@@ -448,7 +455,11 @@ export class BridgeServer {
     }, intervalMs)
     conn.ping = ping
     this.current = conn
-    sendFrame(ws, { t: 'hello.ok', caps: this.deps.caps })
+    sendFrame(ws, {
+      t: 'hello.ok',
+      caps: this.deps.caps,
+      ...(this.deps.version === undefined ? {} : { version: this.deps.version }),
+    })
     ws.once('close', () => {
       clearInterval(ping)
       abort.abort()

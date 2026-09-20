@@ -67,3 +67,38 @@ describe('BridgeClient connection probe', () => {
     client.stop()
   })
 })
+
+describe('BridgeClient hello version', () => {
+  it('sends the extension manifest version in hello and forwards the plugin version from hello.ok', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('browser', { runtime: { getManifest: () => ({ version: '0.4.6' }) } })
+    const sent: string[] = []
+    let helloOk: { caps: unknown; version?: string } | null = null
+    const client = new BridgeClient({
+      onStateChange: () => {},
+      onFrame: () => {},
+      onHelloOk: (caps, version) => { helloOk = { caps, version } },
+    }, async () => true)
+
+    client.start('ws://127.0.0.1:3080/ext/bridge', 'tok')
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    vi.spyOn(socket, 'send').mockImplementation(((data: unknown) => { sent.push(String(data)) }) as () => void)
+    socket.readyState = FakeWebSocket.OPEN
+    socket.dispatchEvent(new Event('open'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const hello = JSON.parse(sent[0]!) as { t: string; version?: string }
+    expect(hello.t).toBe('hello')
+    expect(hello.version).toBe('0.4.6')
+
+    socket.dispatchEvent(new MessageEvent('message', {
+      data: JSON.stringify({ t: 'hello.ok', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60 }, version: '0.4.5' }),
+    }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(helloOk).not.toBeNull()
+    expect(helloOk!.version).toBe('0.4.5')
+    client.stop()
+  })
+})

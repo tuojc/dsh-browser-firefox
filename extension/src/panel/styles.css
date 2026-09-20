@@ -220,6 +220,12 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.auth-banner.mismatch-banner {
+  border-color: var(--warning-border, #f3d29a);
+  background: var(--warning-soft, #fef6e7);
+  color: var(--warning);
+}
+
 .auth-banner code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
