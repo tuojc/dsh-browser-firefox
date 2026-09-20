@@ -51,14 +51,23 @@ export interface ToolError {
   message: string
 }
 
-/** Capabilities negotiated in `hello`/`hello.ok`. The extension performs its own actions; these bounds shape page snapshots. */
+/**
+ * Capabilities negotiated in `hello`/`hello.ok`. The extension performs its
+ * own actions; the numeric bounds shape page snapshots. Optional booleans are
+ * feature advertisements: a peer that does not know a flag simply leaves it
+ * undefined, and the feature stays off for that pairing (graceful
+ * cross-version degradation; same-version pairing is still the support
+ * contract). Legacy 0.4.x `textOnly` is gone: DeepSeek routes on the 0.1.2
+ * line read images natively, so screenshots now cross the bridge as image
+ * blocks instead of file paths.
+ */
 export interface BridgeCaps {
-  /** The extension renders page state as text only (no screenshots). */
-  textOnly: true
   /** Upper bound on one rendered snapshot's characters (plugin config). */
   snapshotMaxChars: number
   /** Upper bound on interactive inventory items per snapshot (plugin config). */
   maxInteractiveItems: number
+  /** Client advertises it can render ask_user_question cards; the plugin only claims the user-questions waterfall for extension-owned sessions when set. */
+  questions?: boolean
 }
 
 /** One Remote failure as plain wire data (RemoteError's message is non-enumerable, so it is restated explicitly). */
@@ -72,6 +81,25 @@ export interface RemoteWireFailure {
 export type RemoteWireResult =
   | { ok: true; value: unknown }
   | { ok: false; error: RemoteWireFailure }
+
+/** One ask_user_question option (the host AskUserQuestionOption wire form). */
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+/**
+ * One ask_user_question item as it crosses the bridge (the host
+ * AskUserQuestionItem wire form, minus the host-internal `intent`).
+ */
+export interface QuestionItem {
+  id: string
+  question: string
+  detail?: string
+  header?: string
+  options?: QuestionOption[]
+  multiSelect?: boolean
+}
 
 /** Frames sent by the extension to the bridge plugin. */
 export type ClientFrame =
@@ -104,6 +132,17 @@ export type ServerFrame =
   | { t: 'tool.call'; id: string; name: string; args: Record<string, unknown>; expiresAt?: number; sessionId?: string; title?: string }
   /** Withdraw a tool call that timed out or whose caller was cancelled. */
   | { t: 'tool.cancel'; id: string }
+  /**
+   * The host asked the user (ask_user_question) in an extension-owned session
+   * and the bridge claimed the waterfall: the extension should render a
+   * question card. The answer rides a normal `rpc` frame with the
+   * plugin-local method `bridge/questionAnswer` (args `{questionId, sessionId,
+   * answer?} | {questionId, sessionId, decline: true}`), answered
+   * `{accepted: true} | {accepted: false, reason: 'not-pending'}`.
+   */
+  | { t: 'question.requested'; id: string; sessionId: string; questions: QuestionItem[] }
+  /** A previously pushed question is gone (host aborted it or the bridge delegated the waterfall elsewhere); dismiss the card without answering. */
+  | { t: 'question.resolved'; id: string; sessionId: string }
   /** Liveness probe. */
   | { t: 'ping' }
   /** Fatal connection error; the client should re-authenticate. */
@@ -126,6 +165,8 @@ export function isServerFrame(frame: BridgeFrame): frame is ServerFrame {
     || frame.t === 'stream.error'
     || frame.t === 'tool.call'
     || frame.t === 'tool.cancel'
+    || frame.t === 'question.requested'
+    || frame.t === 'question.resolved'
     || frame.t === 'ping'
     || frame.t === 'error'
 }
@@ -229,6 +270,18 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
       }
     case 'tool.cancel':
       return typeof frame.id === 'string' ? { t: 'tool.cancel', id: frame.id } : undefined
+    case 'question.requested':
+      return typeof frame.id === 'string'
+        && typeof frame.sessionId === 'string'
+        && Array.isArray(frame.questions)
+        && frame.questions.length > 0
+        && frame.questions.every(isQuestionItem)
+        ? { t: 'question.requested', id: frame.id, sessionId: frame.sessionId, questions: frame.questions }
+        : undefined
+    case 'question.resolved':
+      return typeof frame.id === 'string' && typeof frame.sessionId === 'string'
+        ? { t: 'question.resolved', id: frame.id, sessionId: frame.sessionId }
+        : undefined
     case 'ping':
       return { t: 'ping' }
     case 'error':
@@ -243,9 +296,18 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
 function isCaps(value: unknown): value is BridgeCaps {
   if (typeof value !== 'object' || value === null) return false
   const caps = value as Record<string, unknown>
-  return caps.textOnly === true
-    && typeof caps.snapshotMaxChars === 'number' && caps.snapshotMaxChars > 0
+  // Unknown keys (legacy `textOnly`, future flags) are tolerated: each side
+  // only acts on the flags it understands.
+  return typeof caps.snapshotMaxChars === 'number' && caps.snapshotMaxChars > 0
     && typeof caps.maxInteractiveItems === 'number' && caps.maxInteractiveItems > 0
+    && (caps.questions === undefined || typeof caps.questions === 'boolean')
+}
+
+/** Narrow one question item; unknown extra keys (e.g. host `intent`) pass through. */
+function isQuestionItem(value: unknown): value is QuestionItem {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  return typeof item.id === 'string' && typeof item.question === 'string'
 }
 
 function isToolError(value: unknown): value is ToolError {

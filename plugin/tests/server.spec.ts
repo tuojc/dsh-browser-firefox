@@ -11,7 +11,7 @@ const TOKEN = 'deadbeefdeadbeefdeadbeefdeadbeef'
 const EXT_ORIGIN = 'chrome-extension://test-extension-id'
 
 /** Extension caps used by every hello in this suite. */
-const CAPS = { textOnly: true as const, snapshotMaxChars: 12_000, maxInteractiveItems: 60 }
+const CAPS = { snapshotMaxChars: 12_000, maxInteractiveItems: 60 }
 
 interface Harness {
   bridge: BridgeServer
@@ -29,7 +29,7 @@ async function startBridge(overrides: Partial<ConstructorParameters<typeof Bridg
     dispatchRpc: dispatchMock,
     openStream: streamMock,
     toolTimeoutMs: 1_000,
-    caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
+    caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
     ...overrides,
   })
   const server = createServer()
@@ -104,9 +104,9 @@ describe('BridgeServer', () => {
     const h = await startBridge()
     harnesses.push(h)
     const { ws, frames } = await connect(h.url)
-    send(ws, { t: 'hello', token: TOKEN, caps: { textOnly: true, snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
+    send(ws, { t: 'hello', token: TOKEN, caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
     await waitFor(() => frames.some((f) => f.t === 'hello.ok'))
-    expect(frames.find((f) => f.t === 'hello.ok')).toEqual({ t: 'hello.ok', caps: { textOnly: true, snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
+    expect(frames.find((f) => f.t === 'hello.ok')).toEqual({ t: 'hello.ok', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
     ws.close()
   })
 
@@ -673,5 +673,91 @@ describe('BridgeServer', () => {
       expect([...PRIVILEGED_METHODS].some((m) => m.startsWith(family))).toBe(true)
     }
     expect(PRIVILEGED_METHODS.has('session/openWorkspacePath')).toBe(true)
+  })
+})
+
+describe('BridgeServer question uplink', () => {
+  it('intercepts bridge/questionAnswer before gateway dispatch and relays the receipt', async () => {
+    const answerMock = vi.fn(() => ({ accepted: true }))
+    const { server, url, dispatchMock } = await startBridge({ answerQuestion: answerMock })
+    const client = await connect(url)
+    send(client.ws, { t: 'hello', token: TOKEN, caps: { ...CAPS, questions: true } })
+    await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+    send(client.ws, {
+      t: 'rpc', id: 'qa-1', method: 'bridge/questionAnswer',
+      args: { questionId: 'q1', sessionId: 's1', answer: { answers: [] } },
+    })
+    await waitFor(() => client.frames.some((f) => f.t === 'rpc.result' && f.id === 'qa-1'))
+    expect(client.frames.find((f) => f.t === 'rpc.result' && f.id === 'qa-1'))
+      .toEqual({ t: 'rpc.result', id: 'qa-1', ok: true, value: { accepted: true } })
+    expect(answerMock).toHaveBeenCalledWith({ questionId: 'q1', sessionId: 's1', answer: { answers: [] } })
+    // 插件本地方法绝不能落到 Typert 网关。
+    expect(dispatchMock).not.toHaveBeenCalled()
+    client.ws.close()
+    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+  })
+
+  it('reports clientSupportsQuestions from the hello caps', async () => {
+    const { bridge, server, url } = await startBridge({ answerQuestion: () => ({ accepted: false, reason: 'not-pending' }) })
+    expect(bridge.clientSupportsQuestions()).toBe(false)
+    const client = await connect(url)
+    send(client.ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+    expect(bridge.clientSupportsQuestions()).toBe(false)
+    client.ws.close()
+    await waitFor(() => !bridge.hasConnection())
+
+    const client2 = await connect(url)
+    send(client2.ws, { t: 'hello', token: TOKEN, caps: { ...CAPS, questions: true } })
+    await waitFor(() => client2.frames.some((f) => f.t === 'hello.ok'))
+    expect(bridge.clientSupportsQuestions()).toBe(true)
+    client2.ws.close()
+    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+  })
+
+  it('pushes question frames to the connected extension', async () => {
+    const { bridge, server, url } = await startBridge({ answerQuestion: () => ({ accepted: true }) })
+    const client = await connect(url)
+    send(client.ws, { t: 'hello', token: TOKEN, caps: { ...CAPS, questions: true } })
+    await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+    bridge.push({
+      t: 'question.requested', id: 'q1', sessionId: 's1',
+      questions: [{ id: 'pick', question: '选？' }],
+    })
+    await waitFor(() => client.frames.some((f) => f.t === 'question.requested'))
+    expect(client.frames.find((f) => f.t === 'question.requested')).toEqual({
+      t: 'question.requested', id: 'q1', sessionId: 's1', questions: [{ id: 'pick', question: '选？' }],
+    })
+    bridge.push({ t: 'question.resolved', id: 'q1', sessionId: 's1' })
+    await waitFor(() => client.frames.some((f) => f.t === 'question.resolved'))
+    client.ws.close()
+    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+  })
+
+  it('fires onConnectionLost when the extension socket closes', async () => {
+    const lostMock = vi.fn()
+    const { server, url } = await startBridge({ answerQuestion: () => ({ accepted: true }), onConnectionLost: lostMock })
+    const client = await connect(url)
+    send(client.ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+    expect(lostMock).not.toHaveBeenCalled()
+    client.ws.close()
+    await waitFor(() => lostMock.mock.calls.length > 0)
+    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+  })
+
+  it('accepts rpc frames above the legacy 4MiB cap (screenshots ride rpc args now)', async () => {
+    const { server, url, dispatchMock } = await startBridge({ answerQuestion: () => ({ accepted: true }) })
+    const client = await connect(url)
+    send(client.ws, { t: 'hello', token: TOKEN, caps: CAPS })
+    await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+    const big = 'a'.repeat(5 * 1024 * 1024)
+    send(client.ws, { t: 'rpc', id: 'big-1', method: 'session/prompt', args: { request: { blob: big } } })
+    await waitFor(() => client.frames.some((f) => f.t === 'rpc.result' && f.id === 'big-1'), 10_000)
+    expect(client.frames.find((f) => f.t === 'rpc.result' && f.id === 'big-1'))
+      .toEqual({ t: 'rpc.result', id: 'big-1', ok: true, value: 'ok' })
+    expect(dispatchMock).toHaveBeenCalled()
+    client.ws.close()
+    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
   })
 })

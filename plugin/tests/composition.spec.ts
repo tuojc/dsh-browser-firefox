@@ -153,11 +153,11 @@ describe('real Loader composition', () => {
     // Zero-config semantics: loopback connections need no token (the
     // non-loopback token gate is covered by server.spec overrides).
     const client = await connect(port)
-    send(client.ws, { t: 'hello', token: '', caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 } })
+    send(client.ws, { t: 'hello', token: '', caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60 } })
     await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
     expect(client.frames.find((f) => f.t === 'hello.ok')).toEqual({
       t: 'hello.ok',
-      caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 120 },
+      caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 120 },
     })
 
     // session/create flows through workspace grouping onto the fake alpha host.

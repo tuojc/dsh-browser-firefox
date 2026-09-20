@@ -15,6 +15,7 @@
  *   bg → panel: { type: 'stream.frame', id, frame }
  *   bg → panel: { type: 'stream.error', id, message }
  *   bg → panel: { type: 'status', state: BridgeState, caps? }
+ *   bg → panel: { type: 'question', frame }  (桥推送的 ask_user_question 帧)
  *
  * @module
  */
@@ -22,13 +23,14 @@
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
 import { BRIDGE_CONFIG_PATH, BRIDGE_PATH } from 'dsh-browser-firefox/src/protocol.ts'
 import { BridgeClient, type BridgeState } from './bridge.ts'
-import { createRpc } from './rpc.ts'
+import { BridgeRpcError, createRpc } from './rpc.ts'
 import { dispatchToolCall, dispatchAggregatedSnapshot, snapshotTabAfterNavigation, type ToolCall, type ToolAnswer, type ContentBudget } from './tools.ts'
 import { TabSessionManager, pushTab } from './session-state.ts'
 import { authorizeByLevel, classifyTool, type PermissionLevel } from './authorization.ts'
 import { checkAmoUpdate, type AmoUpdateInfo } from './updates.ts'
 import { waitForTabComplete } from './tab-utils.ts'
 import { registerToolbarAction, type SidebarActionApi } from './toolbar.ts'
+import { TransientQuestionCache } from './transient-questions.ts'
 
 /** User settings persisted in browser.storage.local. */
 export interface Settings {
@@ -93,6 +95,8 @@ let rpc: ReturnType<typeof createRpc> | null = null
 /** AMO 上的更新版本（有更新时置位，随 status 广播给面板）。 */
 let amoUpdate: AmoUpdateInfo | undefined
 const panelPorts = new Set<chrome.runtime.Port>()
+/** 挂起的 ask_user_question 推送缓存：侧边栏后开也能重放卡片。 */
+const transientQuestions = new TransientQuestionCache()
 
 // AMO 更新检查：启动一次；失败静默（未上架/离线都不影响功能）。
 void checkAmoUpdate(browser.runtime.getManifest().version).then((info) => {
@@ -236,8 +240,7 @@ async function createTabInGroup(url: string, sessionId: string | undefined, titl
   return tab
 }
 
-/** browser_navigate：新建标签页打开（不覆盖当前页），并归入当前会话的 group。 */
-/** browser_screenshot：截取工作 tab（或活动 tab）为 data URL，回传 bridge 保存。 */
+/** browser_screenshot：截取工作 tab（或活动 tab），回传结构化图像载荷（插件侧落宿主附件库）。 */
 async function screenshotAction(): Promise<ToolAnswer> {
   const targetId = tabSessions.current().workingTabId
     ?? (await browser.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id
@@ -248,12 +251,17 @@ async function screenshotAction(): Promise<ToolAnswer> {
     // captureTab 是 Firefox 特有 API（可截后台 tab），@types/chrome 未收录，用类型断言。
     const capture = browser.tabs as unknown as { captureTab: (tabId: number) => Promise<string> }
     const dataUrl = await capture.captureTab(targetId)
-    return { ok: true, result: dataUrl }
+    const match = /^data:(image\/[a-z]+);base64,(.+)$/.exec(dataUrl)
+    if (match === null || match[1] === undefined || match[2] === undefined) {
+      return { ok: false, error: { code: 'action-failed', message: '截图结果不是可识别的图像 data URL' } }
+    }
+    return { ok: true, result: { mediaType: match[1], data: match[2] } }
   } catch (error) {
     return { ok: false, error: { code: 'action-failed', message: `截图失败: ${error instanceof Error ? error.message : String(error)}` } }
   }
 }
 
+/** browser_navigate：新建标签页打开（不覆盖当前页），并归入当前会话的 group。 */
 async function navigateAction(call: ToolCall, sessionId: string | undefined, title?: string, budget?: ContentBudget): Promise<ToolAnswer> {
   const url = typeof call.args.url === 'string' ? call.args.url : ''
   const parsed = safeHttpUrl(url)
@@ -518,7 +526,11 @@ async function startBridge(): Promise<void> {
     const client = new BridgeClient({
       onStateChange: (next) => {
         // 每次新 socket（connecting）旧订阅即死；清表，面板侧重连后重订。
-        if (next === 'connecting') dropAllStreams()
+        // 挂起的问题同样失效（插件会把瀑布委托给下一个 answerer）。
+        if (next === 'connecting') {
+          dropAllStreams()
+          transientQuestions.clear()
+        }
         broadcastStatus()
       },
       onFrame: (frame) => {
@@ -530,6 +542,10 @@ async function startBridge(): Promise<void> {
               : { type: 'stream.error', id: frame.id, message: frame.message })
           }
           if (frame.t === 'stream.error') streamOwners.delete(frame.id)
+        } else if (frame.t === 'question.requested' || frame.t === 'question.resolved') {
+          // ask_user_question：缓存（供后开的侧边栏重放）+ 广播给所有面板。
+          transientQuestions.ingest(frame)
+          for (const panel of panelPorts) postToPort(panel, { type: 'question', frame })
         } else if (frame.t === 'tool.call') routeToolCall(frame, frame.expiresAt, frame.sessionId, frame.title)
         else if (frame.t === 'tool.cancel') {
           const entry = inflightToolCalls.get(frame.id)
@@ -572,16 +588,22 @@ browser.runtime.onConnect.addListener((port) => {
         const rpcMsg = message as { id: string; method: string; args?: Record<string, unknown> }
         void gatewayRpc(rpcMsg.method, rpcMsg.args ?? {}).then(
           (value) => {
+            // 面板回答了问题：回执到达即可以从重放缓存中移除。
+            if (rpcMsg.method === 'bridge/questionAnswer') {
+              const args = rpcMsg.args ?? {}
+              if (typeof args.sessionId === 'string' && typeof args.questionId === 'string') {
+                transientQuestions.settle(args.sessionId, args.questionId)
+              }
+            }
             try { port.postMessage({ type: 'rpc.result', id: rpcMsg.id, ok: true, value }) } catch { /* port closed */ }
           },
           (error: unknown) => {
+            // 保留 Remote 失败的 code/details（附件错误的 reason 靠它映射文案）。
+            const failure = error instanceof BridgeRpcError
+              ? { code: error.code, message: error.message, details: error.details }
+              : { code: 'bridge-unavailable', message: error instanceof Error ? error.message : String(error) }
             try {
-              port.postMessage({
-                type: 'rpc.result',
-                id: rpcMsg.id,
-                ok: false,
-                error: { code: 'bridge-unavailable', message: error instanceof Error ? error.message : String(error) },
-              })
+              port.postMessage({ type: 'rpc.result', id: rpcMsg.id, ok: false, error: failure })
             } catch { /* port closed */ }
           },
         )
@@ -619,6 +641,8 @@ browser.runtime.onConnect.addListener((port) => {
       }
       case 'request-status':
         broadcastStatus()
+        // 面板（重）打开：重放仍挂起的 ask_user_question 推送。
+        for (const frame of transientQuestions.replay()) postToPort(port, { type: 'question', frame })
         break
     }
   })

@@ -210,3 +210,68 @@ describe('mergeHistoryRows: run_code 与内层页面操作', () => {
     ])
   })
 })
+
+describe('question frames', () => {
+  it('parses question.requested into a pending question', async () => {
+    const { pendingQuestionFromFrame } = await import('../src/panel/events.ts')
+    const frame = {
+      t: 'question.requested' as const,
+      id: 'q1',
+      sessionId: 's1',
+      questions: [{
+        id: 'mode', question: '选？', header: 'MODE', detail: 'd',
+        options: [{ label: 'A' }, { label: 'B', description: 'b' }], multiSelect: true,
+      }],
+    }
+    expect(pendingQuestionFromFrame(frame)).toEqual({
+      questionId: 'q1',
+      sessionId: 's1',
+      questions: [{
+        id: 'mode', question: '选？', header: 'MODE', detail: 'd',
+        options: [{ label: 'A' }, { label: 'B', description: 'b' }], multiSelect: true,
+      }],
+    })
+  })
+
+  it('rejects malformed requested frames and non-question frames', async () => {
+    const { pendingQuestionFromFrame } = await import('../src/panel/events.ts')
+    expect(pendingQuestionFromFrame({ t: 'question.resolved', id: 'q', sessionId: 's' })).toBeNull()
+    expect(pendingQuestionFromFrame({
+      t: 'question.requested', id: 'q', sessionId: 's', questions: [],
+    })).toBeNull()
+    expect(pendingQuestionFromFrame({
+      t: 'question.requested', id: 'q', sessionId: 's', questions: [{ id: 1, question: 'x' }],
+    } as unknown as Parameters<typeof pendingQuestionFromFrame>[0])).toBeNull()
+    expect(pendingQuestionFromFrame({
+      t: 'question.requested', id: 'q', sessionId: 's', questions: [{ id: 'x', question: 'q', options: 'no' }],
+    } as unknown as Parameters<typeof pendingQuestionFromFrame>[0])).toBeNull()
+  })
+
+  it('parses question.resolved into its identity', async () => {
+    const { resolvedQuestionFromFrame } = await import('../src/panel/events.ts')
+    expect(resolvedQuestionFromFrame({ t: 'question.resolved', id: 'q1', sessionId: 's1' }))
+      .toEqual({ questionId: 'q1', sessionId: 's1' })
+    expect(resolvedQuestionFromFrame({
+      t: 'question.requested', id: 'q', sessionId: 's', questions: [{ id: 'x', question: 'q' }],
+    })).toBeNull()
+  })
+})
+
+describe('image rows', () => {
+  it('carries durable image refs on user and assistant rows', async () => {
+    const { rowFromEvent } = await import('../src/panel/events.ts')
+    const attachment = { attachmentId: 'att-1', mediaType: 'image/png', width: 10, height: 10 }
+    const user = rowFromEvent(ev('user/message', {
+      source: { kind: 'user' },
+      content: [{ type: 'image', attachment }, { type: 'text', text: '看图' }],
+    }))
+    expect(user?.kind).toBe('user')
+    expect(user?.images).toEqual([attachment])
+    const assistant = rowFromEvent(ev('assistant/message', {
+      message: { content: [{ type: 'image', attachment }] },
+    }))
+    expect(assistant?.kind).toBe('assistant')
+    expect(assistant?.text).toBe('')
+    expect(assistant?.images).toEqual([attachment])
+  })
+})

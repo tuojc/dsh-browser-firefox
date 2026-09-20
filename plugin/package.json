@@ -1,7 +1,7 @@
 {
   "name": "dsh-browser-firefox",
-  "description": "Firefox browser control for DeepSeek Harness: token-authenticated WebSocket bridge + text-first browser_* tools driving the user's own Firefox via the companion AMO extension",
-  "version": "0.4.1",
+  "description": "Firefox browser control for DeepSeek Harness: token-authenticated WebSocket bridge + browser_* tools (native-image screenshots) driving the user's own Firefox via the companion AMO extension, with sidebar ask_user_question answering",
+  "version": "0.4.5",
   "author": "tuojc",
   "license": "MIT",
   "repository": {
@@ -56,10 +56,12 @@
     "@deepseek-ai/dsh-api-gateway": "^0.1.2-alpha.2",
     "@deepseek-ai/dsh-api-session-controller": "^0.1.2-alpha.2",
     "@deepseek-ai/dsh-api-workspace-controller": "^0.1.2-alpha.2",
+    "@deepseek-ai/dsh-attachment": "^0.1.2-alpha.2",
     "@deepseek-ai/dsh-host-webserver": "^0.1.2-alpha.2",
     "@deepseek-ai/dsh-invariants": "^0.1.2-alpha.2",
     "@deepseek-ai/dsh-home-paths": "^0.1.2-alpha.2",
-    "@deepseek-ai/dsh-tools": "^0.1.2-alpha.2"
+    "@deepseek-ai/dsh-tools": "^0.1.2-alpha.2",
+    "@deepseek-ai/dsh-user-questions": "^0.1.2-alpha.2"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
@@ -80,6 +82,7 @@
     "@deepseek-ai/dsh-api-gateway": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-api-session-controller": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-api-workspace-controller": "0.1.2-alpha.5",
+    "@deepseek-ai/dsh-attachment": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-host-webserver": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-invariants": "0.1.2-alpha.5",
     "@deepseek-ai/dsh-llm": "0.1.2-alpha.5",

@@ -10,9 +10,34 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
-import { connectPanel, type PanelApi, type PanelSettings } from './api.ts'
-import { MAX_ATTACHMENTS_PER_MESSAGE, readDraft, renderTextAttachment, toImageContent, type Draft } from './attachments.ts'
-import { PERMISSION_LEVEL_HINTS, PERMISSION_LEVEL_LABELS, type PermissionLevel } from './permissions.ts'
+import { connectPanel, PanelRpcError, type PanelApi, type PanelSettings } from './api.ts'
+import {
+  assertImageBudget,
+  DEFAULT_IMAGE_LIMITS,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  parseImageAttachmentLimits,
+  readDraft,
+  renderTextAttachment,
+  toImageContent,
+  type Draft,
+  type DraftImage,
+  type ImageAttachmentLimits,
+} from './attachments.ts'
+import { imageErrorMessage } from './image-errors.ts'
+import { MessageImages } from './MessageImages.tsx'
+import { ModelPicker } from './ModelPicker.tsx'
+import {
+  currentSelection,
+  modelSelectErrorMessage,
+  parseModelCatalog,
+  parseModelSelectionProjection,
+  type ModelCatalogView,
+  type ModelSelectionView,
+} from './models.ts'
+import { QuestionCard } from './QuestionCard.tsx'
+import { questionReceiptReason, removePendingQuestion, upsertPendingQuestion } from './pending-questions.ts'
+import type { QuestionAnswer } from './questions.ts'
+import { PERMISSION_LEVEL_HINTS, PERMISSION_LEVEL_LABELS, PERMISSION_LEVEL_SHORT, type PermissionLevel } from './permissions.ts'
 import { renderMarkdown } from './markdown.ts'
 import whaleUrl from '../../assets/icons/deepseek-256.png'
 
@@ -21,8 +46,11 @@ import {
   appendLiveRow,
   completeLastTool,
   mergeHistoryRows,
+  pendingQuestionFromFrame,
+  resolvedQuestionFromFrame,
   rowFromEvent,
   toolSummary,
+  type PendingQuestion,
   type Row,
   type SessionFollowFrameView,
 } from './events.ts'
@@ -244,6 +272,20 @@ export function App(): React.JSX.Element {
   /** 待发送的附件草稿（图片/文本）。 */
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [imageError, setImageError] = useState<string | null>(null)
+  /** 宿主下发的图片限制（session/follow snapshot 投影；未到时用本地默认）。 */
+  const [imageLimits, setImageLimits] = useState<ImageAttachmentLimits>(DEFAULT_IMAGE_LIMITS)
+  /** 桥推送的待回答问题（全部会话；渲染时按当前会话过滤）。 */
+  const [questions, setQuestions] = useState<PendingQuestion[]>([])
+  /** 正在提交回答的问题 id（按钮防抖/禁用）。 */
+  const [questionBusy, setQuestionBusy] = useState<string | null>(null)
+  /** 模型目录（bridge 生成级缓存；connected 后拉取）。 */
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogView | null>(null)
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null)
+  /** 当前会话的模型选择（follow 投影或 deferred 会话的乐观 pending 值）。 */
+  const [modelSelection, setModelSelection] = useState<ModelSelectionView | null>(null)
+  /** deferred 会话未物化时暂存的选择，首个 prompt 成功后补发。 */
+  const pendingModelRef = useRef<ModelSelectionView | null>(null)
+  const [modelBusy, setModelBusy] = useState(false)
   /** 盾牌审批浮层开关。 */
   const [permMenuOpen, setPermMenuOpen] = useState(false)
 
@@ -252,11 +294,23 @@ export function App(): React.JSX.Element {
     setImageError(null)
     for (const file of files) {
       try {
-        const draft = await readDraft(file)
+        const draft = await readDraft(file, imageLimits)
         setDrafts((prev) => {
           if (prev.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
             setImageError(`每条消息最多 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件`)
             return prev
+          }
+          if (draft.kind === 'image') {
+            try {
+              assertImageBudget(
+                prev.filter((d): d is DraftImage => d.kind === 'image'),
+                [draft],
+                imageLimits,
+              )
+            } catch (cause) {
+              setImageError(cause instanceof Error ? cause.message : '附件超出限制')
+              return prev
+            }
           }
           return [...prev, draft]
         })
@@ -288,6 +342,7 @@ export function App(): React.JSX.Element {
       if (next === previous) return
       if (next === 'connected') {
         setSessionEpoch((epoch) => epoch + 1)
+        void loadModelCatalog()
       } else if (previous !== null && next === 'stopped') {
         followCloseRef.current?.()
         followCloseRef.current = null
@@ -296,13 +351,143 @@ export function App(): React.JSX.Element {
         setWorking(false)
         setWorkspaceReady(false)
         setSessionsLoaded(false)
+        clearQuestions()
+        setModelCatalog(null)
+        setModelCatalogError(null)
+        setModelSelection(null)
+        pendingModelRef.current = null
         setSessionEpoch((epoch) => epoch + 1)
       }
     })
     const offUpdate = api.onUpdateAvailable(setUpdate)
+    const offQuestion = api.onQuestion((frame) => { onQuestionFrame(frame) })
     api.requestStatus()
-    return () => { offStatus(); offUpdate() }
+    return () => { offStatus(); offUpdate(); offQuestion() }
   }, [api])
+
+  /** 桥推送的问答帧：requested 入列（广播，含重放），resolved 移除。 */
+  function onQuestionFrame(frame: Parameters<typeof pendingQuestionFromFrame>[0]): void {
+    const pending = pendingQuestionFromFrame(frame)
+    if (pending !== null) {
+      setQuestions((prev) => upsertPendingQuestion(prev, pending))
+      return
+    }
+    const resolved = resolvedQuestionFromFrame(frame)
+    if (resolved !== null) {
+      setQuestions((prev) => removePendingQuestion(prev, resolved))
+    }
+  }
+
+  function clearQuestions(): void {
+    setQuestions([])
+    setQuestionBusy(null)
+  }
+
+  /** 拉取宿主模型目录（bridge 生成级；失败可经 picker 重试）。 */
+  async function loadModelCatalog(): Promise<void> {
+    setModelCatalogError(null)
+    try {
+      const catalog = parseModelCatalog(await api.rpc('session/modelCatalog', {}))
+      if (catalog === undefined) throw new Error('目录响应无法解析')
+      setModelCatalog(catalog)
+    } catch (cause) {
+      setModelCatalog(null)
+      setModelCatalogError(cause instanceof Error ? cause.message : '模型目录加载失败')
+    }
+  }
+
+  /**
+   * 应用模型选择：selectModel 按会话生效。deferred 会话未物化时宿主报
+   * session/not-found —— 本地乐观显示并暂存，首个 prompt 成功后补发。
+   */
+  async function applyModelSelection(selection: ModelSelectionView): Promise<void> {
+    const id = sessionRef.current
+    if (id === null || modelBusy) return
+    setModelBusy(true)
+    try {
+      await api.rpc('session/selectModel', {
+        request: {
+          sessionId: id,
+          provider: selection.provider,
+          model: selection.model,
+          ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+        },
+      })
+      pendingModelRef.current = null
+      setModelSelection(selection)
+    } catch (cause) {
+      if (cause instanceof PanelRpcError && cause.code === 'session/not-found') {
+        pendingModelRef.current = selection
+        setModelSelection(selection)
+      } else {
+        setError(modelSelectErrorMessage(cause))
+      }
+    } finally {
+      setModelBusy(false)
+    }
+  }
+
+  /** 首个 prompt 物化 deferred 会话后，补发暂存的模型选择。 */
+  async function flushPendingModel(): Promise<void> {
+    const pending = pendingModelRef.current
+    const id = sessionRef.current
+    if (pending === null || id === null) return
+    pendingModelRef.current = null
+    try {
+      await api.rpc('session/selectModel', {
+        request: {
+          sessionId: id,
+          provider: pending.provider,
+          model: pending.model,
+          ...(pending.reasoningEffort === undefined ? {} : { reasoningEffort: pending.reasoningEffort }),
+        },
+      })
+    } catch (cause) {
+      setError(modelSelectErrorMessage(cause))
+    }
+  }
+
+  /** 提交回答：rpc 上行到插件的 bridge/questionAnswer，按回执结算卡片。 */
+  async function answerQuestion(target: PendingQuestion, answers: QuestionAnswer[]): Promise<void> {
+    setQuestionBusy(target.questionId)
+    try {
+      const receipt = await api.rpc('bridge/questionAnswer', {
+        questionId: target.questionId,
+        sessionId: target.sessionId,
+        answer: { answers },
+      })
+      const disposition = questionReceiptReason(receipt)
+      if (disposition === 'accepted') {
+        setQuestions((prev) => removePendingQuestion(prev, target))
+      } else if (disposition === 'not-pending') {
+        setError('这个问题已在其他窗口处理或已失效。')
+        setQuestions((prev) => removePendingQuestion(prev, target))
+      } else {
+        setError('回答未被接受，请检查后重试。')
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '回答提交失败')
+    } finally {
+      setQuestionBusy(null)
+    }
+  }
+
+  /** 放弃回答：通知插件拒绝该瀑布（模型会看到「用户放弃回答」）。 */
+  async function dismissQuestion(target: PendingQuestion): Promise<void> {
+    setQuestionBusy(target.questionId)
+    try {
+      await api.rpc('bridge/questionAnswer', {
+        questionId: target.questionId,
+        sessionId: target.sessionId,
+        decline: true,
+      })
+    } catch {
+      // 桥已断开时问题在宿主侧已被委托/作废，本地直接移除即可。
+    } finally {
+      setQuestions((prev) => removePendingQuestion(prev, target))
+      setQuestionBusy(null)
+    }
+  }
 
   /**
    * 带重试的流订阅：首帧到达即视为健康（重置重试）；连续失败 5 次后放弃
@@ -395,6 +580,14 @@ export function App(): React.JSX.Element {
     const f = frame as SessionFollowFrameView
     if (f.type === 'snapshot') {
       followDeadRef.current = false
+      // 宿主权威图片限制随 snapshot 投影下发；到达后替换本地默认值。
+      const limits = parseImageAttachmentLimits(f.projections?.values?.imageLimits)
+      if (limits !== undefined) setImageLimits(limits)
+      // 模型选择投影（next ?? lastUsed）；deferred 会话的乐观 pending 值优先。
+      const modelProj = parseModelSelectionProjection(f.projections?.values?.modelSelection)
+      if (modelProj !== undefined && pendingModelRef.current === null) {
+        setModelSelection(currentSelection(modelProj))
+      }
       setRows(mergeHistoryRows((f.records ?? []).map((record) => record.event), nextSeq))
       return
     }
@@ -406,7 +599,7 @@ export function App(): React.JSX.Element {
     }
     const row = rowFromEvent(event)
     if (row !== null) {
-      setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq()))
+      setRows((prev) => appendLiveRow(prev, row.kind, row.text, nextSeq(), row.images))
       if (row.kind === 'assistant') setWorking(false)
       return
     }
@@ -470,6 +663,9 @@ export function App(): React.JSX.Element {
     void persistSessionId(id)
     setRows([])
     setWorking(false)
+    // 模型选择是按会话的：切走后由新会话的 snapshot 投影刷新。
+    setModelSelection(null)
+    pendingModelRef.current = null
     openFollow(id)
   }
 
@@ -481,6 +677,8 @@ export function App(): React.JSX.Element {
       setCurrentSessionId(created.sessionId)
       setRows([])
       setWorking(false)
+      setModelSelection(null)
+      pendingModelRef.current = null
       void persistSessionId(created.sessionId)
       setLocalNew((prev) => [{ sessionId: created.sessionId, title: '新会话', updatedAt: Date.now() }, ...prev])
       setSessionPickerOpen(false)
@@ -641,8 +839,11 @@ export function App(): React.JSX.Element {
       // 首个 prompt 会物化 deferred 会话：若此前的 follow 已死（物化前必然
       // 失败），现在重开即可拿到含该消息的 snapshot 与后续 live 帧。
       if (followDeadRef.current && sessionRef.current !== null) openFollow(sessionRef.current)
+      // deferred 会话物化后补发暂存的模型选择。
+      await flushPendingModel()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      // 附件相关失败（宿主权威拒绝）映射为可读文案；其余透传消息。
+      setError(imageErrorMessage(cause, imageLimits))
       setWorking(false)
     } finally {
       setBusy(false)
@@ -676,6 +877,12 @@ export function App(): React.JSX.Element {
     if (currentSessionId === null) return null
     return sessions.find((s) => s.sessionId === currentSessionId)?.title ?? '新会话'
   }, [sessions, currentSessionId])
+
+  /** 当前会话的待回答问题（渲染 QuestionCard；其余会话的入列等待切换）。 */
+  const question = useMemo(
+    () => questions.find((candidate) => candidate.sessionId === currentSessionId) ?? null,
+    [questions, currentSessionId],
+  )
 
   if (showSettings) {
     return (
@@ -752,6 +959,15 @@ export function App(): React.JSX.Element {
           <small>当前会话</small>
           <strong title={currentSessionTitle ?? undefined}>{currentSessionTitle ?? '未选择会话'}</strong>
         </span>
+        <ModelPicker
+          catalog={modelCatalog}
+          catalogError={modelCatalogError}
+          selection={modelSelection}
+          busy={modelBusy}
+          disabled={state !== 'connected' || currentSessionId === null}
+          onSelect={(selection) => { void applyModelSelection(selection) }}
+          onRetry={() => { void loadModelCatalog() }}
+        />
         <button className="context-switcher" onClick={() => setSessionPickerOpen((v) => !v)}
           aria-haspopup="listbox" aria-expanded={sessionPickerOpen} aria-label="切换会话" title="切换会话">
           <SwapIcon />
@@ -792,10 +1008,19 @@ export function App(): React.JSX.Element {
           <div key={row.seq} className={`row ${row.kind}`}>
             {row.kind === 'assistant' && <span className="assistant-avatar"><img src={whaleUrl} alt="助手" /></span>}
             {row.kind === 'tool' ? <ToolActivity row={row} /> : <MessageBody row={row} />}
+            {(row.kind === 'user' || row.kind === 'assistant')
+              && row.images !== undefined && row.images.length > 0 && currentSessionId !== null && (
+              <MessageImages
+                images={row.images}
+                sessionId={currentSessionId}
+                api={api}
+                align={row.kind === 'user' ? 'end' : 'start'}
+              />
+            )}
             {row.kind === 'user' && <CopyButton text={row.text} />}
           </div>
         ))}
-        {working && (
+        {working && question === null && (
           <div className="ai-progress" role="status" aria-label="助手正在处理">
             <span className="assistant-avatar"><img src={whaleUrl} alt="" /></span>
             <span className="progress-dots" aria-hidden="true"><i /><i /><i /></span>
@@ -807,6 +1032,15 @@ export function App(): React.JSX.Element {
           <button className="jump-bottom" onClick={jumpToBottom} aria-label="回到底部" title="回到底部"><DownIcon /></button>
         )}
       </div>
+      {question !== null && (
+        <QuestionCard
+          key={`${question.sessionId}:${question.questionId}`}
+          question={question}
+          submitting={questionBusy === question.questionId}
+          onAnswer={(answers) => { void answerQuestion(question, answers) }}
+          onDismiss={() => { void dismissQuestion(question) }}
+        />
+      )}
       {error !== null && <div className="error">{error}</div>}
       <footer className="composer">
         <div className="composer-box">
@@ -857,8 +1091,15 @@ export function App(): React.JSX.Element {
                   }} />
               </label>
               <div className="attach-anchor" ref={permAnchorRef}>
-                <button className="icon-button" onClick={() => setPermMenuOpen((v) => !v)}
-                  aria-haspopup="menu" aria-expanded={permMenuOpen} aria-label="权限级别" title="权限级别">
+                <button
+                  className="icon-button perm-shield"
+                  data-level={settings?.permissionLevel ?? 'read'}
+                  onClick={() => setPermMenuOpen((v) => !v)}
+                  aria-haspopup="menu"
+                  aria-expanded={permMenuOpen}
+                  aria-label="权限级别"
+                  title={`权限级别：${PERMISSION_LEVEL_SHORT[settings?.permissionLevel ?? 'read']}`}
+                >
                   <ShieldIcon />
                 </button>
               </div>
@@ -871,19 +1112,26 @@ export function App(): React.JSX.Element {
           </div>
         </div>
         {permMenuOpen && (
-          <div className="attach-menu" role="menu" aria-label="权限级别" ref={permMenuRef}>
-            <label className="attach-menu-field">
-              <span>权限级别</span>
-              <select
-                value={settings?.permissionLevel ?? 'read'}
-                onChange={(e) => applyPermissionLevel(e.target.value as PermissionLevel)}
-              >
-                {(Object.keys(PERMISSION_LEVEL_LABELS) as PermissionLevel[]).map((level) => (
-                  <option key={level} value={level}>{PERMISSION_LEVEL_LABELS[level]}</option>
-                ))}
-              </select>
-              <small className="attach-menu-hint">{PERMISSION_LEVEL_HINTS[settings?.permissionLevel ?? 'read']}</small>
-            </label>
+          <div className="perm-menu" role="menu" aria-label="权限级别" ref={permMenuRef}>
+            <div className="perm-menu-title">权限级别</div>
+            {(Object.keys(PERMISSION_LEVEL_LABELS) as PermissionLevel[]).map((level) => {
+              const active = (settings?.permissionLevel ?? 'read') === level
+              return (
+                <button
+                  key={level}
+                  className={`perm-option${active ? ' active' : ''}`}
+                  role="menuitemradio"
+                  aria-checked={active}
+                  onClick={() => { applyPermissionLevel(level); setPermMenuOpen(false) }}
+                >
+                  <span className="perm-option-check" aria-hidden="true">{active ? '✓' : ''}</span>
+                  <span className="perm-option-text">
+                    <strong>{PERMISSION_LEVEL_SHORT[level]}</strong>
+                    <small>{PERMISSION_LEVEL_HINTS[level]}</small>
+                  </span>
+                </button>
+              )
+            })}
           </div>
         )}
       </footer>

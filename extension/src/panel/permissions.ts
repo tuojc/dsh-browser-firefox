@@ -13,6 +13,13 @@ export const PERMISSION_LEVEL_LABELS: Record<import('../background/authorization
   readwrite: '读写（读取与操作都允许）',
 }
 
+/** 短标签：选项卡标题与盾牌按钮提示用。 */
+export const PERMISSION_LEVEL_SHORT: Record<import('../background/authorization.ts').PermissionLevel, string> = {
+  locked: '锁定',
+  read: '只读',
+  readwrite: '读写',
+}
+
 export const PERMISSION_LEVEL_HINTS: Record<import('../background/authorization.ts').PermissionLevel, string> = {
   locked: '助手只能聊天，读取与操作都会被拒绝',
   read: '可读取页面内容；点击/输入/导航等会被拒绝',

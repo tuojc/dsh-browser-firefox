@@ -11,14 +11,43 @@
 export const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
 export type ImageMediaType = typeof IMAGE_MEDIA_TYPES[number]
 
-/** 本地默认限制（宿主未下发 imageLimits 时使用；与上游默认值对齐）。 */
-export const MAX_IMAGES_PER_MESSAGE = 4
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
-export const MAX_IMAGE_DIMENSION = 8_000
-/** 每条消息的图片+文本附件合计上限。 */
+/**
+ * 宿主下发的权威图片限制（session/follow snapshot 的
+ * projections.values.imageLimits）。未拿到投影前用本地默认值。
+ */
+export interface ImageAttachmentLimits {
+  maxImageBytes: number
+  maxImagesPerMessage: number
+  maxMessageImageBytes: number
+  maxImagePixels: number
+  maxImageDimension: number
+  mediaTypes: readonly ImageMediaType[]
+}
+
+/** 本地默认限制（宿主投影未到达时使用；比宿主默认值更保守）。 */
+export const DEFAULT_IMAGE_LIMITS: ImageAttachmentLimits = {
+  maxImageBytes: 5 * 1024 * 1024,
+  maxImagesPerMessage: 4,
+  maxMessageImageBytes: 20 * 1024 * 1024,
+  maxImagePixels: 64_000_000,
+  maxImageDimension: 8_000,
+  mediaTypes: IMAGE_MEDIA_TYPES,
+}
+
+/** 每条消息的附件合计上限（图片+文本，本地 UX 限制）。 */
 export const MAX_ATTACHMENTS_PER_MESSAGE = 4
 /** 文本附件上限（超出截断并在内容里标注）。 */
 export const MAX_TEXT_ATTACHMENT_CHARS = 20_000
+
+/** 历史消息里图片块的持久化引用（session/attachment 回读字节）。 */
+export interface ImageAttachmentRefView {
+  attachmentId: string
+  mediaType?: string
+  bytes?: number
+  width?: number
+  height?: number
+  name?: string
+}
 
 /** 可作为文本附件读取的扩展名（mime 不可靠时用文件名兜底）。 */
 const TEXT_FILE_EXTENSIONS = new Set([
@@ -58,26 +87,49 @@ export class ImageInputError extends Error {
   }
 }
 
-/** 校验媒体类型与字节数（尺寸在 decode 后校验）。 */
-export function validateImageBasics(mediaType: string, bytes: number): asserts mediaType is ImageMediaType {
-  if (!(IMAGE_MEDIA_TYPES as readonly string[]).includes(mediaType)) {
+/** 校验媒体类型与字节数（尺寸在 decode 后校验）。limits 缺省用本地默认。 */
+export function validateImageBasics(mediaType: string, bytes: number, limits: ImageAttachmentLimits = DEFAULT_IMAGE_LIMITS): asserts mediaType is ImageMediaType {
+  if (!limits.mediaTypes.includes(mediaType as ImageMediaType)) {
     throw new ImageInputError(`不支持的图片类型 ${mediaType}（支持 PNG/JPEG/WebP/GIF）`)
   }
-  if (bytes > MAX_IMAGE_BYTES) {
-    throw new ImageInputError(`图片超过 ${Math.floor(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`)
+  if (bytes > limits.maxImageBytes) {
+    throw new ImageInputError(`图片超过 ${formatBytes(limits.maxImageBytes)} 上限`)
   }
 }
 
-/** decode 后的尺寸校验。 */
-export function validateImageDimensions(width: number, height: number): void {
-  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
-    throw new ImageInputError(`图片尺寸 ${width}×${height} 超过 ${MAX_IMAGE_DIMENSION}px 上限`)
+/** decode 后的尺寸与像素校验。 */
+export function validateImageDimensions(width: number, height: number, limits: ImageAttachmentLimits = DEFAULT_IMAGE_LIMITS): void {
+  if (width > limits.maxImageDimension || height > limits.maxImageDimension) {
+    throw new ImageInputError(`图片尺寸 ${width}×${height} 超过 ${limits.maxImageDimension}px 上限`)
   }
+  if (width * height > limits.maxImagePixels) {
+    throw new ImageInputError(`图片像素 ${width}×${height} 超出上限`)
+  }
+}
+
+/** 消息级预算：图片张数与聚合字节（随宿主投影收紧/放宽）。 */
+export function assertImageBudget(
+  current: readonly DraftImage[],
+  adding: readonly DraftImage[],
+  limits: ImageAttachmentLimits = DEFAULT_IMAGE_LIMITS,
+): void {
+  if (current.length + adding.length > limits.maxImagesPerMessage) {
+    throw new ImageInputError(`每条消息最多 ${limits.maxImagesPerMessage} 张图片`)
+  }
+  const total = [...current, ...adding].reduce((sum, image) => sum + image.bytes, 0)
+  if (total > limits.maxMessageImageBytes) {
+    throw new ImageInputError(`一条消息的图片总量超过 ${formatBytes(limits.maxMessageImageBytes)} 上限`)
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024) * 10) / 10}MB`
+  return `${Math.ceil(bytes / 1024)}KB`
 }
 
 /** 从 File 读取图片草稿（dataURL → base64 + 尺寸）。 */
-export async function readDraftImage(file: File): Promise<DraftImage> {
-  validateImageBasics(file.type, file.size)
+export async function readDraftImage(file: File, limits: ImageAttachmentLimits = DEFAULT_IMAGE_LIMITS): Promise<DraftImage> {
+  validateImageBasics(file.type, file.size, limits)
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result))
@@ -92,7 +144,7 @@ export async function readDraftImage(file: File): Promise<DraftImage> {
     img.onerror = () => { reject(new ImageInputError('图片解码失败')) }
     img.src = dataUrl
   })
-  validateImageDimensions(width, height)
+  validateImageDimensions(width, height, limits)
   return {
     kind: 'image',
     id: crypto.randomUUID(),
@@ -151,7 +203,81 @@ export function renderTextAttachment(draft: DraftText): string {
 }
 
 /** 把一个 File 读成草稿（图片或文本，按类型分流）。 */
-export async function readDraft(file: File): Promise<Draft> {
-  if ((IMAGE_MEDIA_TYPES as readonly string[]).includes(file.type)) return readDraftImage(file)
+export async function readDraft(file: File, limits: ImageAttachmentLimits = DEFAULT_IMAGE_LIMITS): Promise<Draft> {
+  if ((IMAGE_MEDIA_TYPES as readonly string[]).includes(file.type)) return readDraftImage(file, limits)
   return readDraftText(file)
+}
+
+// ---- 宿主投影与历史图片 ----
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
+function isImageMediaType(value: unknown): value is ImageMediaType {
+  return typeof value === 'string' && (IMAGE_MEDIA_TYPES as readonly string[]).includes(value)
+}
+
+/** 解析宿主下发的 imageLimits 投影（不信任流数据，逐字段校验）。 */
+export function parseImageAttachmentLimits(value: unknown): ImageAttachmentLimits | undefined {
+  if (!isRecord(value)
+    || !isPositiveInteger(value.maxImageBytes)
+    || !isPositiveInteger(value.maxImagesPerMessage)
+    || !isPositiveInteger(value.maxMessageImageBytes)
+    || !isPositiveInteger(value.maxImagePixels)
+    || !isPositiveInteger(value.maxImageDimension)
+    || !Array.isArray(value.mediaTypes)
+    || value.mediaTypes.length === 0
+    || !value.mediaTypes.every(isImageMediaType)) return undefined
+  return {
+    maxImageBytes: value.maxImageBytes,
+    maxImagesPerMessage: value.maxImagesPerMessage,
+    maxMessageImageBytes: value.maxMessageImageBytes,
+    maxImagePixels: value.maxImagePixels,
+    maxImageDimension: value.maxImageDimension,
+    mediaTypes: [...new Set(value.mediaTypes)],
+  }
+}
+
+/** 解析内容块里的持久化图片引用（attachmentId 必需，其余字段宽松）。 */
+export function parseImageAttachmentRef(value: unknown): ImageAttachmentRefView | undefined {
+  if (!isRecord(value) || typeof value.attachmentId !== 'string' || value.attachmentId === '') return undefined
+  if (value.mediaType !== undefined && typeof value.mediaType !== 'string') return undefined
+  if (value.bytes !== undefined && !isPositiveInteger(value.bytes)) return undefined
+  if (value.width !== undefined && !isPositiveInteger(value.width)) return undefined
+  if (value.height !== undefined && !isPositiveInteger(value.height)) return undefined
+  if (value.name !== undefined && typeof value.name !== 'string') return undefined
+  return {
+    attachmentId: value.attachmentId,
+    ...(value.mediaType === undefined ? {} : { mediaType: value.mediaType as string }),
+    ...(value.bytes === undefined ? {} : { bytes: value.bytes as number }),
+    ...(value.width === undefined ? {} : { width: value.width as number }),
+    ...(value.height === undefined ? {} : { height: value.height as number }),
+    ...(value.name === undefined ? {} : { name: value.name as string }),
+  }
+}
+
+/** 从消息内容块中提取全部图片引用（历史渲染用）。 */
+export function imageRefsFromBlocks(blocks: unknown): ImageAttachmentRefView[] {
+  if (!Array.isArray(blocks)) return []
+  const images: ImageAttachmentRefView[] = []
+  for (const block of blocks) {
+    if (!isRecord(block) || block.type !== 'image') continue
+    const attachment = parseImageAttachmentRef(block.attachment)
+    if (attachment !== undefined) images.push(attachment)
+  }
+  return images
+}
+
+/** 校验 session/attachment 响应后再放进 img src（防串图/防注入）。 */
+export function attachmentResponseDataUrl(value: unknown, expected: ImageAttachmentRefView): string | undefined {
+  if (!isRecord(value) || typeof value.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.data)) return undefined
+  const attachment = parseImageAttachmentRef(value.attachment)
+  if (attachment === undefined || attachment.attachmentId !== expected.attachmentId) return undefined
+  const mediaType = attachment.mediaType ?? expected.mediaType ?? 'image/png'
+  return `data:${mediaType};base64,${value.data}`
 }

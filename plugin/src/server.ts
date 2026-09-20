@@ -31,6 +31,7 @@ import {
   type BridgeCaps,
   type ClientFrame,
   type RemoteWireResult,
+  type ServerFrame,
   type ToolErrorCode,
 } from './protocol.ts'
 import { verifyToken } from './token.ts'
@@ -66,8 +67,8 @@ const ORDERED_SESSION_METHODS = new Set([
   'session/cancel',
 ])
 
-/** Default cap on one incoming WebSocket message (the ws library default of 100MiB is an unauthenticated DoS surface). */
-const DEFAULT_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
+/** Default cap on one incoming WebSocket message (the ws library default of 100MiB is an unauthenticated DoS surface). 32MiB leaves room for base64 screenshots and image-carrying prompts, which routinely exceed 4MiB. */
+const DEFAULT_MAX_PAYLOAD_BYTES = 32 * 1024 * 1024
 
 /** Default pump backpressure threshold: pause forwarding when the socket buffer grows past this. */
 const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024
@@ -151,6 +152,14 @@ export interface BridgeServerDeps {
   /** Capabilities to echo in `hello.ok` (negotiated snapshot budgets). */
   caps: BridgeCaps
   /**
+   * Plugin-local endpoint `bridge/questionAnswer`: settle one pending
+   * ask_user_question the bridge pushed to this extension. Answered as the
+   * rpc result value `{accepted: true} | {accepted: false, reason}`.
+   */
+  answerQuestion: (args: Record<string, unknown>) => unknown
+  /** The active connection was replaced or closed (settle pushed questions). */
+  onConnectionLost?: () => void
+  /**
    * Test seam: force the remote address seen by the privilege gate. The
    * sandbox cannot bind arbitrary loopback literals, so the non-loopback
    * branch is exercised through this override; production never sets it.
@@ -188,6 +197,8 @@ interface ReadyConnection {
   ws: WebSocket
   /** Remote address captured at upgrade time (loopback gate for privileged methods). */
   remoteAddress: string | undefined
+  /** Capabilities the client presented in `hello` (feature advertisements). */
+  clientCaps: BridgeCaps
   abort: AbortController
   ping: NodeJS.Timeout
   /** Last protocol pong timestamp (ms); refreshed by the client's answer to each ping. */
@@ -351,6 +362,22 @@ export class BridgeServer {
     return this.current !== null
   }
 
+  /** @returns whether the connected extension advertised question-card support. */
+  clientSupportsQuestions(): boolean {
+    return this.current?.clientCaps.questions === true
+  }
+
+  /**
+   * Push one unsolicited server frame (question.requested/question.resolved)
+   * to the connected extension. No-op when no extension is connected or the
+   * socket is already dead.
+   */
+  push(frame: ServerFrame): void {
+    const conn = this.current
+    if (conn === null) return
+    sendFrame(conn.ws, frame)
+  }
+
   private attach(ws: WebSocket, remoteAddress: string | undefined, origin: string | undefined): void {
     let helloTimer: NodeJS.Timeout | undefined = setTimeout(() => {
       ws.close(4001, 'hello timeout')
@@ -388,7 +415,7 @@ export class BridgeServer {
         }
         clearTimeout(helloTimer)
         helloTimer = undefined
-        this.promote(ws, remoteAddress)
+        this.promote(ws, remoteAddress, frame.caps)
         return
       }
       this.handleReadyFrame(frame)
@@ -403,12 +430,12 @@ export class BridgeServer {
   }
 
   /** Promote an authenticated socket to the single active slot. */
-  private promote(ws: WebSocket, remoteAddress: string | undefined): void {
+  private promote(ws: WebSocket, remoteAddress: string | undefined, clientCaps: BridgeCaps): void {
     this.replaceConnection()
     const abort = new AbortController()
     const intervalMs = this.deps.pingIntervalMs ?? PING_INTERVAL_MS
     const allowed = this.deps.missedPongsAllowed ?? DEFAULT_MISSED_PONGS_ALLOWED
-    const conn: ReadyConnection = { ws, remoteAddress, abort, ping: undefined as unknown as NodeJS.Timeout, lastPong: Date.now(), streams: new Map() }
+    const conn: ReadyConnection = { ws, remoteAddress, clientCaps, abort, ping: undefined as unknown as NodeJS.Timeout, lastPong: Date.now(), streams: new Map() }
     const ping = setInterval(() => {
       // Zombie guard: a client whose event loop is wedged keeps the TCP
       // socket open but never answers pings; terminate it so a healthy
@@ -454,6 +481,8 @@ export class BridgeServer {
       case 'stream.frame':
       case 'stream.error':
       case 'tool.call':
+      case 'question.requested':
+      case 'question.resolved':
       case 'ping':
       case 'error':
         // Protocol violations and unsolicited server-side shapes are ignored;
@@ -498,6 +527,12 @@ export class BridgeServer {
     if (conn === null) return
     if (this.forbidden(frame.method)) {
       sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: false, error: { code: 'forbidden', message: 'method is loopback-only' } })
+      return
+    }
+    // Plugin-local endpoint: settle a pending ask_user_question. Intercepted
+    // before the Remote passthrough, like the privilege gate above.
+    if (frame.method === 'bridge/questionAnswer') {
+      sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: true, value: this.deps.answerQuestion(frame.args) })
       return
     }
     try {
@@ -613,6 +648,9 @@ export class BridgeServer {
       this.pendingTools.delete(id)
       pending.reject(new BridgeToolError('bridge-closed', 'the extension connection was replaced'))
     }
+    // Questions pushed to the old connection can never be answered now; the
+    // owner delegates their waterfalls to the next answerer.
+    this.deps.onConnectionLost?.()
   }
 }
 

@@ -14,6 +14,18 @@ import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 
 const RPC_TIMEOUT_MS = 30_000
 
+/** Remote failure with its structured details preserved (attachment errors carry `details.reason`). */
+export class BridgeRpcError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = 'BridgeRpcError'
+  }
+}
+
 interface PendingRpc {
   resolve(result: unknown): void
   reject(error: Error): void
@@ -38,7 +50,7 @@ export function createRpc(bridge: BridgeClient): { request(method: string, args:
     pending.delete(frame.id)
     clearTimeout(entry.timer)
     if (frame.ok) entry.resolve(frame.value)
-    else entry.reject(new Error(`${frame.error.code}: ${frame.error.message}`))
+    else entry.reject(new BridgeRpcError(frame.error.code, frame.error.message, (frame.error.details ?? {}) as Record<string, unknown>))
   }
 
   // Fail-fast: a dropped socket can never answer outstanding requests, so

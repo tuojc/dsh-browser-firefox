@@ -124,7 +124,7 @@ export class BridgeClient {
       socket.send(JSON.stringify({
         t: 'hello',
         token: this.token,
-        caps: { textOnly: true, snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
+        caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60, questions: true },
       } satisfies ClientFrame))
 
       let authed = false

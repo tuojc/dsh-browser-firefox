@@ -24,9 +24,8 @@ describe('registerBrowserTools', () => {
   it('registers the full v1 tool set', () => {
     const { ctx, bridge, registered } = makeHarness()
     const disposers = registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
-    // browser_clear_screenshots 是插件本地工具（不经扩展），不在 wire action 清单里。
-    expect(registered.map((r) => r.name).sort()).toEqual([...BROWSER_TOOL_NAMES, 'browser_clear_screenshots'].sort())
-    expect(disposers.size).toBe(BROWSER_TOOL_NAMES.length + 1)
+    expect(registered.map((r) => r.name).sort()).toEqual([...BROWSER_TOOL_NAMES].sort())
+    expect(disposers.size).toBe(BROWSER_TOOL_NAMES.length)
     for (const dispose of disposers.values()) dispose()
   })
 
@@ -166,5 +165,69 @@ describe('registerBrowserTools', () => {
     const tool = registered.find((r) => r.name === 'browser_click')!
     const output = tool.definition.output as { render: (args: unknown, value: unknown) => unknown }
     expect(output.render({}, { text: 'hello' })).toEqual([{ type: 'text', text: 'hello' }])
+  })
+})
+
+describe('browser_screenshot', () => {
+  function makeScreenshotHarness(result: unknown, attachments: unknown) {
+    const registered: { name: string; definition: Record<string, unknown> }[] = []
+    const ctx = {
+      tools: {
+        register: vi.fn((definition: { name: string }) => {
+          registered.push({ name: definition.name, definition: definition as Record<string, unknown> })
+          return () => {}
+        }),
+      },
+      get: vi.fn((name: string) => name === 'attachments' ? attachments : undefined),
+    } as unknown as Context
+    const requestTool = vi.fn(async (): Promise<unknown> => result)
+    const bridge = { requestTool } as unknown as BridgeServer
+    registerBrowserTools(ctx, bridge, { toolTimeoutMs: 1_000, snapshotMaxChars: 12_000, maxInteractiveItems: 60 })
+    const tool = registered.find((r) => r.name === 'browser_screenshot')!
+    const exec = { signal: new AbortController().signal }
+    return { tool: tool.definition as { execute: (a: unknown, e: unknown) => Promise<unknown>; output?: { render: (a: unknown, v: unknown) => unknown } }, exec, requestTool }
+  }
+
+  it('parses the structured payload and the legacy data URL', async () => {
+    const { parseScreenshotPayload } = await import('../src/tools.ts')
+    expect(parseScreenshotPayload({ mediaType: 'image/png', data: 'aGk=' }))
+      .toEqual({ mediaType: 'image/png', data: 'aGk=' })
+    expect(parseScreenshotPayload('data:image/jpeg;base64,aGk='))
+      .toEqual({ mediaType: 'image/jpeg', data: 'aGk=' })
+    expect(parseScreenshotPayload('data:text/html;base64,aGk=')).toBeUndefined()
+    expect(parseScreenshotPayload({ mediaType: 'image/svg+xml', data: 'aGk=' })).toBeUndefined()
+    expect(parseScreenshotPayload({ mediaType: 'image/png' })).toBeUndefined()
+    expect(parseScreenshotPayload(42)).toBeUndefined()
+  })
+
+  it('saves the capture to the host attachment store and renders an image block first', async () => {
+    const attachment = { attachmentId: 'att-1', mediaType: 'image/png', bytes: 2, width: 800, height: 600, name: 'shot.png' }
+    const saveImage = vi.fn(async () => attachment)
+    const { tool, exec } = makeScreenshotHarness({ mediaType: 'image/png', data: 'aGk=' }, { saveImage })
+    const result = await tool.execute({}, exec) as { text: string; attachment?: unknown }
+    expect(saveImage).toHaveBeenCalledTimes(1)
+    expect(result.attachment).toEqual(attachment)
+    expect(result.text).toContain('800×600')
+    const blocks = tool.output?.render({}, result) as { type: string }[]
+    expect(blocks[0]?.type).toBe('image')
+    expect(blocks[1]?.type).toBe('text')
+  })
+
+  it('returns an error text when the attachments service is missing', async () => {
+    const { tool, exec } = makeScreenshotHarness({ mediaType: 'image/png', data: 'aGk=' }, undefined)
+    const result = await tool.execute({}, exec) as { text: string }
+    expect(result.text).toContain('attachments')
+  })
+
+  it('returns an error text for an unrecognized extension payload', async () => {
+    const { tool, exec } = makeScreenshotHarness({ nope: true }, { saveImage: vi.fn() })
+    const result = await tool.execute({}, exec) as { text: string }
+    expect(result.text).toContain('无法识别')
+  })
+
+  it('renders text-only output when no attachment is present', async () => {
+    const { tool } = makeScreenshotHarness({}, undefined)
+    const blocks = tool.output?.render({}, { text: 'oops' }) as { type: string; text?: string }[]
+    expect(blocks).toEqual([{ type: 'text', text: 'oops' }])
   })
 })

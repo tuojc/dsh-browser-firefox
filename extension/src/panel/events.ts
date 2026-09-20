@@ -7,11 +7,16 @@
  * @module
  */
 
+import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
+import { imageRefsFromBlocks, type ImageAttachmentRefView } from './attachments.ts'
+
 /** One rendered conversation row. */
 export interface Row {
   seq: number
   kind: 'user' | 'assistant' | 'tool' | 'info'
   text: string
+  /** Durable image attachments on this message (rendered by MessageImages). */
+  images?: ImageAttachmentRefView[]
   status?: 'running' | 'complete'
 }
 
@@ -37,6 +42,14 @@ export interface SessionFollowFrameView {
   records?: { type: string; event: SessionEventView }[]
   hasMore?: boolean
   event?: SessionEventView
+  /** Snapshot-only host projections (imageLimits / modelSelection etc.). */
+  projections?: {
+    asOfSeq?: number
+    values?: {
+      imageLimits?: unknown
+      modelSelection?: unknown
+    }
+  }
 }
 
 /** Extract model-visible text from content blocks (defensive: unknown block shapes degrade to markers). */
@@ -61,13 +74,18 @@ export function rowFromEvent(event: SessionEventView): Row | null {
       const source = (event.data as { source?: { kind?: string } } | undefined)?.source
       if (source?.kind !== 'user') return null
       const text = textFromBlocks(event.data?.content)
-      return text.trim() === '' ? null : { seq: 0, kind: 'user', text }
+      const images = imageRefsFromBlocks(event.data?.content)
+      // 纯图片消息（无文本）也要渲染图片行。
+      if (text.trim() === '' && images.length === 0) return null
+      return { seq: 0, kind: 'user', text, ...(images.length > 0 ? { images } : {}) }
     }
     case 'assistant/message': {
       // 工具调用也会产生 assistant/message，但其 content 可能只有 tool_use
       // 等非文本块。不要为这种中间事件渲染一个空的 AI 气泡。
       const text = textFromBlocks(event.data?.message?.content)
-      return text.trim() === '' ? null : { seq: 0, kind: 'assistant', text }
+      const images = imageRefsFromBlocks(event.data?.message?.content)
+      if (text.trim() === '' && images.length === 0) return null
+      return { seq: 0, kind: 'assistant', text, ...(images.length > 0 ? { images } : {}) }
     }
     default:
       return null
@@ -86,6 +104,93 @@ const TOOL_LABELS: Record<string, string> = {
   browser_reload: '刷新页面',
   browser_get_text: '提取文字',
   browser_wait: '等待页面',
+  browser_screenshot: '页面截图',
+  browser_open_tab: '打开标签页',
+  browser_close_tab: '关闭标签页',
+  browser_follow_tab: '切换标签页',
+  browser_list_tabs: '列出标签页',
+}
+
+// ---- ask_user_question 桥帧（question.requested / question.resolved） ----
+
+/** One user-selectable answer exposed by ask_user_question. */
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+/** One item in a question batch. */
+export interface QuestionItem {
+  id: string
+  question: string
+  header?: string
+  detail?: string
+  options?: QuestionOption[]
+  multiSelect?: boolean
+}
+
+/** Pending interaction belonging to one dsh session. */
+export interface PendingQuestion {
+  questionId: string
+  sessionId: string
+  questions: QuestionItem[]
+}
+
+/** Identity carried by question.resolved; both fields must match before clearing UI. */
+export interface ResolvedQuestion {
+  questionId: string
+  sessionId: string
+}
+
+/** Parse a bridge push frame into a pending question (null when not one / malformed). */
+export function pendingQuestionFromFrame(frame: ServerFrame): PendingQuestion | null {
+  if (frame.t !== 'question.requested') return null
+  if (frame.questions.length === 0) return null
+  const questions: QuestionItem[] = []
+  for (const value of frame.questions) {
+    const question = parseQuestionItem(value)
+    if (question === null) return null
+    questions.push(question)
+  }
+  return { questionId: frame.id, sessionId: frame.sessionId, questions }
+}
+
+/** Parse a bridge push frame into a resolved question (null when not one). */
+export function resolvedQuestionFromFrame(frame: ServerFrame): ResolvedQuestion | null {
+  if (frame.t !== 'question.resolved') return null
+  return { questionId: frame.id, sessionId: frame.sessionId }
+}
+
+function parseQuestionItem(value: unknown): QuestionItem | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.question !== 'string') return null
+  if (value.header !== undefined && typeof value.header !== 'string') return null
+  if (value.detail !== undefined && typeof value.detail !== 'string') return null
+  if (value.multiSelect !== undefined && typeof value.multiSelect !== 'boolean') return null
+  let options: QuestionOption[] | undefined
+  if (value.options !== undefined) {
+    if (!Array.isArray(value.options)) return null
+    options = []
+    for (const rawOption of value.options) {
+      if (!isRecord(rawOption) || typeof rawOption.label !== 'string') return null
+      if (rawOption.description !== undefined && typeof rawOption.description !== 'string') return null
+      options.push({
+        label: rawOption.label,
+        ...(rawOption.description === undefined ? {} : { description: rawOption.description }),
+      })
+    }
+  }
+  return {
+    id: value.id,
+    question: value.question,
+    ...(value.header === undefined ? {} : { header: value.header as string }),
+    ...(value.detail === undefined ? {} : { detail: value.detail as string }),
+    ...(options === undefined ? {} : { options }),
+    ...(value.multiSelect === undefined ? {} : { multiSelect: value.multiSelect as boolean }),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 工具调用的友好展示名：带 index 参数时附上（如「点击元素 #7」）。 */
@@ -107,7 +212,7 @@ export function toolSummary(name: string, argsJson: unknown): string {
 const MAX_LIVE_ROWS = 500
 
 /** live 合并：若最后一行是工具行则并入（连续工具调用不刷屏），否则新增一行。 */
-export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq: number): Row[] {
+export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq: number, images?: Row['images']): Row[] {
   const capped = rows.length >= MAX_LIVE_ROWS ? rows.slice(rows.length - MAX_LIVE_ROWS + 1) : rows
   if (kind === 'tool') {
     const last = capped[capped.length - 1]
@@ -116,7 +221,7 @@ export function appendLiveRow(rows: Row[], kind: Row['kind'], text: string, seq:
     }
     return [...capped, { seq, kind, text, status: 'running' }]
   }
-  return [...capped, { seq, kind, text }]
+  return [...capped, { seq, kind, text, ...(images !== undefined && images.length > 0 ? { images } : {}) }]
 }
 
 /** 标记最后一行工具调用已完成（并入，不新增行）。 */

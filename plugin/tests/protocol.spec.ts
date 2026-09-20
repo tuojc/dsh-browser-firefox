@@ -3,15 +3,18 @@ import { isClientFrame, isServerFrame, parseBridgeFrame } from '../src/protocol.
 
 describe('parseBridgeFrame', () => {
   it('parses a valid hello frame', () => {
-    const frame = parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'abc123', caps: { textOnly: true, snapshotMaxChars: 12000, maxInteractiveItems: 60 } }))
-    expect(frame).toEqual({ t: 'hello', token: 'abc123', caps: { textOnly: true, snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
+    const frame = parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'abc123', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60, questions: true } }))
+    expect(frame).toEqual({ t: 'hello', token: 'abc123', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60, questions: true } })
   })
 
   it('rejects hello with wrong caps shape', () => {
-    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: false, snapshotMaxChars: 100, maxInteractiveItems: 10 } }))).toBeUndefined()
-    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: true } }))).toBeUndefined()
-    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { textOnly: true, snapshotMaxChars: 0, maxInteractiveItems: 10 } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { maxInteractiveItems: 10 } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { snapshotMaxChars: 0, maxInteractiveItems: 10 } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { snapshotMaxChars: 'big', maxInteractiveItems: 10 } }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x' }))).toBeUndefined()
+    // 未知键被容忍（跨版本降级：旧扩展可能仍带 textOnly）。
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { snapshotMaxChars: 100, maxInteractiveItems: 10 } })))
+      .toEqual({ t: 'hello', token: 'x', caps: { snapshotMaxChars: 100, maxInteractiveItems: 10 } })
   })
 
   it('parses rpc, stream, and tool frames with native args', () => {
@@ -35,8 +38,8 @@ describe('parseBridgeFrame', () => {
   })
 
   it('parses server-side frames the extension receives', () => {
-    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { textOnly: true, snapshotMaxChars: 12000, maxInteractiveItems: 60 } })))
-      .toEqual({ t: 'hello.ok', caps: { textOnly: true, snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60 } })))
+      .toEqual({ t: 'hello.ok', caps: { snapshotMaxChars: 12000, maxInteractiveItems: 60 } })
     expect(parseBridgeFrame(JSON.stringify({ t: 'stream.frame', id: 's1', frame: { type: 'snapshot', records: [] } })))
       .toEqual({ t: 'stream.frame', id: 's1', frame: { type: 'snapshot', records: [] } })
     expect(parseBridgeFrame(JSON.stringify({ t: 'stream.error', id: 's1', message: 'session not found' })))
@@ -86,7 +89,7 @@ describe('parseBridgeFrame', () => {
 
   it('classifies frames by sender side', () => {
     const server = parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: '1', name: 'browser_click', args: {} }))!
-    const client = parseBridgeFrame(JSON.stringify({ t: 'hello', token: 't', caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }))!
+    const client = parseBridgeFrame(JSON.stringify({ t: 'hello', token: 't', caps: { snapshotMaxChars: 100, maxInteractiveItems: 10 } }))!
     expect(isServerFrame(server)).toBe(true)
     expect(isClientFrame(server)).toBe(false)
     expect(isServerFrame(client)).toBe(false)
@@ -111,7 +114,7 @@ describe('parseBridgeFrame', () => {
     expect(parseBridgeFrame(JSON.stringify({ t: 'tool.result', id: '1', ok: true }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'tool.result', id: 5, ok: true, result: {} }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'rpc.result', id: 5, ok: true, value: {} }))).toBeUndefined()
-    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { textOnly: true } }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: {} }))).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ t: 'tool.call', id: '1', name: 'x', args: [] }))).toBeUndefined()
   })
 })
@@ -119,7 +122,7 @@ describe('parseBridgeFrame', () => {
 /** Minimal valid shape per server-side frame type (for classification tests). */
 function serverShape(t: 'hello.ok' | 'rpc.result' | 'stream.frame' | 'stream.error' | 'tool.call' | 'ping' | 'error'): Record<string, unknown> {
   switch (t) {
-    case 'hello.ok': return { t, caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }
+    case 'hello.ok': return { t, caps: { snapshotMaxChars: 100, maxInteractiveItems: 10 } }
     case 'rpc.result': return { t, id: '1', ok: true, value: {} }
     case 'stream.frame': return { t, id: '1', frame: { type: 'baseline' } }
     case 'stream.error': return { t, id: '1', message: 'm' }
@@ -132,7 +135,7 @@ function serverShape(t: 'hello.ok' | 'rpc.result' | 'stream.frame' | 'stream.err
 /** Minimal valid shape per client-side frame type (for classification tests). */
 function clientShape(t: 'hello' | 'rpc' | 'stream.open' | 'stream.close' | 'tool.result' | 'pong'): Record<string, unknown> {
   switch (t) {
-    case 'hello': return { t, token: 'x', caps: { textOnly: true, snapshotMaxChars: 100, maxInteractiveItems: 10 } }
+    case 'hello': return { t, token: 'x', caps: { snapshotMaxChars: 100, maxInteractiveItems: 10 } }
     case 'rpc': return { t, id: '1', method: 'x', args: {} }
     case 'stream.open': return { t, id: '1', method: 'workspace/follow', args: {} }
     case 'stream.close': return { t, id: '1' }
@@ -140,3 +143,32 @@ function clientShape(t: 'hello' | 'rpc' | 'stream.open' | 'stream.close' | 'tool
     case 'pong': return { t }
   }
 }
+
+describe('question frames', () => {
+  it('parses question.requested with items and question.resolved', () => {
+    const requested = parseBridgeFrame(JSON.stringify({
+      t: 'question.requested',
+      id: 'q1',
+      sessionId: 's1',
+      questions: [{ id: 'pick', question: '选哪个？', options: [{ label: 'A' }, { label: 'B', description: 'b' }], multiSelect: true }],
+    }))!
+    expect(requested).toEqual({
+      t: 'question.requested',
+      id: 'q1',
+      sessionId: 's1',
+      questions: [{ id: 'pick', question: '选哪个？', options: [{ label: 'A' }, { label: 'B', description: 'b' }], multiSelect: true }],
+    })
+    expect(isServerFrame(requested)).toBe(true)
+    expect(isClientFrame(requested)).toBe(false)
+    expect(parseBridgeFrame(JSON.stringify({ t: 'question.resolved', id: 'q1', sessionId: 's1' })))
+      .toEqual({ t: 'question.resolved', id: 'q1', sessionId: 's1' })
+  })
+
+  it('rejects malformed question frames', () => {
+    expect(parseBridgeFrame(JSON.stringify({ t: 'question.requested', id: 'q1', sessionId: 's1' }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'question.requested', id: 'q1', sessionId: 's1', questions: [] }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'question.requested', id: 'q1', sessionId: 's1', questions: [{ question: 'no id' }] }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'question.requested', id: 'q1', sessionId: 's1', questions: [{ id: 1, question: 'x' }] }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'question.resolved', id: 'q1' }))).toBeUndefined()
+  })
+})

@@ -1,6 +1,6 @@
 /**
  * `@deepseek-ai/dsh-bridge-browser`: token-authenticated WebSocket bridge for
- * the browser extension plus the text-only `browser_*` tool set.
+ * the browser extension plus the `browser_*` tool set.
  *
  * The bridge mounts its own upgrade route (`/ext/bridge`) on the host
  * webserver, OUTSIDE the /api trust fence — so it brings its own bearer-token
@@ -10,7 +10,15 @@
  * `ctx.typertGateway.invoke`, and `stream.open` frames open
  * `ctx.typertGateway.stream` subscriptions whose native follow frames flow
  * back unmodified. Tools execute by dispatching `tool.call` frames to the
- * connected extension, which performs the action in the user's active tab.
+ * connected extension, which performs the action in the user's active tab;
+ * `browser_screenshot` returns a native image block (the host attachment
+ * store owns the bytes), so the model sees the page directly.
+ *
+ * For sessions the extension has created or prompted, the plugin also claims
+ * the host `user-questions/request` waterfall (prepended listener) and pushes
+ * `question.requested` to the extension, so the user answers
+ * ask_user_question in the sidebar instead of the dsh web UI. Every other
+ * session delegates to `next()`.
  *
  * Opt-in by design: nothing is registered unless this plugin appears in the
  * composition. No dsh core code is touched.
@@ -22,6 +30,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-api-gateway/types'
+import type {} from '@deepseek-ai/dsh-user-questions/types'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { BridgeServer } from './server.ts'
@@ -30,6 +39,8 @@ import { BRIDGE_CONFIG_PATH, BRIDGE_PATH, type RemoteWireResult } from './protoc
 import { withSessionDeferral } from './session-deferral.ts'
 import { withSessionWorkspace, type RpcDispatch } from './session-workspace.ts'
 import { resolveToken } from './token.ts'
+import { ExtensionSessionRegistry, shouldBridgeOwnQuestion } from './extension-sessions.ts'
+import { asQuestionAnswerArgs, QuestionBridge } from './questions.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bridge-browser'
@@ -85,6 +96,13 @@ export function assertPositiveInteger(name: string, value: number): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`bridge-browser: ${name} must be a positive integer`)
   }
+}
+
+/** Extract the session id from an rpc args/result object, when present. */
+function sessionIdOf(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const sessionId = (value as Record<string, unknown>).sessionId
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
 }
 
 /**
@@ -144,22 +162,69 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     ),
     resolved.deferSessionCreate,
   )
+  // Ownership tracking for the user-questions waterfall: a session becomes
+  // extension-owned only after a create/prompt SUCCEEDS — a failed prompt
+  // against a desktop session must not steal its questions away from the
+  // native answerer.
+  const extensionSessions = new ExtensionSessionRegistry()
+  const notingDispatchRpc: RpcDispatch = async (method, args, signal) => {
+    const result = await dispatchRpc(method, args, signal)
+    if (result.ok && (method === 'session/create' || method === 'session/prompt')) {
+      extensionSessions.note(sessionIdOf(args.request))
+      extensionSessions.note(sessionIdOf(result.value))
+    }
+    return result
+  }
+  const questions = new QuestionBridge({
+    // Late-bound through the closure: server is constructed right below.
+    push: (frame) => { server.push(frame) },
+  })
   const server = new BridgeServer({
     token: tokenRes.token,
-    dispatchRpc,
+    dispatchRpc: notingDispatchRpc,
     openStream: (method, args, signal) => {
       const slash = method.indexOf('/')
       const namespace = slash === -1 ? method : method.slice(0, slash)
       const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
       return ctx.typertGateway.stream({ namespace, method: remoteMethod, args, signal })
     },
+    answerQuestion: (args) => {
+      const parsed = asQuestionAnswerArgs(args)
+      return parsed === undefined
+        ? { accepted: false, reason: 'bad-answer' }
+        : questions.answer(parsed)
+    },
+    onConnectionLost: () => { questions.delegateAll() },
     toolTimeoutMs: resolved.toolTimeoutMs,
     caps: {
-      textOnly: true,
       snapshotMaxChars: resolved.snapshotMaxChars,
       maxInteractiveItems: resolved.maxInteractiveItems,
     },
   })
+
+  // Sidebar ask_user_question: claim the waterfall only for sessions the
+  // extension owns (created or prompted over the bridge) while a
+  // question-capable extension is connected; everything else keeps the
+  // native answerer chain (dsh web). Prepended so the claim runs before the
+  // Remote event forwarding listener in dsh-api-remotes.
+  ctx.effect(() => {
+    const disposeListener = ctx.on('user-questions/request', (request, next) => {
+      const sessionId = request.agent?.id
+      if (sessionId === undefined || !shouldBridgeOwnQuestion({
+        hasExtensionConnection: server.hasConnection(),
+        clientSupportsQuestions: server.clientSupportsQuestions(),
+        sessionId,
+        extensionSessions,
+      })) {
+        return next()
+      }
+      return questions.ask(sessionId, request.questions, next, request.signal)
+    }, { prepend: true })
+    return () => {
+      disposeListener()
+      questions.dispose()
+    }
+  }, 'bridge-browser: user-questions answerer')
 
   const route: WebUpgradeRoute = {
     path: BRIDGE_PATH,
@@ -210,7 +275,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       name: 'tool:bridge-browser',
       order: 107,
       text: 'A browser bridge may be connected. To read or operate the user\'s active browser page, call browser_snapshot '
-        + '(text-only; numbered items are the click/type targets). Never assume page content you have not snapshot.',
+        + '(text-only; numbered items are the click/type targets). For content that defies text (images, charts, captchas), '
+        + 'call browser_screenshot: the image is returned to you directly. Never assume page content you have not snapshot.',
     }), 'bridge-browser: system prompt section')
   }
 

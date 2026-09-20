@@ -1,22 +1,23 @@
 /**
  * Model-facing browser tools. Every tool executes by dispatching a `tool.call`
  * over the bridge to the connected extension, which performs the action in the
- * user's active tab and returns a pure-text result.
+ * user's active tab and returns the result.
  *
- * The whole surface is text-only by design (DeepSeek models have no vision):
  * `browser_snapshot` renders the page as structured text with a numbered
- * interactive inventory, and every other tool addresses elements by that
- * inventory's stable index. Results are single `{ text }` objects rendered as
- * one text ContentBlock.
+ * interactive inventory, and every action tool addresses elements by that
+ * inventory's stable index — text is the addressing scheme, not a vision
+ * limitation. `browser_screenshot` is the exception: its capture is saved to
+ * the host attachment store and rendered as a native image ContentBlock, so
+ * the model sees the page directly (DeepSeek routes on the 0.1.2 line read
+ * images natively; text-only routes get the host's automatic placeholder
+ * downgrade).
  *
  * @module
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { BridgeServer } from './server.ts'
 
 /** Options resolved from plugin config before tool registration. */
@@ -27,71 +28,6 @@ export interface BrowserToolsOptions {
   snapshotMaxChars: number
   /** Upper bound on interactive inventory items per snapshot. */
   maxInteractiveItems: number
-}
-
-/** 截图临时目录名（位于 session workspace 下）。 */
-const SCREENSHOT_DIR_NAME = '.dsh-browser-tmp'
-/** 截图目录最多保留的张数，超出自动删最旧（不留垃圾）。 */
-const MAX_SCREENSHOTS = 20
-
-/** 截图目录：保存在 session workspace 下（视觉工具能读），失败回退 dshHomePath。 */
-function screenshotDir(workspacePath: string): string {
-  return join(workspacePath, SCREENSHOT_DIR_NAME)
-}
-
-/** 解析 session workspace：优先 exec.agent.session.header.cwd，回退 process.cwd / dshHomePath。 */
-function resolveWorkspace(exec: { agent?: { session?: { header?: { cwd?: string } } } | null }): string {
-  const cwd = exec.agent?.session?.header?.cwd
-  if (cwd !== undefined && cwd !== '') return cwd
-  try {
-    return process.cwd()
-  } catch {
-    return dshHomePath('browser-screenshots')
-  }
-}
-
-/** 保存一张截图（data URL → PNG 文件），返回绝对路径；超上限删最旧。 */
-async function saveScreenshot(dataUrl: string, workspacePath: string): Promise<string> {
-  const match = /^data:image\/(?:png|jpeg);base64,(.+)$/.exec(dataUrl)
-  if (match === null) throw new Error('扩展返回的不是图片 data URL')
-  const encoded = match[1]
-  if (encoded === undefined) throw new Error('data URL 缺少 base64 内容')
-  const dir = screenshotDir(workspacePath)
-  await mkdir(dir, { recursive: true })
-  const file = join(dir, `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`)
-  await writeFile(file, Buffer.from(encoded, 'base64'))
-  await pruneScreenshots(dir)
-  return file
-}
-
-/** 删除截图目录里最旧的截图，直到数量 <= MAX_SCREENSHOTS。 */
-async function pruneScreenshots(dir: string): Promise<void> {
-  let files: string[]
-  try {
-    files = (await readdir(dir)).filter((f) => /^screenshot-\d+(?:-[a-z0-9]+)?\.png$/.test(f)).sort()
-  } catch {
-    return
-  }
-  while (files.length > MAX_SCREENSHOTS) {
-    const oldest = files.shift()
-    if (oldest !== undefined) await unlink(join(dir, oldest)).catch(() => {})
-  }
-}
-
-/** 清理全部截图，返回删除数量。 */
-async function clearScreenshots(workspacePath: string): Promise<number> {
-  const dir = screenshotDir(workspacePath)
-  let count = 0
-  try {
-    const files = (await readdir(dir)).filter((f) => /\.png$/.test(f))
-    for (const f of files) {
-      await unlink(join(dir, f)).catch(() => {})
-      count += 1
-    }
-  } catch {
-    // 目录不存在等，视为无截图
-  }
-  return count
 }
 
 /** Canonical tool result: one text payload. */
@@ -111,6 +47,60 @@ const TEXT_OUTPUT: ToolDefinition['output'] = {
     const result = value as unknown as TextResult
     return [{ type: 'text', text: result.text }]
   },
+}
+
+/** Media types the host attachment store accepts (mirrors ImageMediaType). */
+const IMAGE_MEDIA_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+
+/** Canonical screenshot result: the saved attachment ref plus a short caption. */
+interface ScreenshotResult {
+  text: string
+  attachment?: ImageAttachmentRef
+}
+
+/**
+ * Output contract for `browser_screenshot`: the durable image block comes
+ * first so the model sees the capture before the caption.
+ */
+const SCREENSHOT_OUTPUT: ToolDefinition['output'] = {
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: { text: { type: 'string' }, attachment: { type: 'object' } },
+    required: ['text'],
+  },
+  render: (_args, value) => {
+    const result = value as unknown as ScreenshotResult
+    return result.attachment === undefined
+      ? [{ type: 'text', text: result.text }]
+      : [
+          { type: 'image', attachment: result.attachment },
+          { type: 'text', text: result.text },
+        ]
+  },
+}
+
+/**
+ * Normalize the extension's screenshot payload. Current extensions answer a
+ * structured `{ mediaType, data }` (base64 without the data: prefix); 0.4.x
+ * extensions answered a raw data URL — kept as the legacy path so a stale
+ * extension degrades instead of breaking.
+ */
+export function parseScreenshotPayload(result: unknown): { mediaType: ImageMediaType; data: string } | undefined {
+  if (typeof result === 'string') {
+    const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/.exec(result)
+    return match !== null && match[1] !== undefined && match[2] !== undefined
+      ? { mediaType: match[1] as ImageMediaType, data: match[2] }
+      : undefined
+  }
+  if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+    const payload = result as Record<string, unknown>
+    if (typeof payload.mediaType === 'string' && IMAGE_MEDIA_TYPES.includes(payload.mediaType)
+      && typeof payload.data === 'string' && payload.data.length > 0) {
+      return { mediaType: payload.mediaType as ImageMediaType, data: payload.data }
+    }
+  }
+  return undefined
 }
 
 /** Prompt hardening appended to content-returning tool descriptions. */
@@ -166,48 +156,44 @@ export function registerBrowserTools(
     disposers.set(tool.name, ctx.tools.register(tool))
   }
 
-  // 截图工具：扩展 captureTab 返回 data URL，插件保存为 PNG（多张并存，超上限删最旧）。
+  // 截图工具：扩展 captureTab 返回 {mediaType, data}（旧版返回 data URL），
+  // 插件把字节交给宿主附件库（saveImage 负责校验与归一化），结果以原生
+  // 图像块交给模型——无视觉能力的路由由宿主自动降级为占位文本。
   const screenshot: ToolDefinition = {
     name: 'browser_screenshot',
-    description: '对当前浏览器页面截图，保存为 PNG 文件并返回绝对路径。'
-      + '仅在页面内容是图片/公式/验证码等无法用文本表达时才调用（视觉兜底）。'
-      + '截图保存在 session workspace 的 .dsh-browser-tmp/ 目录，最多保留 20 张（超出自动删最旧）；'
-      + '看完后可用 browser_clear_screenshots 清理。',
+    description: '对当前浏览器页面截图，图像直接返回给你查看（原生图像块）。'
+      + '仅在页面内容是图片/公式/验证码等无法用文本表达时才调用（视觉兜底）。',
     parameters: argsSchema({
       fullPage: { type: 'boolean', description: '整页滚动截图（暂未实现，预留）。' },
       region: { type: 'string', description: '区域截图 CSS 选择器（暂未实现，预留）。' },
     }),
     timeoutMs: options.toolTimeoutMs,
-    output: TEXT_OUTPUT,
+    output: SCREENSHOT_OUTPUT,
     execute: async (args, exec) => {
       const sessionId = exec.agent?.id
-      const workspace = resolveWorkspace(exec)
-      const dataUrl = await bridge.requestTool('browser_screenshot', args as Record<string, unknown>, exec.signal, options.toolTimeoutMs, sessionId)
-      if (typeof dataUrl !== 'string') return { text: 'browser_screenshot 返回了非字符串结果' }
+      const raw = await bridge.requestTool('browser_screenshot', args as Record<string, unknown>, exec.signal, options.toolTimeoutMs, sessionId)
+      const payload = parseScreenshotPayload(raw)
+      if (payload === undefined) return { text: 'browser_screenshot 返回了无法识别的结果（扩展版本过旧？）' }
+      const attachments = ctx.get('attachments')
+      if (attachments === undefined) {
+        return { text: '宿主未提供图像附件服务（attachments），无法把截图送入模型上下文' }
+      }
       try {
-        const path = await saveScreenshot(dataUrl, workspace)
-        return { text: `截图已保存: ${path}` }
+        const attachment = await attachments.saveImage({
+          data: Buffer.from(payload.data, 'base64'),
+          mediaType: payload.mediaType,
+          name: `browser-screenshot-${Date.now()}.png`,
+        })
+        return {
+          text: `页面截图（${payload.mediaType}，${attachment.width}×${attachment.height}）`,
+          attachment,
+        } satisfies ScreenshotResult
       } catch (error) {
         return { text: `截图保存失败: ${error instanceof Error ? error.message : String(error)}` }
       }
     },
   }
   disposers.set(screenshot.name, ctx.tools.register(screenshot))
-
-  // 清理工具：删除全部截图（bridge 本地处理，不经扩展）。
-  const clearScreenshotsTool: ToolDefinition = {
-    name: 'browser_clear_screenshots',
-    description: '删除 browser_screenshot 产生的全部临时截图文件，避免残留垃圾。看完截图后可调用。',
-    parameters: argsSchema({}),
-    timeoutMs: options.toolTimeoutMs,
-    output: TEXT_OUTPUT,
-    execute: async (_args, exec) => {
-      const workspace = resolveWorkspace(exec)
-      const count = await clearScreenshots(workspace)
-      return { text: `已清理 ${count} 张截图` }
-    },
-  }
-  disposers.set(clearScreenshotsTool.name, ctx.tools.register(clearScreenshotsTool))
 
   return disposers
 }

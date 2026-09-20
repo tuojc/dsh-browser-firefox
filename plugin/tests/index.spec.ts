@@ -18,6 +18,7 @@ function stubContext(): Context {
     tools: { register: () => () => {} },
     get: () => undefined,
     logger: { info: () => {}, warn: () => {}, error: () => {} },
+    on: () => () => {},
     effect: (fn: () => unknown, label?: string) => {
       void label
       return fn() as () => void

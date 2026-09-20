@@ -69,13 +69,23 @@ curl -s http://127.0.0.1:3080/ext/bridge-config
 | 刷新 | `browser_reload` | 重新加载当前标签页 |
 | 读区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
 | 等待 | `browser_wait` | 页面加载与渲染稳定检测 |
-| 截图 | `browser_screenshot` | 按需截图（视觉兜底），返回 PNG 路径；临时保存、多张并存、超 20 张自动删最旧 |
-| 清理截图 | `browser_clear_screenshots` | 删除全部临时截图，看完后调用避免残留 |
+| 截图 | `browser_screenshot` | 按需截图（视觉兜底），图像作为原生图像块直接进模型上下文 |
 | 执行 JS | `browser_evaluate` | 页面上下文执行任意 JS（支持 async/await），snapshot/click 覆盖不到时的逃逸舱 |
 | 列出标签页 | `browser_list_tabs` | 列出当前会话分组内的所有标签页（`*` 标记工作标签页） |
 | 打开标签页 | `browser_open_tab` | 后台开新页（归组），返回标签页 id |
 | 切换工作页 | `browser_follow_tab` | 后续操作作用于指定标签页 |
 | 关闭标签页 | `browser_close_tab` | 只能关闭本会话打开/归入本组的标签页 |
+
+### 0.4.5 新增
+
+- **模型选择器**：会话栏显示当前模型芯片，点开为按提供商分组的模型目录（含推理强度选择）；选择按会话生效，新会话在发送首条消息后自动应用。
+- **权限选择 UI 优化**：盾牌弹层改为卡片式单选列表（每项带说明、当前项打勾高亮），盾牌按钮按当前级别着色（锁定=红、读写=黄），提示文案直接显示级别名。
+
+- **侧边栏直接回答 ask_user_question**：助手提问时，问题卡片出现在侧边栏底部，直接在浏览器里选择/填写/放弃，不必切到 dsh web；桥断开时自动回落给 dsh web 回答。
+- **截图原生进模型**：`browser_screenshot` 的图像存入宿主附件库、以原生图像块返回，DeepSeek 直接看图（不再走临时 PNG 文件 + 视觉工具中转；`browser_clear_screenshots` 已移除）。
+- **消息内图片回显**：对话历史与实时回显中的图片附件经 `session/attachment` 回读渲染，点击可放大。
+- **宿主权威图片限制**：附件校验跟随 `session/follow` 投影下发的 imageLimits（张数/字节/尺寸/像素），随模型路由收紧或放宽。
+- **附件错误友好文案**：宿主拒绝图片（模型不支持视觉、超限等）映射为可读提示。
 
 ### 0.4.1 新增
 
@@ -95,9 +105,9 @@ curl -s http://127.0.0.1:3080/ext/bridge-config
 
 Firefox MV3 的 background 默认是 event page，空闲 45-90 秒会休眠。本扩展用 3 个错峰的 alarm（每 20 秒）持续保活，使 background 常驻、WebSocket 桥常连——Agent 随时能操作浏览器，无需先点侧边栏。
 
-### 配合视觉工具（截图）
+### 截图（视觉兜底）
 
-当页面内容是图片/公式/验证码等无法用文本表达时，模型可调 `browser_screenshot` 截图，得到 PNG 绝对路径后交给任意视觉工具（如 vision_glance）分析。截图保存在 session workspace 的 `.dsh-browser-tmp/` 目录，多张并存、最多 20 张（超出自动删最旧）；看完后调 `browser_clear_screenshots` 清理。
+当页面内容是图片/公式/验证码等无法用文本表达时，模型可调 `browser_screenshot` 截图：图像存入宿主附件库并作为**原生图像块**直接返回给模型查看（支持视觉的 DeepSeek 路由原生读图；纯文本路由由宿主自动降级为占位符）。不再产生本地临时文件。
 
 ### 会话级标签页组
 

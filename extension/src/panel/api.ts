@@ -10,19 +10,31 @@
  * @module
  */
 
-import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
+import type { BridgeCaps, ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import type { Settings } from '../background/index.ts'
 
 /** Panel-side subset of the extension settings. */
 export type PanelSettings = Settings
 
+/** Remote failure with its details preserved (attachment errors carry `details.reason`). */
+export class PanelRpcError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = 'PanelRpcError'
+  }
+}
+
 interface RpcResultMessage {
   type: 'rpc.result'
   id: string
   ok: boolean
   value?: unknown
-  error?: { code: string; message: string }
+  error?: { code: string; message: string; details?: Record<string, unknown> }
 }
 
 interface StatusMessage {
@@ -44,7 +56,13 @@ interface StreamErrorMessage {
   message: string
 }
 
-type BackgroundMessage = RpcResultMessage | StatusMessage | StreamFrameMessage | StreamErrorMessage
+/** Bridge-pushed ask_user_question frames (question.requested/question.resolved). */
+interface QuestionMessage {
+  type: 'question'
+  frame: ServerFrame
+}
+
+type BackgroundMessage = RpcResultMessage | StatusMessage | StreamFrameMessage | StreamErrorMessage | QuestionMessage
 
 /** The panel API surface. */
 export interface PanelApi {
@@ -58,6 +76,8 @@ export interface PanelApi {
   onStatus(callback: (state: BridgeState, caps: BridgeCaps | null) => void): () => void
   /** 订阅 AMO 更新信息（随 status 推送）。 */
   onUpdateAvailable(callback: (update: { version: string; url: string } | null) => void): () => void
+  /** 订阅桥推送的 ask_user_question 帧（question.requested/question.resolved）。 */
+  onQuestion(callback: (frame: ServerFrame) => void): () => void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -69,6 +89,7 @@ export function connectPanel(): PanelApi {
   const streams = new Map<string, { onFrame: (frame: unknown) => void; onError: (message: string) => void }>()
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null) => void>()
   const updateListeners = new Set<(update: { version: string; url: string } | null) => void>()
+  const questionListeners = new Set<(frame: ServerFrame) => void>()
 
   let port: Port | null = null
   let reconnectPromise: Promise<Port> | null = null
@@ -164,9 +185,14 @@ export function connectPanel(): PanelApi {
         if (entry === undefined) return
         pending.delete(msg.id)
         // The background relays the RemoteResult wire form: ok carries the
-        // business value; failure carries `{ code, message }`.
+        // business value; failure carries `{ code, message, details? }`.
         if (msg.ok) entry.resolve(msg.value)
-        else entry.reject(new Error(msg.error !== undefined ? `${msg.error.code}: ${msg.error.message}` : 'rpc failed'))
+        else if (msg.error !== undefined) entry.reject(new PanelRpcError(msg.error.code, msg.error.message, msg.error.details ?? {}))
+        else entry.reject(new Error('rpc failed'))
+        break
+      }
+      case 'question': {
+        for (const listener of questionListeners) listener(msg.frame)
         break
       }
       case 'stream.frame': {
@@ -227,6 +253,10 @@ export function connectPanel(): PanelApi {
     onUpdateAvailable(callback) {
       updateListeners.add(callback)
       return () => { updateListeners.delete(callback) }
+    },
+    onQuestion(callback) {
+      questionListeners.add(callback)
+      return () => { questionListeners.delete(callback) }
     },
     updateSettings(next) {
       void send({ type: 'settings', settings: next }).catch(() => {})
