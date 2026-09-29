@@ -8,10 +8,7 @@
 
 import { PanelRpcError } from './api.ts'
 import { ImageInputError, type ImageAttachmentLimits } from './attachments.ts'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+import { isRecord } from './json.ts'
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024) * 10) / 10}MB`

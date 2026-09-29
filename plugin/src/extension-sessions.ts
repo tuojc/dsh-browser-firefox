@@ -85,7 +85,7 @@ export interface OwnershipSources {
 }
 
 /** Maximum ancestor hops when looking for an owned session. */
-export const MAX_OWNER_DEPTH = 8
+const MAX_OWNER_DEPTH = 8
 
 /** Whether one exact session id is extension-owned by either source. */
 export function isOwnedSession(sessionId: string | undefined, sources: OwnershipSources): boolean {
@@ -150,22 +150,4 @@ export function resolveInteractionOwnership(input: {
   const sessionId = owningSessionId(input.sessionId, input.sources, input.parentOf)
   if (sessionId === undefined) return { owned: false, reason: 'not-owned' }
   return { owned: true, sessionId }
-}
-
-/**
- * Decide whether the bridge should own ask_user_question for this request.
- * Thin compatibility wrapper over {@link resolveInteractionOwnership}.
- */
-export function shouldBridgeOwnQuestion(input: {
-  hasExtensionConnection: boolean
-  clientSupportsQuestions: boolean
-  sessionId: string | undefined
-  extensionSessions: Pick<ExtensionSessionRegistry, 'has'>
-}): boolean {
-  return resolveInteractionOwnership({
-    hasExtensionConnection: input.hasExtensionConnection,
-    clientSupports: input.clientSupportsQuestions,
-    sessionId: input.sessionId,
-    sources: { driven: input.extensionSessions },
-  }).owned
 }

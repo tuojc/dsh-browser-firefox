@@ -80,7 +80,7 @@ export interface PanelApi {
    * follow frames; `onError` fires once on stream failure (the subscription
    * is then dead — reopen to resume). The returned function closes the stream.
    */
-  openStream(method: string, args: Record<string, unknown>, onFrame: (frame: unknown) => void, onError: (message: string) => void): () => void
+  openStream(method: string, args: object, onFrame: (frame: unknown) => void, onError: (message: string) => void): () => void
   onStatus(callback: (state: BridgeState, caps: BridgeCaps | null, pluginVersion: string | null) => void): () => void
   /** 订阅 AMO 更新信息（随 status 推送）。 */
   onUpdateAvailable(callback: (update: { version: string; url: string } | null) => void): () => void
@@ -250,7 +250,8 @@ export function connectPanel(): PanelApi {
     openStream(method, args, onFrame, onError) {
       const id = crypto.randomUUID()
       streams.set(id, { onFrame, onError })
-      void send({ type: 'stream.open', id, method, args }).catch((error: unknown) => {
+      // 结构化 args（如 session/follow 的 {request:{address}}）在这里落到线协议的命名值对象上。
+      void send({ type: 'stream.open', id, method, args: args as Record<string, unknown> }).catch((error: unknown) => {
         const entry = streams.get(id)
         if (entry === undefined) return
         streams.delete(id)

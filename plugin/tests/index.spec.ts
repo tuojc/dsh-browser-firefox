@@ -25,6 +25,7 @@ function stubContext(probe?: Probe): Context {
     get: () => undefined,
     logger: {
       info: (line: string) => { probe?.logs.push(line) },
+      debug: (line: string) => { probe?.logs.push(line) },
       warn: () => {},
       error: () => {},
     },

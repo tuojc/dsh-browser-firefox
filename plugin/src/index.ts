@@ -32,6 +32,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-api-gateway/types'
 import type {} from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalRequestEvent } from '@deepseek-ai/dsh-user-approval/types'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { readFileSync } from 'node:fs'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
@@ -192,10 +193,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const ownershipSources = { driven: extensionSessions, followed: followedSessions }
   // Subagent child sessions inherit their parent's ownership: a question asked
   // by a delegated agent belongs in the conversation the user is watching.
-  const sessions = ctx.get('sessions')
-  const parentOf = sessions === undefined
-    ? undefined
-    : (sessionId: string): string | undefined => sessions.get(sessionId as never)?.header.parentSession
+  // The Session store is read lazily on every hop: capturing it once at mount
+  // would silently disable inheritance whenever it is registered after this
+  // plugin (or recreated by an HMR reload).
+  const parentOf = (sessionId: string): string | undefined => {
+    const sessions = ctx.get('sessions')
+    return sessions?.get(sessionId as SessionId)?.header.parentSession
+  }
   const notingDispatchRpc: RpcDispatch = async (method, args, signal) => {
     const tracksOwnership = method === 'session/create' || method === 'session/prompt'
     const dispatched = tracksOwnership ? sessionIdOf(args.request) : undefined
@@ -277,8 +281,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // Prepended so the claim runs before the Remote event forwarding listener
   // in dsh-api-remotes. Delegations are logged with the failing gate so an
   // "invisible card" report is diagnosable from the host log.
+  // 委托日志：只有「扩展在线但不支持该卡片」是用户可操作的（扩展版本旧），
+  // 其余（无连接、会话不归属）在 dsh web 会话里每次都发生，压到 debug 免得刷屏。
   const logDelegation = (kind: 'user-questions' | 'approval', sessionId: string | undefined, reason: DelegateReason): void => {
-    ctx.logger.info(`browser bridge: delegated ${kind} for session ${sessionId ?? '<unknown>'} (${reason})`)
+    const line = `browser bridge: delegated ${kind} for session ${sessionId ?? '<unknown>'} (${reason})`
+    if (reason === 'unsupported-client') ctx.logger.info(line)
+    else ctx.logger.debug(line)
   }
   ctx.effect(() => {
     const disposeListener = ctx.on('user-questions/request', (request, next) => {
@@ -287,7 +295,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         clientSupports: server.clientSupportsQuestions(),
         sessionId: request.agent?.id,
         sources: ownershipSources,
-        ...(parentOf === undefined ? {} : { parentOf }),
+        parentOf,
       })
       if (!ownership.owned) {
         logDelegation('user-questions', request.agent?.id, ownership.reason)
@@ -310,18 +318,19 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         clientSupports: server.clientSupportsApprovals(),
         sessionId: request.agent?.id,
         sources: ownershipSources,
-        ...(parentOf === undefined ? {} : { parentOf }),
+        parentOf,
       })
       if (!ownership.owned) {
         logDelegation('approval', request.agent?.id, ownership.reason)
         return next()
       }
+      const reason = approvalReasonText(request)
       return approvals.ask(
         ownership.sessionId,
         {
           toolName: request.toolName,
           ...(typeof request.callId === 'string' ? { callId: request.callId } : {}),
-          ...(approvalReasonText(request) === undefined ? {} : { reason: approvalReasonText(request) as string }),
+          ...(reason === undefined ? {} : { reason }),
         },
         next,
         request.signal,

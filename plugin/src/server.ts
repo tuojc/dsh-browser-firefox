@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
+import { followedSessionOf } from './session-follow.ts'
 import {
   HELLO_TIMEOUT_MS,
   PING_INTERVAL_MS,
@@ -93,10 +94,20 @@ function delay(ms: number): Promise<void> {
 /**
  * Race one promise against an abort signal. Resolves `undefined` when the
  * signal wins; the loser's handlers are always attached, so a late rejection
- * cannot surface as an unhandled rejection.
+ * cannot surface as an unhandled rejection — the host loader escalates those
+ * to a fatal load failure.
+ *
+ * Exported for tests.
  */
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
-  if (signal.aborted) return Promise.resolve(undefined)
+export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) {
+    // `promise` already exists: the caller evaluated it before entering this
+    // function, and an in-flight gateway stream rejects it with
+    // `gateway/cancelled` once the abort lands. Nobody else can observe it, so
+    // absorb the rejection instead of leaking an unhandled one.
+    promise.catch(() => undefined)
+    return Promise.resolve(undefined)
+  }
   return new Promise<T | undefined>((resolve, reject) => {
     const onAbort = (): void => { resolve(undefined) }
     signal.addEventListener('abort', onAbort, { once: true })
@@ -117,14 +128,6 @@ function orderedSessionId(frame: Extract<ClientFrame, { t: 'rpc' }>): string | u
   if (typeof request !== 'object' || request === null || Array.isArray(request)) return undefined
   const sessionId = (request as Record<string, unknown>).sessionId
   return typeof sessionId === 'string' ? sessionId : undefined
-}
-
-/** Session id carried by a `session/follow` stream's native args. */
-function followedSessionOf(args: Record<string, unknown>): string | undefined {
-  const request = args.request
-  if (typeof request !== 'object' || request === null || Array.isArray(request)) return undefined
-  const sessionId = (request as Record<string, unknown>).sessionId
-  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
 }
 
 /** Loopback IPv4/IPv6 literals (IPv4-mapped included). Exported for tests and reuse. */
@@ -214,8 +217,6 @@ interface PendingTool {
 interface OpenStream {
   abort: AbortController
   pump: Promise<void>
-  /** Session a `session/follow` stream is displaying, for interaction ownership. */
-  followedSessionId?: string
 }
 
 /** A socket that passed authentication and owns the single active slot. */
@@ -614,6 +615,12 @@ export class BridgeServer {
         const iterable = await this.deps.openStream(frame.method, frame.args, abort.signal)
         iterator = iterable[Symbol.asyncIterator]()
         for (;;) {
+          // Never start another pull once the stream is cancelled: the gateway
+          // rejects an in-flight next() with `gateway/cancelled`, and a pull
+          // started after the abort would have no observer left to handle it
+          // (raceAbort stays as the safety net for the narrower race where the
+          // promise already exists).
+          if (abort.signal.aborted) break
           // Race every next() against abort: an idle follow stream can sit in
           // next() for hours, and abort-as-advice alone would leave the pump
           // (and close()) hanging until the gateway feels like answering.
@@ -625,7 +632,10 @@ export class BridgeServer {
         }
       } catch (error: unknown) {
         if (!abort.signal.aborted && ws.readyState === WebSocket.OPEN) {
-          sendFrame(ws, { t: 'stream.error', id: frame.id, message: String(error) })
+          // Reporting must never throw: the socket can die between the
+          // readiness check and the write, and a throw here would escape the
+          // pump as an unhandled rejection.
+          try { sendFrame(ws, { t: 'stream.error', id: frame.id, message: String(error) }) } catch { /* socket died mid-report */ }
         }
       } finally {
         // Withdraw the subscription explicitly: for-await's implicit return()
@@ -638,15 +648,19 @@ export class BridgeServer {
         if (current !== null && current.streams.get(frame.id)?.pump === pump) {
           current.streams.delete(frame.id)
         }
-        if (followedSessionId !== undefined) this.deps.onFollowChanged?.(followedSessionId, false)
+        if (followedSessionId !== undefined) {
+          try { this.deps.onFollowChanged?.(followedSessionId, false) } catch { /* ownership bookkeeping is best-effort */ }
+        }
       }
     })()
-    conn.streams.set(frame.id, {
-      abort,
-      pump,
-      ...(followedSessionId === undefined ? {} : { followedSessionId }),
-    })
-    if (followedSessionId !== undefined) this.deps.onFollowChanged?.(followedSessionId, true)
+    conn.streams.set(frame.id, { abort, pump })
+    // Last-resort guard: the pump reports its own failures through
+    // `stream.error`, but a rejection escaping it would reach the host loader
+    // as an unhandled rejection and abort the whole plugin load.
+    void pump.catch(() => { /* already reported above */ })
+    if (followedSessionId !== undefined) {
+      try { this.deps.onFollowChanged?.(followedSessionId, true) } catch { /* ownership bookkeeping is best-effort */ }
+    }
   }
 
   /**

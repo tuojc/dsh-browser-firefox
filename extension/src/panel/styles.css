@@ -342,33 +342,6 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-.context-action {
-  min-height: 30px;
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 9px;
-  background: #ffffff;
-  color: var(--navy);
-  cursor: pointer;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1;
-  transition: background-color 150ms ease, color 150ms ease, transform 150ms ease;
-}
-
-.context-action:hover:not(:disabled) {
-  background: #dce4ff;
-  color: var(--blue-ink);
-  transform: translateY(-1px);
-}
-
-.context-action:disabled {
-  background: rgba(255, 255, 255, 0.1);
-  color: #738097;
-  cursor: default;
-}
-
 .context-switcher {
   display: grid;
   width: 30px;
@@ -712,15 +685,6 @@ textarea:focus-visible {
   text-align: right;
 }
 
-.spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid #c6d0ff;
-  border-top-color: var(--blue);
-  border-radius: 50%;
-  animation: spin 800ms linear infinite;
-}
 
 .row.info {
   justify-content: center;
@@ -1210,11 +1174,6 @@ textarea:focus-visible {
   }
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 @media (max-width: 340px) {
   .topbar {
@@ -2109,4 +2068,68 @@ textarea:focus-visible {
   border-color: var(--line-strong);
   background: var(--canvas-deep);
   color: var(--ink);
+}
+
+.pending-elsewhere {
+  flex: 0 0 auto;
+  margin: 8px 14px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ---- 设置页：版本信息 ---- */
+
+.settings-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.settings-versions dl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.settings-versions dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-versions dt {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.settings-versions dd {
+  margin: 0;
+  color: var(--ink-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.settings-warning {
+  margin: 2px 0 0;
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
 }

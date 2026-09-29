@@ -18,6 +18,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { ServerFrame } from './protocol.ts'
+import { PendingWaterfalls } from './waterfall.ts'
 
 /** The host's closed approval outcome vocabulary. */
 export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
@@ -37,37 +38,30 @@ export type ApprovalReceipt =
   | { accepted: true }
   | { accepted: false; reason: 'not-pending' | 'bad-decision' }
 
-/** Args of the plugin-local `bridge/approvalDecision` rpc method. */
+/** Args of the plugin-local `bridge/approvalDecision` rpc method (decision already narrowed by the parser). */
 export interface ApprovalDecisionArgs {
   approvalId: string
   sessionId: string
-  decision?: unknown
+  decision: ApprovalDecision
 }
 
 type PendingOutcome =
   | { kind: 'decide'; outcome: ApprovalOutcome }
   | { kind: 'delegate' }
 
-interface PendingApproval {
-  readonly sessionId: string
-  settled: boolean
-  readonly complete: (outcome: PendingOutcome) => void
-  readonly signal: AbortSignal | undefined
-  onAbort: (() => void) | undefined
-}
-
 /** Parse the extension's `bridge/approvalDecision` rpc args (ids + closed decision). */
 export function asApprovalDecisionArgs(value: unknown): ApprovalDecisionArgs | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const args = value as Record<string, unknown>
   if (typeof args.approvalId !== 'string' || typeof args.sessionId !== 'string') return undefined
-  if (args.decision !== 'allowed-once' && args.decision !== 'rejected') return undefined
-  return { approvalId: args.approvalId, sessionId: args.sessionId, decision: args.decision }
+  const decision = args.decision
+  if (decision !== 'allowed-once' && decision !== 'rejected') return undefined
+  return { approvalId: args.approvalId, sessionId: args.sessionId, decision }
 }
 
 /** Owns the host approval waterfall for extension-driven sessions. */
 export class ApprovalBridge {
-  private readonly pending = new Map<string, PendingApproval>()
+  private readonly waterfalls = new PendingWaterfalls<PendingOutcome>()
 
   constructor(private readonly deps: {
     /** Push one server frame to the connected extension (must tolerate a dead socket). */
@@ -93,30 +87,22 @@ export class ApprovalBridge {
     if (signal?.aborted) return Promise.resolve<ApprovalOutcome>('cancelled')
     const approvalId = randomUUID()
     return new Promise<ApprovalOutcome>((resolve, reject) => {
-      const entry: PendingApproval = {
+      this.waterfalls.register({
+        id: approvalId,
         sessionId: routingSessionId,
-        settled: false,
         signal,
+        payload: undefined,
         complete: (outcome) => {
-          if (entry.settled) return
-          entry.settled = true
-          this.pending.delete(approvalId)
-          if (entry.onAbort !== undefined) entry.signal?.removeEventListener('abort', entry.onAbort)
           if (outcome.kind === 'decide') resolve(outcome.outcome)
           else next().then(resolve, reject)
         },
-        onAbort: undefined,
-      }
-      if (signal !== undefined) {
-        entry.onAbort = () => {
+        onAbort: () => {
           // Withdraw the card before settling so a late click can never be
           // reported as accepted for a dead request.
           this.deps.push({ t: 'approval.resolved', id: approvalId, sessionId: routingSessionId })
-          entry.complete({ kind: 'decide', outcome: 'cancelled' })
-        }
-        signal.addEventListener('abort', entry.onAbort, { once: true })
-      }
-      this.pending.set(approvalId, entry)
+          this.waterfalls.settle(approvalId, { kind: 'decide', outcome: 'cancelled' })
+        },
+      })
       this.deps.push({
         t: 'approval.requested',
         id: approvalId,
@@ -133,28 +119,25 @@ export class ApprovalBridge {
    * rpc. The server replies with this receipt.
    */
   decide(args: ApprovalDecisionArgs): ApprovalReceipt {
-    const entry = this.pending.get(args.approvalId)
-    if (entry === undefined || entry.settled || entry.sessionId !== args.sessionId) {
+    if (!this.waterfalls.matches(args.approvalId, args.sessionId)) {
       return { accepted: false, reason: 'not-pending' }
     }
     if (args.decision !== 'allowed-once' && args.decision !== 'rejected') {
       return { accepted: false, reason: 'bad-decision' }
     }
-    entry.complete({ kind: 'decide', outcome: args.decision })
+    this.waterfalls.settle(args.approvalId, { kind: 'decide', outcome: args.decision })
     return { accepted: true }
   }
 
   /** Bridge connection replaced/closed: delegate every unsettled approval. */
   delegateAll(): void {
-    for (const entry of [...this.pending.values()]) {
-      if (!entry.settled) entry.complete({ kind: 'delegate' })
-    }
+    for (const id of this.waterfalls.ids()) this.waterfalls.settle(id, { kind: 'delegate' })
   }
 
   /** Plugin unload: answer everything fail-closed so no tool call outlives the plugin. */
   dispose(): void {
-    for (const entry of [...this.pending.values()]) {
-      if (!entry.settled) entry.complete({ kind: 'decide', outcome: 'unavailable' })
+    for (const id of this.waterfalls.ids()) {
+      this.waterfalls.settle(id, { kind: 'decide', outcome: 'unavailable' })
     }
   }
 }

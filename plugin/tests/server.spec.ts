@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { BridgeServer, BridgeToolError, isLoopbackAddress, messageToText, payloadCode, payloadMessage, PRIVILEGED_METHODS } from '../src/server.ts'
 import type { BridgeFrame, RemoteWireResult } from '../src/protocol.ts'
+import { sessionFollowArgs } from '../src/session-follow.ts'
 
 const TOKEN = 'deadbeefdeadbeefdeadbeefdeadbeef'
 
@@ -19,6 +20,11 @@ interface Harness {
   url: string
   dispatchMock: ReturnType<typeof vi.fn>
   streamMock: ReturnType<typeof vi.fn>
+}
+
+/** Close one test HTTP server and wait for it to release the port. */
+function closeServer(server: Server): Promise<void> {
+  return new Promise<void>((resolve) => { server.close(() => { resolve() }) })
 }
 
 async function startBridge(overrides: Partial<ConstructorParameters<typeof BridgeServer>[0]> = {}): Promise<Harness> {
@@ -190,7 +196,7 @@ describe('BridgeServer', () => {
       expect(mismatches).toEqual(['0.4.5'])
       again.ws.close()
     } finally {
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await closeServer(server)
     }
   })
 
@@ -203,7 +209,7 @@ describe('BridgeServer', () => {
       expect(frames.find((f) => f.t === 'hello.ok')).toEqual({ t: 'hello.ok', caps: CAPS })
       ws.close()
     } finally {
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await closeServer(server)
     }
   })
 
@@ -735,7 +741,7 @@ describe('BridgeServer question uplink', () => {
     // 插件本地方法绝不能落到 Typert 网关。
     expect(dispatchMock).not.toHaveBeenCalled()
     client.ws.close()
-    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    await closeServer(server)
   })
 
   it('reports clientSupportsQuestions from the hello caps', async () => {
@@ -753,7 +759,7 @@ describe('BridgeServer question uplink', () => {
     await waitFor(() => client2.frames.some((f) => f.t === 'hello.ok'))
     expect(bridge.clientSupportsQuestions()).toBe(true)
     client2.ws.close()
-    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    await closeServer(server)
   })
 
   it('pushes question frames to the connected extension', async () => {
@@ -772,7 +778,7 @@ describe('BridgeServer question uplink', () => {
     bridge.push({ t: 'question.resolved', id: 'q1', sessionId: 's1' })
     await waitFor(() => client.frames.some((f) => f.t === 'question.resolved'))
     client.ws.close()
-    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    await closeServer(server)
   })
 
   it('fires onConnectionLost when the extension socket closes', async () => {
@@ -784,7 +790,7 @@ describe('BridgeServer question uplink', () => {
     expect(lostMock).not.toHaveBeenCalled()
     client.ws.close()
     await waitFor(() => lostMock.mock.calls.length > 0)
-    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    await closeServer(server)
   })
 
   it('accepts rpc frames above the legacy 4MiB cap (screenshots ride rpc args now)', async () => {
@@ -799,7 +805,7 @@ describe('BridgeServer question uplink', () => {
       .toEqual({ t: 'rpc.result', id: 'big-1', ok: true, value: 'ok' })
     expect(dispatchMock).toHaveBeenCalled()
     client.ws.close()
-    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    await closeServer(server)
   })
 })
 
@@ -821,7 +827,7 @@ describe('BridgeServer approval uplink', () => {
     // 插件本地方法绝不能落到 Typert 网关。
     expect(dispatchMock).not.toHaveBeenCalled()
     client.ws.close()
-    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    await closeServer(server)
   })
 
   it('reports clientSupportsApprovals from the hello caps', async () => {
@@ -834,7 +840,7 @@ describe('BridgeServer approval uplink', () => {
       expect(bridge.clientSupportsQuestions()).toBe(false)
       capable.ws.close()
     } finally {
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await closeServer(server)
     }
   })
 })
@@ -856,7 +862,11 @@ describe('BridgeServer follow ownership hook', () => {
       send(client.ws, { t: 'hello', token: TOKEN, caps: CAPS })
       await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
 
-      send(client.ws, { t: 'stream.open', id: 'st-1', method: 'session/follow', args: { request: { sessionId: 's1' } } })
+      // 真实形状：扩展经 sessionFollowArgs() 发出 {request:{address:{kind:'session',sessionId}}}
+      send(client.ws, {
+        t: 'stream.open', id: 'st-1', method: 'session/follow',
+        args: sessionFollowArgs('s1') as unknown as Record<string, unknown>,
+      })
       await waitFor(() => events.length === 1)
       expect(events[0]).toEqual(['s1', true])
 
@@ -870,7 +880,77 @@ describe('BridgeServer follow ownership hook', () => {
       expect(events[1]).toEqual(['s1', false])
       client.ws.close()
     } finally {
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await closeServer(server)
+    }
+  })
+})
+
+/**
+ * 加载期致命失败回归：dsh-app-boot 装了 process.on('unhandledRejection')，
+ * 任何逃逸的拒绝都会 `fatal load failure` 并 exit(1)。
+ * 下面的 raceAbort 单测是**真正的守卫**（无修复时必失败）；集成用例是冒烟。
+ */
+describe('未处理的 Promise 拒绝（加载期致命失败回归）', () => {
+  it('raceAbort 在 signal 已 abort 时吞掉迟到拒绝，不产生 unhandledRejection', async () => {
+    const { raceAbort } = await import('../src/server.ts')
+    const seen: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { seen.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const controller = new AbortController()
+      let rejectLate: (error: unknown) => void = () => {}
+      // 复刻真实时序：iterator.next() 先创建 promise，随后 abort 才落地
+      const late = new Promise<never>((_resolve, reject) => { rejectLate = reject })
+      controller.abort()
+      await expect(raceAbort(late, controller.signal)).resolves.toBeUndefined()
+      rejectLate(Object.assign(new Error('Remote invocation "workspace/follow" was aborted'), { code: 'gateway/cancelled' }))
+      await new Promise((resolve) => { setTimeout(resolve, 20) })
+      expect(seen).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('冒烟：stream.open 未就绪时客户端已 close，泵拆除后不留未处理拒绝', async () => {
+    const seen: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { seen.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      // 真实时序：扩展在 workspace/follow 还没 open 完就发了 stream.close
+      // → 泵带着已 abort 的 signal 首次调用 iterator.next()。
+      let releaseOpen: () => void = () => {}
+      const openGate = new Promise<void>((resolve) => { releaseOpen = resolve })
+      const slowOpen = async (): Promise<AsyncIterable<unknown>> => {
+        await openGate
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<unknown>>((_resolve, reject) => {
+              // 网关行为：abort 落地后异步拒绝 in-flight next()
+              setTimeout(() => {
+                reject(Object.assign(new Error('Remote invocation "workspace/follow" was aborted'), { code: 'gateway/cancelled' }))
+              }, 5)
+            }),
+            return: () => Promise.resolve({ done: true, value: undefined }),
+          }),
+        }
+      }
+      const { server, url } = await startBridge({ openStream: slowOpen })
+      try {
+        const client = await connect(url)
+        send(client.ws, { t: 'hello', token: TOKEN, caps: CAPS })
+        await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+        send(client.ws, { t: 'stream.open', id: 'wf-1', method: 'workspace/follow', args: { request: {} } })
+        await new Promise((resolve) => { setTimeout(resolve, 20) })
+        send(client.ws, { t: 'stream.close', id: 'wf-1' })
+        releaseOpen()
+        await new Promise((resolve) => { setTimeout(resolve, 60) })
+        expect(seen).toEqual([])
+        client.ws.close()
+      } finally {
+        await closeServer(server)
+      }
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
     }
   })
 })

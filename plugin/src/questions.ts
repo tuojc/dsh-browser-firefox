@@ -18,6 +18,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { QuestionItem, ServerFrame } from './protocol.ts'
+import { PendingWaterfalls } from './waterfall.ts'
 
 /** One answer item, mirroring the host AskUserQuestionAnswerItem wire form. */
 export interface QuestionAnswerItem {
@@ -48,15 +49,6 @@ type PendingOutcome =
   | { kind: 'answer'; answer: QuestionAnswerPayload }
   | { kind: 'reject'; error: Error }
   | { kind: 'delegate' }
-
-interface PendingQuestion {
-  readonly sessionId: string
-  readonly questionIds: ReadonlySet<string>
-  settled: boolean
-  readonly complete: (outcome: PendingOutcome) => void
-  readonly signal: AbortSignal | undefined
-  onAbort: (() => void) | undefined
-}
 
 /** Error matching the host's ASK_ABORTED semantics (the service remaps it). */
 function abortedError(): Error {
@@ -99,7 +91,7 @@ export function asQuestionAnswerArgs(value: unknown): QuestionAnswerArgs | undef
 
 /** Owns the user-questions waterfall for extension-driven sessions. */
 export class QuestionBridge {
-  private readonly pending = new Map<string, PendingQuestion>()
+  private readonly waterfalls = new PendingWaterfalls<PendingOutcome, ReadonlySet<string>>()
 
   constructor(private readonly deps: {
     /** Push one server frame to the connected extension (must tolerate a dead socket). */
@@ -124,33 +116,28 @@ export class QuestionBridge {
   ): Promise<QuestionAnswerPayload> {
     if (signal?.aborted) return Promise.reject(abortedError())
     const questionId = randomUUID()
+    const questionIds = new Set(questions.map(question => question.id))
     return new Promise<QuestionAnswerPayload>((resolve, reject) => {
-      const entry: PendingQuestion = {
+      const settle = (outcome: PendingOutcome): void => {
+        this.waterfalls.settle(questionId, outcome)
+      }
+      this.waterfalls.register({
+        id: questionId,
         sessionId,
-        questionIds: new Set(questions.map(question => question.id)),
-        settled: false,
         signal,
+        payload: questionIds,
         complete: (outcome) => {
-          if (entry.settled) return
-          entry.settled = true
-          this.pending.delete(questionId)
-          if (entry.onAbort !== undefined) entry.signal?.removeEventListener('abort', entry.onAbort)
           if (outcome.kind === 'answer') resolve(outcome.answer)
           else if (outcome.kind === 'reject') reject(outcome.error)
           else next().then(resolve, reject)
         },
-        onAbort: undefined,
-      }
-      if (signal !== undefined) {
-        entry.onAbort = () => {
+        onAbort: () => {
           // Tell the extension to drop the card before settling so a late
           // answer can never report acceptance for a dead request.
           this.deps.push({ t: 'question.resolved', id: questionId, sessionId })
-          entry.complete({ kind: 'reject', error: abortedError() })
-        }
-        signal.addEventListener('abort', entry.onAbort, { once: true })
-      }
-      this.pending.set(questionId, entry)
+          settle({ kind: 'reject', error: abortedError() })
+        },
+      })
       this.deps.push({ t: 'question.requested', id: questionId, sessionId, questions })
     })
   }
@@ -160,33 +147,28 @@ export class QuestionBridge {
    * rpc. The server replies with this receipt.
    */
   answer(args: QuestionAnswerArgs): QuestionAnswerReceipt {
-    const entry = this.pending.get(args.questionId)
-    if (entry === undefined || entry.settled || entry.sessionId !== args.sessionId) {
+    if (!this.waterfalls.matches(args.questionId, args.sessionId)) {
       return { accepted: false, reason: 'not-pending' }
     }
     if (args.decline === true) {
-      entry.complete({ kind: 'reject', error: declinedError() })
+      this.waterfalls.settle(args.questionId, { kind: 'reject', error: declinedError() })
       return { accepted: true }
     }
-    const answer = asAnswerPayload(args.answer, entry.questionIds)
+    const answer = asAnswerPayload(args.answer, this.waterfalls.payloadOf(args.questionId) ?? new Set())
     if (answer === undefined) return { accepted: false, reason: 'bad-answer' }
-    entry.complete({ kind: 'answer', answer })
+    this.waterfalls.settle(args.questionId, { kind: 'answer', answer })
     return { accepted: true }
   }
 
   /** Bridge connection replaced/closed: delegate every unsettled question. */
   delegateAll(): void {
-    for (const entry of [...this.pending.values()]) {
-      if (!entry.settled) entry.complete({ kind: 'delegate' })
-    }
+    for (const id of this.waterfalls.ids()) this.waterfalls.settle(id, { kind: 'delegate' })
   }
 
   /** Plugin unload: reject everything so no tool call outlives the plugin. */
   dispose(): void {
-    for (const entry of [...this.pending.values()]) {
-      if (!entry.settled) {
-        entry.complete({ kind: 'reject', error: new Error('browser bridge plugin was unloaded') })
-      }
+    for (const id of this.waterfalls.ids()) {
+      this.waterfalls.settle(id, { kind: 'reject', error: new Error('browser bridge plugin was unloaded') })
     }
   }
 }

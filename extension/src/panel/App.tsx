@@ -9,6 +9,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { BridgeCaps } from 'dsh-browser-firefox/src/protocol.ts'
+import { sessionFollowArgs } from 'dsh-browser-firefox/src/session-follow.ts'
 import type { BridgeState } from '../background/bridge.ts'
 import { connectPanel, PanelRpcError, type PanelApi, type PanelSettings } from './api.ts'
 import {
@@ -38,13 +39,11 @@ import { ApprovalCard } from './ApprovalCard.tsx'
 import { approvalReceiptReason, type ApprovalDecision } from './approvals.ts'
 import { QuestionCard } from './QuestionCard.tsx'
 import {
-  removePendingInteraction,
   questionReceiptReason,
-  removePendingQuestion,
-  upsertPendingApproval,
-  upsertPendingQuestion,
-} from './pending-questions.ts'
-import { versionMismatch } from './version-check.ts'
+  removePending,
+  upsertPending,
+} from './pending-interactions.ts'
+import { pluginVersionLabel, versionMismatch } from './version-check.ts'
 import type { QuestionAnswer } from './questions.ts'
 import { PERMISSION_LEVEL_HINTS, PERMISSION_LEVEL_LABELS, PERMISSION_LEVEL_SHORT, type PermissionLevel } from './permissions.ts'
 import { renderMarkdown } from './markdown.ts'
@@ -361,6 +360,12 @@ export function App(): React.JSX.Element {
       const previous = lastStateRef.current
       lastStateRef.current = next
       if (next === previous) return
+      if (next !== 'connected') {
+        // 桥一断开，插件就把未结算的问答/审批委托给 dsh web；本地卡片再也
+        // 不可能被受理，留着只会让人点到必然失败的动作。
+        clearQuestions()
+        clearApprovals()
+      }
       if (next === 'connected') {
         setSessionEpoch((epoch) => epoch + 1)
         void loadModelCatalog()
@@ -392,12 +397,12 @@ export function App(): React.JSX.Element {
   function onQuestionFrame(frame: Parameters<typeof pendingQuestionFromFrame>[0]): void {
     const pending = pendingQuestionFromFrame(frame)
     if (pending !== null) {
-      setQuestions((prev) => upsertPendingQuestion(prev, pending))
+      setQuestions((prev) => upsertPending(prev, pending))
       return
     }
     const resolved = resolvedQuestionFromFrame(frame)
     if (resolved !== null) {
-      setQuestions((prev) => removePendingQuestion(prev, resolved))
+      setQuestions((prev) => removePending(prev, resolved))
     }
   }
 
@@ -410,12 +415,12 @@ export function App(): React.JSX.Element {
   function onApprovalFrame(frame: Parameters<typeof pendingApprovalFromFrame>[0]): void {
     const pending = pendingApprovalFromFrame(frame)
     if (pending !== null) {
-      setApprovals((prev) => upsertPendingApproval(prev, pending))
+      setApprovals((prev) => upsertPending(prev, pending))
       return
     }
     const resolved = resolvedApprovalFromFrame(frame)
     if (resolved !== null) {
-      setApprovals((prev) => removePendingInteraction(prev, resolved))
+      setApprovals((prev) => removePending(prev, resolved))
     }
   }
 
@@ -435,10 +440,10 @@ export function App(): React.JSX.Element {
       })
       const disposition = approvalReceiptReason(receipt)
       if (disposition === 'accepted') {
-        setApprovals((prev) => removePendingInteraction(prev, target))
+        setApprovals((prev) => removePending(prev, target))
       } else if (disposition === 'not-pending') {
         setError('这条审批已在其他窗口处理或已失效。')
-        setApprovals((prev) => removePendingInteraction(prev, target))
+        setApprovals((prev) => removePending(prev, target))
       } else {
         setError('审批未被接受，请重试。')
       }
@@ -524,10 +529,10 @@ export function App(): React.JSX.Element {
       })
       const disposition = questionReceiptReason(receipt)
       if (disposition === 'accepted') {
-        setQuestions((prev) => removePendingQuestion(prev, target))
+        setQuestions((prev) => removePending(prev, target))
       } else if (disposition === 'not-pending') {
         setError('这个问题已在其他窗口处理或已失效。')
-        setQuestions((prev) => removePendingQuestion(prev, target))
+        setQuestions((prev) => removePending(prev, target))
       } else {
         setError('回答未被接受，请检查后重试。')
       }
@@ -550,7 +555,7 @@ export function App(): React.JSX.Element {
     } catch {
       // 桥已断开时问题在宿主侧已被委托/作废，本地直接移除即可。
     } finally {
-      setQuestions((prev) => removePendingQuestion(prev, target))
+      setQuestions((prev) => removePending(prev, target))
       setQuestionBusy(null)
     }
   }
@@ -562,7 +567,7 @@ export function App(): React.JSX.Element {
    */
   function subscribeWithRetry(
     method: string,
-    args: Record<string, unknown>,
+    args: object,
     onFrame: (frame: unknown) => void,
     onFatalError: (message: string) => void,
   ): () => void {
@@ -704,7 +709,7 @@ export function App(): React.JSX.Element {
     followCloseRef.current?.()
     followDeadRef.current = false
     followCloseRef.current = subscribeWithRetry('session/follow',
-      { request: { address: { kind: 'session', sessionId: id } } },
+      sessionFollowArgs(id),
       (frame) => { onFollowFrame(id, frame) },
       (message) => {
         // 重试耗尽：标记为死（首个 prompt 成功后 send() 会重开）。
@@ -956,6 +961,18 @@ export function App(): React.JSX.Element {
     [approvals, currentSessionId],
   )
 
+  /** 当前会话的待处理总数（一次只显示一张卡，多出来的给计数提示）。 */
+  const sameSessionPendingCount = useMemo(() => {
+    let total = 0
+    for (const candidate of questions) {
+      if (candidate.sessionId === currentSessionId) total += 1
+    }
+    for (const candidate of approvals) {
+      if (candidate.sessionId === currentSessionId) total += 1
+    }
+    return total
+  }, [questions, approvals, currentSessionId])
+
   /** 其它会话的待处理交互：给一条可切换的提示，避免卡片「看不见」。 */
   const otherSessionPending = useMemo(() => {
     const ids = new Set<string>()
@@ -998,6 +1015,30 @@ export function App(): React.JSX.Element {
               placeholder="~/.dsh/ext-bridge-token 的内容"
             />
           </label>
+        </div>
+        <div className="settings-versions">
+          <span className="eyebrow">版本</span>
+          <dl>
+            <div>
+              <dt>扩展</dt>
+              <dd>{extensionVersion}</dd>
+            </div>
+            <div>
+              <dt>dsh 插件</dt>
+              <dd>{pluginVersionLabel(pluginVersion, state)}</dd>
+            </div>
+          </dl>
+          {versionMismatch(extensionVersion, pluginVersion) && (
+            <p className="settings-warning" role="alert">
+              两端版本不一致，请同时更新：插件经 npm / dsh plugin 更新，扩展在附加组件站更新或重新载入。
+            </p>
+          )}
+          {update !== null && (
+            <p className="settings-note">
+              新版本 {update.version} 已在 Firefox 附加组件站上架。
+              <button className="secondary" onClick={() => { void browser.tabs.create({ url: update.url }) }}>查看</button>
+            </p>
+          )}
         </div>
         <div className="settings-actions">
           <button className="primary" onClick={saveSettings}>保存并连接</button>
@@ -1121,6 +1162,11 @@ export function App(): React.JSX.Element {
           <button className="jump-bottom" onClick={jumpToBottom} aria-label="回到底部" title="回到底部"><DownIcon /></button>
         )}
       </div>
+      {(approval !== null || question !== null) && sameSessionPendingCount > 1 && (
+        <div className="pending-elsewhere" role="status">
+          还有 {sameSessionPendingCount - 1} 项待处理（处理完当前这项后依次显示）。
+        </div>
+      )}
       {approval !== null && (
         <ApprovalCard
           key={`${approval.sessionId}:${approval.approvalId}`}
@@ -1129,7 +1175,7 @@ export function App(): React.JSX.Element {
           onDecide={(decision) => { void decideApproval(approval, decision) }}
         />
       )}
-      {approval === null && otherSessionPending.length > 0 && (
+      {approval === null && question === null && otherSessionPending.length > 0 && (
         <div className="auth-banner pending-elsewhere" role="status">
           其它会话有 {otherSessionPending.length} 项待处理（问答/审批）。
           <button className="secondary" onClick={() => selectSession(otherSessionPending[0] as string)}>前往</button>

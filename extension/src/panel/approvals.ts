@@ -5,6 +5,7 @@
  */
 
 import type { PendingApproval } from './events.ts'
+import { isRecord } from './json.ts'
 
 /** 侧边栏可回传的决策（宿主审批结果集只有这两个是用户动作）。 */
 export type ApprovalDecision = 'allowed-once' | 'rejected'
@@ -30,6 +31,3 @@ export function approvalReasonText(approval: PendingApproval): string {
   return reason !== undefined && reason !== '' ? reason : '宿主需要在执行前得到你的确认。'
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}

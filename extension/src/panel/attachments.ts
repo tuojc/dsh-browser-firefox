@@ -8,6 +8,8 @@
  * @module
  */
 
+import { isRecord } from './json.ts'
+
 export const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
 export type ImageMediaType = typeof IMAGE_MEDIA_TYPES[number]
 
@@ -210,9 +212,6 @@ export async function readDraft(file: File, limits: ImageAttachmentLimits = DEFA
 
 // ---- 宿主投影与历史图片 ----
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0

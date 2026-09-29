@@ -7,8 +7,9 @@
  * @module
  */
 
-import type { ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
+import type { QuestionItem, QuestionOption, ServerFrame } from 'dsh-browser-firefox/src/protocol.ts'
 import { imageRefsFromBlocks, type ImageAttachmentRefView } from './attachments.ts'
+import { isRecord } from './json.ts'
 
 /** One rendered conversation row. */
 export interface Row {
@@ -112,22 +113,9 @@ const TOOL_LABELS: Record<string, string> = {
 }
 
 // ---- ask_user_question 桥帧（question.requested / question.resolved） ----
+// 线类型（QuestionItem/QuestionOption）直接复用插件协议模块，避免两处字段漂移。
 
-/** One user-selectable answer exposed by ask_user_question. */
-export interface QuestionOption {
-  label: string
-  description?: string
-}
-
-/** One item in a question batch. */
-export interface QuestionItem {
-  id: string
-  question: string
-  header?: string
-  detail?: string
-  options?: QuestionOption[]
-  multiSelect?: boolean
-}
+export type { QuestionItem, QuestionOption }
 
 /** Pending interaction belonging to one dsh session. */
 export interface PendingQuestion {
@@ -156,6 +144,12 @@ export interface ResolvedApproval {
   approvalId: string
   sessionId: string
 }
+
+/** Either pending interaction kind (the sidebar renders one card at a time). */
+export type PendingInteraction = PendingQuestion | PendingApproval
+
+/** Either resolved-interaction identity (the `*.resolved` push form). */
+export type ResolvedInteraction = ResolvedQuestion | ResolvedApproval
 
 /** Parse a bridge push frame into a pending approval (null when not one / malformed). */
 export function pendingApprovalFromFrame(frame: ServerFrame): PendingApproval | null {
@@ -221,10 +215,6 @@ function parseQuestionItem(value: unknown): QuestionItem | null {
     ...(options === undefined ? {} : { options }),
     ...(value.multiSelect === undefined ? {} : { multiSelect: value.multiSelect as boolean }),
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 工具调用的友好展示名：带 index 参数时附上（如「点击元素 #7」）。 */

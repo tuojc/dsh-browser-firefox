@@ -11,6 +11,7 @@
  */
 
 import { PanelRpcError } from './api.ts'
+import { isRecord } from './json.ts'
 
 export interface ModelReasoningEffortView {
   id: string
@@ -48,10 +49,6 @@ export interface ModelSelectionView {
 export interface ModelSelectionProjectionView {
   lastUsed: ModelSelectionView | null
   next: ModelSelectionView | null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 解析一个 ModelSelection（provider/model 必填，reasoningEffort 可选）。 */

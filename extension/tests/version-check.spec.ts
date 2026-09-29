@@ -12,3 +12,16 @@ describe('versionMismatch', () => {
     expect(versionMismatch('0.4.6', '')).toBe(false)
   })
 })
+
+describe('pluginVersionLabel', () => {
+  it('已知版本号时直接显示，否则按连接状态解释', async () => {
+    const { pluginVersionLabel } = await import('../src/panel/version-check.ts')
+    expect(pluginVersionLabel('0.4.8', 'connected')).toBe('0.4.8')
+    // 已连接但插件过旧（0.4.6 之前不互带 version）
+    expect(pluginVersionLabel(null, 'connected')).toContain('过旧')
+    expect(pluginVersionLabel('', 'connected')).toContain('过旧')
+    // 未连接时直说未连接，而不是误报「插件过旧」
+    expect(pluginVersionLabel(null, 'stopped')).toBe('未连接')
+    expect(pluginVersionLabel(null, 'reconnecting')).toBe('未连接')
+  })
+})

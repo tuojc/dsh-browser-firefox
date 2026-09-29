@@ -94,3 +94,19 @@ describe('ApprovalBridge', () => {
     await expect(pending).resolves.toBe('unavailable')
   })
 })
+
+describe('PendingWaterfalls（共享结算簿记）', () => {
+  it('settle 只生效一次，后续调用与 unknown id 都是 no-op', async () => {
+    const { bridge, frames } = harness()
+    const pending = bridge.ask('s1', { toolName: 'bash' }, async () => 'unavailable')
+    const approvalId = (frames[0] as Extract<ServerFrame, { t: 'approval.requested' }>).id
+    expect(bridge.decide({ approvalId: 'unknown', sessionId: 's1', decision: 'rejected' }))
+      .toEqual({ accepted: false, reason: 'not-pending' })
+    expect(bridge.decide({ approvalId, sessionId: 's1', decision: 'rejected' })).toEqual({ accepted: true })
+    expect(bridge.decide({ approvalId, sessionId: 's1', decision: 'allowed-once' }))
+      .toEqual({ accepted: false, reason: 'not-pending' })
+    bridge.delegateAll()
+    bridge.dispose()
+    await expect(pending).resolves.toBe('rejected')
+  })
+})

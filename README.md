@@ -62,7 +62,9 @@ curl -s http://127.0.0.1:3080/ext/bridge-config
 - **插件**：`npm i -g dsh-browser-firefox`（或按你当时的安装方式重装），然后重启 `dsh web`
 - **扩展**：在 Firefox 附加组件站更新，或 `about:debugging` 重新载入新的构建
 
-版本不一致时，侧边栏顶部会出现黄色横幅提示（两端握手时会互相核对版本号）。
+版本不一致时，侧边栏顶部会出现黄色横幅提示（两端握手时会互相核对版本号）；侧边栏 **设置页的「版本」卡片**同时列出扩展与 dsh 插件的当前版本，并提示附加组件站上的新版本。
+
+从源码构建扩展时，请以 `extension/manifest.example.json` 为模板并同步 `permissions` 与 CSP `connect-src`（真实 `manifest.json` 含个人 gecko.id，不入库）：模板缺 `webNavigation` 会丢失 iframe 聚合快照，缺 `https://addons.mozilla.org` 会让更新检查被 CSP 拦掉。
 
 ## 功能
 
@@ -91,7 +93,7 @@ curl -s http://127.0.0.1:3080/ext/bridge-config
 
 ### 问答卡片
 
-助手经 `ask_user_question` 提问时，问题卡片直接出现在侧边栏底部——在浏览器里选择/填写/放弃即可，不必切到 dsh web；桥断开时自动回落给 dsh web 回答。子会话（subagent）里的提问也会归到父会话的卡片上，不会漏掉；待处理项属于其它会话时，侧边栏会提示并可一键切换过去。
+助手经 `ask_user_question` 提问时，问题卡片直接出现在侧边栏底部——在浏览器里选择/填写/放弃即可，不必切到 dsh web；桥断开时卡片自动消失并回落给 dsh web 回答。子会话（subagent）里的提问也会归到父会话的卡片上，不会漏掉；待处理项属于其它会话时侧边栏给出一键切换提示，同一会话有多项时显示剩余数量。
 
 ### 审批卡片
 
