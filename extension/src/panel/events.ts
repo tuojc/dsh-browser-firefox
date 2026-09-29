@@ -142,6 +142,40 @@ export interface ResolvedQuestion {
   sessionId: string
 }
 
+/** One pending host approval (a hooked tool call / permission ask) in a dsh session. */
+export interface PendingApproval {
+  approvalId: string
+  sessionId: string
+  toolName: string
+  callId?: string
+  reason?: string
+}
+
+/** Identity carried by approval.resolved; both fields must match before clearing UI. */
+export interface ResolvedApproval {
+  approvalId: string
+  sessionId: string
+}
+
+/** Parse a bridge push frame into a pending approval (null when not one / malformed). */
+export function pendingApprovalFromFrame(frame: ServerFrame): PendingApproval | null {
+  if (frame.t !== 'approval.requested') return null
+  if (frame.toolName.length === 0) return null
+  return {
+    approvalId: frame.id,
+    sessionId: frame.sessionId,
+    toolName: frame.toolName,
+    ...(frame.callId === undefined ? {} : { callId: frame.callId }),
+    ...(frame.reason === undefined ? {} : { reason: frame.reason }),
+  }
+}
+
+/** Parse a bridge push frame into a resolved approval (null when not one). */
+export function resolvedApprovalFromFrame(frame: ServerFrame): ResolvedApproval | null {
+  if (frame.t !== 'approval.resolved') return null
+  return { approvalId: frame.id, sessionId: frame.sessionId }
+}
+
 /** Parse a bridge push frame into a pending question (null when not one / malformed). */
 export function pendingQuestionFromFrame(frame: ServerFrame): PendingQuestion | null {
   if (frame.t !== 'question.requested') return null

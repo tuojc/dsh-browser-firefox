@@ -68,6 +68,8 @@ export interface BridgeCaps {
   maxInteractiveItems: number
   /** Client advertises it can render ask_user_question cards; the plugin only claims the user-questions waterfall for extension-owned sessions when set. */
   questions?: boolean
+  /** Client advertises it can render host approval (permission) cards; the plugin only claims the approval waterfall for extension-owned sessions when set. */
+  approvals?: boolean
 }
 
 /** One Remote failure as plain wire data (RemoteError's message is non-enumerable, so it is restated explicitly). */
@@ -143,6 +145,18 @@ export type ServerFrame =
   | { t: 'question.requested'; id: string; sessionId: string; questions: QuestionItem[] }
   /** A previously pushed question is gone (host aborted it or the bridge delegated the waterfall elsewhere); dismiss the card without answering. */
   | { t: 'question.resolved'; id: string; sessionId: string }
+  /**
+   * The host needs one approval decision (a hooked tool call, a permission
+   * ask) in an extension-owned session and the bridge claimed the waterfall:
+   * the extension should render an approval card. The decision rides a normal
+   * `rpc` frame with the plugin-local method `bridge/approvalDecision` (args
+   * `{approvalId, sessionId, decision: 'allowed-once' | 'rejected'}`),
+   * answered `{accepted: true} | {accepted: false, reason: 'not-pending' |
+   * 'bad-decision'}`.
+   */
+  | { t: 'approval.requested'; id: string; sessionId: string; toolName: string; callId?: string; reason?: string }
+  /** A previously pushed approval is gone (host cancelled it or the bridge delegated the waterfall elsewhere); dismiss the card without deciding. */
+  | { t: 'approval.resolved'; id: string; sessionId: string }
   /** Liveness probe. */
   | { t: 'ping' }
   /** Fatal connection error; the client should re-authenticate. */
@@ -167,6 +181,8 @@ export function isServerFrame(frame: BridgeFrame): frame is ServerFrame {
     || frame.t === 'tool.cancel'
     || frame.t === 'question.requested'
     || frame.t === 'question.resolved'
+    || frame.t === 'approval.requested'
+    || frame.t === 'approval.resolved'
     || frame.t === 'ping'
     || frame.t === 'error'
 }
@@ -290,6 +306,24 @@ export function parseBridgeFrame(text: string): BridgeFrame | undefined {
       return typeof frame.id === 'string' && typeof frame.sessionId === 'string'
         ? { t: 'question.resolved', id: frame.id, sessionId: frame.sessionId }
         : undefined
+    case 'approval.requested':
+      if (typeof frame.id !== 'string' || typeof frame.sessionId !== 'string' || typeof frame.toolName !== 'string') {
+        return undefined
+      }
+      if (frame.callId !== undefined && typeof frame.callId !== 'string') return undefined
+      if (frame.reason !== undefined && typeof frame.reason !== 'string') return undefined
+      return {
+        t: 'approval.requested',
+        id: frame.id,
+        sessionId: frame.sessionId,
+        toolName: frame.toolName,
+        ...(typeof frame.callId === 'string' ? { callId: frame.callId } : {}),
+        ...(typeof frame.reason === 'string' ? { reason: frame.reason } : {}),
+      }
+    case 'approval.resolved':
+      return typeof frame.id === 'string' && typeof frame.sessionId === 'string'
+        ? { t: 'approval.resolved', id: frame.id, sessionId: frame.sessionId }
+        : undefined
     case 'ping':
       return { t: 'ping' }
     case 'error':
@@ -309,6 +343,7 @@ function isCaps(value: unknown): value is BridgeCaps {
   return typeof caps.snapshotMaxChars === 'number' && caps.snapshotMaxChars > 0
     && typeof caps.maxInteractiveItems === 'number' && caps.maxInteractiveItems > 0
     && (caps.questions === undefined || typeof caps.questions === 'boolean')
+    && (caps.approvals === undefined || typeof caps.approvals === 'boolean')
 }
 
 /** Narrow one question item; unknown extra keys (e.g. host `intent`) pass through. */

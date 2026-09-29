@@ -28,6 +28,8 @@ async function startBridge(overrides: Partial<ConstructorParameters<typeof Bridg
     token: TOKEN,
     dispatchRpc: dispatchMock,
     openStream: streamMock,
+    answerQuestion: () => ({ accepted: false, reason: 'not-pending' }),
+    answerApproval: () => ({ accepted: false, reason: 'not-pending' }),
     toolTimeoutMs: 1_000,
     caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60 },
     ...overrides,
@@ -798,5 +800,77 @@ describe('BridgeServer question uplink', () => {
     expect(dispatchMock).toHaveBeenCalled()
     client.ws.close()
     await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+  })
+})
+
+describe('BridgeServer approval uplink', () => {
+  it('intercepts bridge/approvalDecision before gateway dispatch and relays the receipt', async () => {
+    const decideMock = vi.fn(() => ({ accepted: true }))
+    const { server, url, dispatchMock } = await startBridge({ answerApproval: decideMock })
+    const client = await connect(url)
+    send(client.ws, { t: 'hello', token: TOKEN, caps: { ...CAPS, approvals: true } })
+    await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+    send(client.ws, {
+      t: 'rpc', id: 'ad-1', method: 'bridge/approvalDecision',
+      args: { approvalId: 'a1', sessionId: 's1', decision: 'allowed-once' },
+    })
+    await waitFor(() => client.frames.some((f) => f.t === 'rpc.result' && f.id === 'ad-1'))
+    expect(client.frames.find((f) => f.t === 'rpc.result' && f.id === 'ad-1'))
+      .toEqual({ t: 'rpc.result', id: 'ad-1', ok: true, value: { accepted: true } })
+    expect(decideMock).toHaveBeenCalledWith({ approvalId: 'a1', sessionId: 's1', decision: 'allowed-once' })
+    // 插件本地方法绝不能落到 Typert 网关。
+    expect(dispatchMock).not.toHaveBeenCalled()
+    client.ws.close()
+    await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+  })
+
+  it('reports clientSupportsApprovals from the hello caps', async () => {
+    const { bridge, server, url } = await startBridge()
+    try {
+      const capable = await connect(url)
+      send(capable.ws, { t: 'hello', token: TOKEN, caps: { ...CAPS, approvals: true } })
+      await waitFor(() => capable.frames.some((f) => f.t === 'hello.ok'))
+      expect(bridge.clientSupportsApprovals()).toBe(true)
+      expect(bridge.clientSupportsQuestions()).toBe(false)
+      capable.ws.close()
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+})
+
+describe('BridgeServer follow ownership hook', () => {
+  /** 一个永不产出帧的流：保持订阅打开，直到客户端 stream.close。 */
+  const hangingStream = async (): Promise<AsyncIterable<unknown>> => ({
+    [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<unknown>>(() => {}) }),
+  })
+
+  it('reports session/follow stream lifetime and ignores other streams', async () => {
+    const events: Array<[string, boolean]> = []
+    const { server, url } = await startBridge({
+      openStream: hangingStream,
+      onFollowChanged: (sessionId, open) => { events.push([sessionId, open]) },
+    })
+    try {
+      const client = await connect(url)
+      send(client.ws, { t: 'hello', token: TOKEN, caps: CAPS })
+      await waitFor(() => client.frames.some((f) => f.t === 'hello.ok'))
+
+      send(client.ws, { t: 'stream.open', id: 'st-1', method: 'session/follow', args: { request: { sessionId: 's1' } } })
+      await waitFor(() => events.length === 1)
+      expect(events[0]).toEqual(['s1', true])
+
+      // 无关方法不产生归属事件
+      send(client.ws, { t: 'stream.open', id: 'st-2', method: 'workspace/follow', args: { request: { workspaceId: 'w1' } } })
+      await new Promise((resolve) => { setTimeout(resolve, 30) })
+      expect(events).toHaveLength(1)
+
+      send(client.ws, { t: 'stream.close', id: 'st-1' })
+      await waitFor(() => events.length === 2)
+      expect(events[1]).toEqual(['s1', false])
+      client.ws.close()
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
   })
 })

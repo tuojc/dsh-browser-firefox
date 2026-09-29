@@ -30,7 +30,7 @@ import { authorizeByLevel, classifyTool, type PermissionLevel } from './authoriz
 import { checkAmoUpdate, type AmoUpdateInfo } from './updates.ts'
 import { waitForTabComplete } from './tab-utils.ts'
 import { registerToolbarAction, type SidebarActionApi } from './toolbar.ts'
-import { TransientQuestionCache } from './transient-questions.ts'
+import { TransientInteractions } from './transient-interactions.ts'
 
 /** User settings persisted in browser.storage.local. */
 export interface Settings {
@@ -97,8 +97,8 @@ let rpc: ReturnType<typeof createRpc> | null = null
 /** AMO 上的更新版本（有更新时置位，随 status 广播给面板）。 */
 let amoUpdate: AmoUpdateInfo | undefined
 const panelPorts = new Set<chrome.runtime.Port>()
-/** 挂起的 ask_user_question 推送缓存：侧边栏后开也能重放卡片。 */
-const transientQuestions = new TransientQuestionCache()
+/** 挂起的宿主交互推送缓存（问答 + 审批）：侧边栏后开也能重放卡片。 */
+const transientInteractions = new TransientInteractions()
 
 // AMO 更新检查：启动一次；失败静默（未上架/离线都不影响功能）。
 void checkAmoUpdate(browser.runtime.getManifest().version).then((info) => {
@@ -537,7 +537,7 @@ async function startBridge(): Promise<void> {
         // 挂起的问题同样失效（插件会把瀑布委托给下一个 answerer）。
         if (next === 'connecting') {
           dropAllStreams()
-          transientQuestions.clear()
+          transientInteractions.clear()
           pluginVersion = undefined
         }
         broadcastStatus()
@@ -553,8 +553,12 @@ async function startBridge(): Promise<void> {
           if (frame.t === 'stream.error') streamOwners.delete(frame.id)
         } else if (frame.t === 'question.requested' || frame.t === 'question.resolved') {
           // ask_user_question：缓存（供后开的侧边栏重放）+ 广播给所有面板。
-          transientQuestions.ingest(frame)
+          transientInteractions.ingest(frame)
           for (const panel of panelPorts) postToPort(panel, { type: 'question', frame })
+        } else if (frame.t === 'approval.requested' || frame.t === 'approval.resolved') {
+          // 宿主审批（申请权限）：同样缓存 + 广播。
+          transientInteractions.ingest(frame)
+          for (const panel of panelPorts) postToPort(panel, { type: 'approval', frame })
         } else if (frame.t === 'tool.call') routeToolCall(frame, frame.expiresAt, frame.sessionId, frame.title)
         else if (frame.t === 'tool.cancel') {
           const entry = inflightToolCalls.get(frame.id)
@@ -599,10 +603,15 @@ browser.runtime.onConnect.addListener((port) => {
         void gatewayRpc(rpcMsg.method, rpcMsg.args ?? {}).then(
           (value) => {
             // 面板回答了问题：回执到达即可以从重放缓存中移除。
-            if (rpcMsg.method === 'bridge/questionAnswer') {
+            if (rpcMsg.method === 'bridge/approvalDecision') {
+              const args = rpcMsg.args ?? {}
+              if (typeof args.sessionId === 'string' && typeof args.approvalId === 'string') {
+                transientInteractions.settleApproval(args.sessionId, args.approvalId)
+              }
+            } else if (rpcMsg.method === 'bridge/questionAnswer') {
               const args = rpcMsg.args ?? {}
               if (typeof args.sessionId === 'string' && typeof args.questionId === 'string') {
-                transientQuestions.settle(args.sessionId, args.questionId)
+                transientInteractions.settleQuestion(args.sessionId, args.questionId)
               }
             }
             try { port.postMessage({ type: 'rpc.result', id: rpcMsg.id, ok: true, value }) } catch { /* port closed */ }
@@ -652,7 +661,9 @@ browser.runtime.onConnect.addListener((port) => {
       case 'request-status':
         broadcastStatus()
         // 面板（重）打开：重放仍挂起的 ask_user_question 推送。
-        for (const frame of transientQuestions.replay()) postToPort(port, { type: 'question', frame })
+        for (const frame of transientInteractions.replay()) {
+          postToPort(port, { type: frame.t.startsWith('approval') ? 'approval' : 'question', frame })
+        }
         break
     }
   })

@@ -184,3 +184,34 @@ describe('question frames', () => {
     expect(parseBridgeFrame(JSON.stringify({ t: 'question.resolved', id: 'q1' }))).toBeUndefined()
   })
 })
+
+describe('approval frames and caps', () => {
+  it('parses approval.requested with optional callId/reason and rejects malformed shapes', () => {
+    expect(parseBridgeFrame(JSON.stringify({
+      t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash', callId: 'c1', reason: '写入工作区外',
+    }))).toEqual({ t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash', callId: 'c1', reason: '写入工作区外' })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash' })))
+      .toEqual({ t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash' })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'approval.requested', id: 'a1', sessionId: 's1' }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'approval.requested', id: 'a1', toolName: 'bash' }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash', callId: 1 }))).toBeUndefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash', reason: null }))).toBeUndefined()
+  })
+
+  it('parses approval.resolved and classifies server frames', () => {
+    const resolved = parseBridgeFrame(JSON.stringify({ t: 'approval.resolved', id: 'a1', sessionId: 's1' }))
+    expect(resolved).toEqual({ t: 'approval.resolved', id: 'a1', sessionId: 's1' })
+    expect(isServerFrame(resolved!)).toBe(true)
+    expect(isClientFrame(resolved!)).toBe(false)
+  })
+
+  it('tolerates an approvals cap and rejects a non-boolean one', () => {
+    const caps = { snapshotMaxChars: 1, maxInteractiveItems: 1 }
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { ...caps, approvals: true } })))
+      .toEqual({ t: 'hello', token: 'x', caps: { ...caps, approvals: true } })
+    // 旧对端不带 approvals：仍可解析（跨版本降级）
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps })))
+      .toEqual({ t: 'hello', token: 'x', caps })
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello', token: 'x', caps: { ...caps, approvals: 'yes' } }))).toBeUndefined()
+  })
+})

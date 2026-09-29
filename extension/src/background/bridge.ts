@@ -124,7 +124,7 @@ export class BridgeClient {
       socket.send(JSON.stringify({
         t: 'hello',
         token: this.token,
-        caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60, questions: true },
+        caps: { snapshotMaxChars: 12_000, maxInteractiveItems: 60, questions: true, approvals: true },
         // 扩展版本：插件据此检测两端版本不一致（0.4.6+，旧插件忽略此键）。
         version: browser.runtime.getManifest().version,
       } satisfies ClientFrame))

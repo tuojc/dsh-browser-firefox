@@ -6,8 +6,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { apply, assertPositiveInteger, Config, resolveConfig } from '../src/index.ts'
 
+/** Listener recorder: event name → registered listeners, plus logged lines. */
+interface Probe {
+  listeners: Map<string, Array<(request: never, next: () => unknown) => unknown>>
+  logs: string[]
+}
+
 /** Minimal context stub: apply only needs the services at registration time. */
-function stubContext(): Context {
+function stubContext(probe?: Probe): Context {
   return {
     typertGateway: {
       invoke: async () => null,
@@ -17,8 +23,19 @@ function stubContext(): Context {
     webServer: { port: 0, registerUpgrade: () => () => {}, register: () => () => {} },
     tools: { register: () => () => {} },
     get: () => undefined,
-    logger: { info: () => {}, warn: () => {}, error: () => {} },
-    on: () => () => {},
+    logger: {
+      info: (line: string) => { probe?.logs.push(line) },
+      warn: () => {},
+      error: () => {},
+    },
+    on: (event: string, listener: never) => {
+      if (probe !== undefined) {
+        const list = probe.listeners.get(event) ?? []
+        list.push(listener)
+        probe.listeners.set(event, list)
+      }
+      return () => {}
+    },
     effect: (fn: () => unknown, label?: string) => {
       void label
       return fn() as () => void
@@ -89,5 +106,21 @@ describe('apply', () => {
   it('rejects invalid budgets loudly', async () => {
     await expect(apply(stubContext(), { ...VALID, toolTimeoutMs: 0 })).rejects.toThrow(/toolTimeoutMs/)
     await expect(apply(stubContext(), { ...VALID, snapshotMaxChars: -1 })).rejects.toThrow(/snapshotMaxChars/)
+  })
+
+  it('registers both interaction answerers and delegates while no extension is connected', async () => {
+    const probe: Probe = { listeners: new Map(), logs: [] }
+    await apply(stubContext(probe), { token: 'fixed-token', ...VALID, sessionWorkspacePath: '' })
+    expect([...probe.listeners.keys()].sort()).toEqual(['approval/request', 'user-questions/request'])
+
+    const next = vi.fn(async () => ({ answers: [] }))
+    for (const event of ['user-questions/request', 'approval/request']) {
+      const listener = probe.listeners.get(event)?.[0]
+      expect(listener).toBeDefined()
+      await listener!({ agent: { id: 's1' } } as never, next as never)
+    }
+    // 无扩展连接 → 两个瀑布都交给下一个 answerer（dsh web）。
+    expect(next).toHaveBeenCalledTimes(2)
+    expect(probe.logs.filter((line) => line.includes('no-connection'))).toHaveLength(2)
   })
 })

@@ -34,8 +34,16 @@ import {
   type ModelCatalogView,
   type ModelSelectionView,
 } from './models.ts'
+import { ApprovalCard } from './ApprovalCard.tsx'
+import { approvalReceiptReason, type ApprovalDecision } from './approvals.ts'
 import { QuestionCard } from './QuestionCard.tsx'
-import { questionReceiptReason, removePendingQuestion, upsertPendingQuestion } from './pending-questions.ts'
+import {
+  removePendingInteraction,
+  questionReceiptReason,
+  removePendingQuestion,
+  upsertPendingApproval,
+  upsertPendingQuestion,
+} from './pending-questions.ts'
 import { versionMismatch } from './version-check.ts'
 import type { QuestionAnswer } from './questions.ts'
 import { PERMISSION_LEVEL_HINTS, PERMISSION_LEVEL_LABELS, PERMISSION_LEVEL_SHORT, type PermissionLevel } from './permissions.ts'
@@ -47,10 +55,13 @@ import {
   appendLiveRow,
   completeLastTool,
   mergeHistoryRows,
+  pendingApprovalFromFrame,
   pendingQuestionFromFrame,
+  resolvedApprovalFromFrame,
   resolvedQuestionFromFrame,
   rowFromEvent,
   toolSummary,
+  type PendingApproval,
   type PendingQuestion,
   type Row,
   type SessionFollowFrameView,
@@ -279,6 +290,10 @@ export function App(): React.JSX.Element {
   const [questions, setQuestions] = useState<PendingQuestion[]>([])
   /** 正在提交回答的问题 id（按钮防抖/禁用）。 */
   const [questionBusy, setQuestionBusy] = useState<string | null>(null)
+  /** 桥推送的待审批（宿主申请权限；全部会话，渲染时按当前会话过滤）。 */
+  const [approvals, setApprovals] = useState<PendingApproval[]>([])
+  /** 正在提交决策的审批 id。 */
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null)
   /** 模型目录（bridge 生成级缓存；connected 后拉取）。 */
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogView | null>(null)
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null)
@@ -358,6 +373,7 @@ export function App(): React.JSX.Element {
         setWorkspaceReady(false)
         setSessionsLoaded(false)
         clearQuestions()
+        clearApprovals()
         setModelCatalog(null)
         setModelCatalogError(null)
         setModelSelection(null)
@@ -367,8 +383,9 @@ export function App(): React.JSX.Element {
     })
     const offUpdate = api.onUpdateAvailable(setUpdate)
     const offQuestion = api.onQuestion((frame) => { onQuestionFrame(frame) })
+    const offApproval = api.onApproval((frame) => { onApprovalFrame(frame) })
     api.requestStatus()
-    return () => { offStatus(); offUpdate(); offQuestion() }
+    return () => { offStatus(); offUpdate(); offQuestion(); offApproval() }
   }, [api])
 
   /** 桥推送的问答帧：requested 入列（广播，含重放），resolved 移除。 */
@@ -387,6 +404,49 @@ export function App(): React.JSX.Element {
   function clearQuestions(): void {
     setQuestions([])
     setQuestionBusy(null)
+  }
+
+  /** 桥推送的审批帧：requested 入列（广播，含重放），resolved 移除。 */
+  function onApprovalFrame(frame: Parameters<typeof pendingApprovalFromFrame>[0]): void {
+    const pending = pendingApprovalFromFrame(frame)
+    if (pending !== null) {
+      setApprovals((prev) => upsertPendingApproval(prev, pending))
+      return
+    }
+    const resolved = resolvedApprovalFromFrame(frame)
+    if (resolved !== null) {
+      setApprovals((prev) => removePendingInteraction(prev, resolved))
+    }
+  }
+
+  function clearApprovals(): void {
+    setApprovals([])
+    setApprovalBusy(null)
+  }
+
+  /** 提交审批决策：rpc 上行到插件的 bridge/approvalDecision，按回执结算卡片。 */
+  async function decideApproval(target: PendingApproval, decision: ApprovalDecision): Promise<void> {
+    setApprovalBusy(target.approvalId)
+    try {
+      const receipt = await api.rpc('bridge/approvalDecision', {
+        approvalId: target.approvalId,
+        sessionId: target.sessionId,
+        decision,
+      })
+      const disposition = approvalReceiptReason(receipt)
+      if (disposition === 'accepted') {
+        setApprovals((prev) => removePendingInteraction(prev, target))
+      } else if (disposition === 'not-pending') {
+        setError('这条审批已在其他窗口处理或已失效。')
+        setApprovals((prev) => removePendingInteraction(prev, target))
+      } else {
+        setError('审批未被接受，请重试。')
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '审批提交失败')
+    } finally {
+      setApprovalBusy(null)
+    }
   }
 
   /** 拉取宿主模型目录（bridge 生成级；失败可经 picker 重试）。 */
@@ -890,6 +950,24 @@ export function App(): React.JSX.Element {
     [questions, currentSessionId],
   )
 
+  /** 当前会话的待审批。 */
+  const approval = useMemo(
+    () => approvals.find((candidate) => candidate.sessionId === currentSessionId) ?? null,
+    [approvals, currentSessionId],
+  )
+
+  /** 其它会话的待处理交互：给一条可切换的提示，避免卡片「看不见」。 */
+  const otherSessionPending = useMemo(() => {
+    const ids = new Set<string>()
+    for (const candidate of questions) {
+      if (candidate.sessionId !== currentSessionId) ids.add(candidate.sessionId)
+    }
+    for (const candidate of approvals) {
+      if (candidate.sessionId !== currentSessionId) ids.add(candidate.sessionId)
+    }
+    return [...ids]
+  }, [questions, approvals, currentSessionId])
+
   if (showSettings) {
     return (
       <div className="settings">
@@ -1043,6 +1121,20 @@ export function App(): React.JSX.Element {
           <button className="jump-bottom" onClick={jumpToBottom} aria-label="回到底部" title="回到底部"><DownIcon /></button>
         )}
       </div>
+      {approval !== null && (
+        <ApprovalCard
+          key={`${approval.sessionId}:${approval.approvalId}`}
+          approval={approval}
+          submitting={approvalBusy === approval.approvalId}
+          onDecide={(decision) => { void decideApproval(approval, decision) }}
+        />
+      )}
+      {approval === null && otherSessionPending.length > 0 && (
+        <div className="auth-banner pending-elsewhere" role="status">
+          其它会话有 {otherSessionPending.length} 项待处理（问答/审批）。
+          <button className="secondary" onClick={() => selectSession(otherSessionPending[0] as string)}>前往</button>
+        </div>
+      )}
       {question !== null && (
         <QuestionCard
           key={`${question.sessionId}:${question.questionId}`}

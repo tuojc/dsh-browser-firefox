@@ -1,4 +1,4 @@
-import type { PendingQuestion, ResolvedQuestion } from './events.ts'
+import type { PendingApproval, PendingQuestion, ResolvedApproval, ResolvedQuestion } from './events.ts'
 
 /** Append a new host ask without losing earlier asks; a replay updates in place. */
 export function upsertPendingQuestion(
@@ -18,6 +18,26 @@ export function removePendingQuestion<T extends ResolvedQuestion>(
   resolved: ResolvedQuestion,
 ): T[] {
   return questions.filter((candidate) => !sameQuestion(candidate, resolved))
+}
+
+/** Append a pending approval, updating in place when the same one is replayed. */
+export function upsertPendingApproval(
+  approvals: PendingApproval[],
+  next: PendingApproval,
+): PendingApproval[] {
+  const index = approvals.findIndex((candidate) => sameApproval(candidate, next))
+  if (index === -1) return [...approvals, next]
+  const updated = approvals.slice()
+  updated[index] = next
+  return updated
+}
+
+/** Remove only the approval named by both session and approval id. */
+export function removePendingInteraction<T extends ResolvedApproval>(
+  approvals: T[],
+  resolved: ResolvedApproval,
+): T[] {
+  return approvals.filter((candidate) => !sameApproval(candidate, resolved))
 }
 
 export function hasPendingQuestion(
@@ -42,6 +62,10 @@ export function questionReceiptReason(value: unknown): 'accepted' | 'not-pending
 
 function sameQuestion(left: ResolvedQuestion, right: ResolvedQuestion): boolean {
   return left.sessionId === right.sessionId && left.questionId === right.questionId
+}
+
+function sameApproval(left: ResolvedApproval, right: ResolvedApproval): boolean {
+  return left.sessionId === right.sessionId && left.approvalId === right.approvalId
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

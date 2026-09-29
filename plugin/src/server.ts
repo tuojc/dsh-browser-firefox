@@ -119,6 +119,14 @@ function orderedSessionId(frame: Extract<ClientFrame, { t: 'rpc' }>): string | u
   return typeof sessionId === 'string' ? sessionId : undefined
 }
 
+/** Session id carried by a `session/follow` stream's native args. */
+function followedSessionOf(args: Record<string, unknown>): string | undefined {
+  const request = args.request
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) return undefined
+  const sessionId = (request as Record<string, unknown>).sessionId
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
+}
+
 /** Loopback IPv4/IPv6 literals (IPv4-mapped included). Exported for tests and reuse. */
 export function isLoopbackAddress(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
@@ -161,6 +169,18 @@ export interface BridgeServerDeps {
    * rpc result value `{accepted: true} | {accepted: false, reason}`.
    */
   answerQuestion: (args: Record<string, unknown>) => unknown
+  /**
+   * Plugin-local endpoint `bridge/approvalDecision`: settle one pending host
+   * approval the bridge pushed to this extension. Answered as the rpc result
+   * value `{accepted: true} | {accepted: false, reason}`.
+   */
+  answerApproval: (args: Record<string, unknown>) => unknown
+  /**
+   * A `session/follow` stream opened (`open: true`) or ended (`open: false`)
+   * for a session: the sidebar is displaying that session while the stream
+   * lives, so interaction ownership can follow the visible conversation.
+   */
+  onFollowChanged?: (sessionId: string, open: boolean) => void
   /** The active connection was replaced or closed (settle pushed questions). */
   onConnectionLost?: () => void
   /**
@@ -194,6 +214,8 @@ interface PendingTool {
 interface OpenStream {
   abort: AbortController
   pump: Promise<void>
+  /** Session a `session/follow` stream is displaying, for interaction ownership. */
+  followedSessionId?: string
 }
 
 /** A socket that passed authentication and owns the single active slot. */
@@ -371,6 +393,11 @@ export class BridgeServer {
     return this.current?.clientCaps.questions === true
   }
 
+  /** @returns whether the connected extension advertised approval-card support. */
+  clientSupportsApprovals(): boolean {
+    return this.current?.clientCaps.approvals === true
+  }
+
   /**
    * Push one unsolicited server frame (question.requested/question.resolved)
    * to the connected extension. No-op when no extension is connected or the
@@ -546,6 +573,10 @@ export class BridgeServer {
       sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: true, value: this.deps.answerQuestion(frame.args) })
       return
     }
+    if (frame.method === 'bridge/approvalDecision') {
+      sendFrame(conn.ws, { t: 'rpc.result', id: frame.id, ok: true, value: this.deps.answerApproval(frame.args) })
+      return
+    }
     try {
       const result = await this.deps.dispatchRpc(frame.method, frame.args, conn.abort.signal)
       if (result.ok) {
@@ -572,6 +603,10 @@ export class BridgeServer {
     const ws = conn.ws
     const abort = new AbortController()
     conn.abort.signal.addEventListener('abort', () => { abort.abort() }, { once: true })
+    // A session/follow stream means the sidebar is displaying this session:
+    // report the lifetime so interaction ownership can follow the visible
+    // conversation (released in the pump's finally below).
+    const followedSessionId = frame.method === 'session/follow' ? followedSessionOf(frame.args) : undefined
     let pump!: Promise<void>
     pump = (async () => {
       let iterator: AsyncIterator<unknown> | undefined
@@ -603,9 +638,15 @@ export class BridgeServer {
         if (current !== null && current.streams.get(frame.id)?.pump === pump) {
           current.streams.delete(frame.id)
         }
+        if (followedSessionId !== undefined) this.deps.onFollowChanged?.(followedSessionId, false)
       }
     })()
-    conn.streams.set(frame.id, { abort, pump })
+    conn.streams.set(frame.id, {
+      abort,
+      pump,
+      ...(followedSessionId === undefined ? {} : { followedSessionId }),
+    })
+    if (followedSessionId !== undefined) this.deps.onFollowChanged?.(followedSessionId, true)
   }
 
   /**

@@ -275,3 +275,28 @@ describe('image rows', () => {
     expect(assistant?.images).toEqual([attachment])
   })
 })
+
+describe('approval frame parsing', () => {
+  it('maps approval.requested onto a pending approval', async () => {
+    const { pendingApprovalFromFrame } = await import('../src/panel/events.ts')
+    expect(pendingApprovalFromFrame({
+      t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash', callId: 'c1', reason: '写入工作区外',
+    })).toEqual({ approvalId: 'a1', sessionId: 's1', toolName: 'bash', callId: 'c1', reason: '写入工作区外' })
+    expect(pendingApprovalFromFrame({ t: 'approval.requested', id: 'a1', sessionId: 's1', toolName: 'bash' }))
+      .toEqual({ approvalId: 'a1', sessionId: 's1', toolName: 'bash' })
+  })
+
+  it('rejects malformed request frames and non-approval frames', async () => {
+    const { pendingApprovalFromFrame, resolvedApprovalFromFrame } = await import('../src/panel/events.ts')
+    expect(pendingApprovalFromFrame({ t: 'approval.resolved', id: 'a', sessionId: 's' })).toBeNull()
+    expect(pendingApprovalFromFrame({
+      t: 'approval.requested', id: 'a', sessionId: 's', toolName: '',
+    })).toBeNull()
+    expect(pendingApprovalFromFrame({
+      t: 'question.requested', id: 'a', sessionId: 's', questions: [{ id: 'x', question: 'x' }],
+    })).toBeNull()
+    expect(resolvedApprovalFromFrame({ t: 'approval.resolved', id: 'a', sessionId: 's' }))
+      .toEqual({ approvalId: 'a', sessionId: 's' })
+    expect(resolvedApprovalFromFrame({ t: 'approval.requested', id: 'a', sessionId: 's', toolName: 'bash' })).toBeNull()
+  })
+})

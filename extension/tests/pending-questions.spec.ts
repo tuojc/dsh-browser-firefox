@@ -4,7 +4,9 @@ import type { PendingQuestion } from '../src/panel/events.ts'
 import {
   hasPendingQuestion,
   questionReceiptReason,
+  removePendingInteraction,
   removePendingQuestion,
+  upsertPendingApproval,
   upsertPendingQuestion,
 } from '../src/panel/pending-questions.ts'
 
@@ -46,5 +48,24 @@ describe('questionReceiptReason', () => {
     expect(questionReceiptReason({ accepted: false, reason: 'bad-answer' })).toBe('bad-answer')
     expect(questionReceiptReason({ accepted: false, reason: 'weird' })).toBe('retry')
     expect(questionReceiptReason(null)).toBe('retry')
+  })
+})
+
+describe('pending approvals', () => {
+  const pendingApproval = { approvalId: 'a1', sessionId: 's1', toolName: 'bash' }
+
+  it('appends approvals and updates replays in place', () => {
+    const first = upsertPendingApproval([], pendingApproval)
+    expect(first).toEqual([pendingApproval])
+    const replay = upsertPendingApproval(first, { ...pendingApproval, reason: '补充原因' })
+    expect(replay).toHaveLength(1)
+    expect(replay[0]?.reason).toBe('补充原因')
+  })
+
+  it('removes only the approval matching session and id', () => {
+    const list = [pendingApproval, { approvalId: 'a2', sessionId: 's1', toolName: 'browser_click' }]
+    expect(removePendingInteraction(list, { approvalId: 'a1', sessionId: 's2' })).toHaveLength(2)
+    expect(removePendingInteraction(list, { approvalId: 'a1', sessionId: 's1' }))
+      .toEqual([{ approvalId: 'a2', sessionId: 's1', toolName: 'browser_click' }])
   })
 })

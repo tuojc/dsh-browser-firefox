@@ -31,6 +31,7 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-api-gateway/types'
 import type {} from '@deepseek-ai/dsh-user-questions/types'
+import type { ApprovalRequestEvent } from '@deepseek-ai/dsh-user-approval/types'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { readFileSync } from 'node:fs'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
@@ -40,8 +41,9 @@ import { BRIDGE_CONFIG_PATH, BRIDGE_PATH, type RemoteWireResult } from './protoc
 import { withSessionDeferral } from './session-deferral.ts'
 import { withSessionWorkspace, type RpcDispatch } from './session-workspace.ts'
 import { resolveToken } from './token.ts'
-import { ExtensionSessionRegistry, shouldBridgeOwnQuestion } from './extension-sessions.ts'
+import { ExtensionSessionRegistry, FollowedSessions, resolveInteractionOwnership, type DelegateReason } from './extension-sessions.ts'
 import { asQuestionAnswerArgs, QuestionBridge } from './questions.ts'
+import { ApprovalBridge, asApprovalDecisionArgs } from './approvals.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bridge-browser'
@@ -107,6 +109,22 @@ function sessionIdOf(value: unknown): string | undefined {
 }
 
 /**
+ * Human-readable approval reason: the asker's localized text when present
+ * (zh first, then en), otherwise the raw reason string.
+ *
+ * @param request - pending host approval request.
+ * @returns display text, or undefined when the asker supplied none.
+ */
+function approvalReasonText(request: ApprovalRequestEvent): string | undefined {
+  const display = request.displayReason
+  if (display !== undefined) {
+    const localized = display.zh ?? display['zh-Hans'] ?? display.en
+    if (typeof localized === 'string' && localized.length > 0) return localized
+  }
+  return typeof request.reason === 'string' && request.reason.length > 0 ? request.reason : undefined
+}
+
+/**
  * Apply defaults and direct-call validation at the plugin boundary.
  * @param config - Loader-resolved or directly supplied plugin configuration.
  * @returns a complete configuration ready for runtime use.
@@ -163,17 +181,36 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     ),
     resolved.deferSessionCreate,
   )
-  // Ownership tracking for the user-questions waterfall: a session becomes
-  // extension-owned only after a create/prompt SUCCEEDS — a failed prompt
-  // against a desktop session must not steal its questions away from the
-  // native answerer.
+  // Ownership tracking for the interaction waterfalls (ask_user_question and
+  // host approvals). A session becomes extension-owned when a create/prompt is
+  // DISPATCHED over the bridge (noted optimistically so a question asked
+  // during the very first turn still finds an owner) and is released again
+  // when the dispatch fails hard — a failed prompt against a desktop session
+  // must not steal its cards away from the native answerer.
   const extensionSessions = new ExtensionSessionRegistry()
+  const followedSessions = new FollowedSessions()
+  const ownershipSources = { driven: extensionSessions, followed: followedSessions }
+  // Subagent child sessions inherit their parent's ownership: a question asked
+  // by a delegated agent belongs in the conversation the user is watching.
+  const sessions = ctx.get('sessions')
+  const parentOf = sessions === undefined
+    ? undefined
+    : (sessionId: string): string | undefined => sessions.get(sessionId as never)?.header.parentSession
   const notingDispatchRpc: RpcDispatch = async (method, args, signal) => {
+    const tracksOwnership = method === 'session/create' || method === 'session/prompt'
+    const dispatched = tracksOwnership ? sessionIdOf(args.request) : undefined
+    if (dispatched !== undefined) extensionSessions.note(dispatched)
     const result = await dispatchRpc(method, args, signal)
-    if (result.ok && (method === 'session/create' || method === 'session/prompt')) {
-      extensionSessions.note(sessionIdOf(args.request))
-      extensionSessions.note(sessionIdOf(result.value))
+    if (!result.ok) {
+      // Only a lookup failure disproves the optimistic note (the session does
+      // not exist); transient failures keep the session extension-owned.
+      const code = result.error.code
+      if (dispatched !== undefined && (code.includes('not-found') || code.includes('session-invalid'))) {
+        extensionSessions.forget(dispatched)
+      }
+      return result
     }
+    if (tracksOwnership) extensionSessions.note(sessionIdOf(result.value))
     return result
   }
   // Plugin version for the hello.ok handshake (extension flags a mismatch in
@@ -188,6 +225,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 
   const questions = new QuestionBridge({
     // Late-bound through the closure: server is constructed right below.
+    push: (frame) => { server.push(frame) },
+  })
+  const approvals = new ApprovalBridge({
     push: (frame) => { server.push(frame) },
   })
   const server = new BridgeServer({
@@ -205,7 +245,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         ? { accepted: false, reason: 'bad-answer' }
         : questions.answer(parsed)
     },
-    onConnectionLost: () => { questions.delegateAll() },
+    answerApproval: (args) => {
+      const parsed = asApprovalDecisionArgs(args)
+      return parsed === undefined
+        ? { accepted: false, reason: 'bad-decision' }
+        : approvals.decide(parsed)
+    },
+    onConnectionLost: () => {
+      questions.delegateAll()
+      approvals.delegateAll()
+    },
+    onFollowChanged: (sessionId, open) => {
+      if (open) followedSessions.open(sessionId)
+      else followedSessions.close(sessionId)
+    },
     version: pluginVersion,
     onVersionMismatch: (clientVersion) => {
       ctx.logger.warn(`browser extension version ${clientVersion} != plugin version ${pluginVersion ?? '?'}; both components must be updated together`)
@@ -218,28 +271,67 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
 
   // Sidebar ask_user_question: claim the waterfall only for sessions the
-  // extension owns (created or prompted over the bridge) while a
-  // question-capable extension is connected; everything else keeps the
-  // native answerer chain (dsh web). Prepended so the claim runs before the
-  // Remote event forwarding listener in dsh-api-remotes.
+  // extension owns (driven over the bridge, currently followed, or a subagent
+  // child of an owned session) while a question-capable extension is
+  // connected; everything else keeps the native answerer chain (dsh web).
+  // Prepended so the claim runs before the Remote event forwarding listener
+  // in dsh-api-remotes. Delegations are logged with the failing gate so an
+  // "invisible card" report is diagnosable from the host log.
+  const logDelegation = (kind: 'user-questions' | 'approval', sessionId: string | undefined, reason: DelegateReason): void => {
+    ctx.logger.info(`browser bridge: delegated ${kind} for session ${sessionId ?? '<unknown>'} (${reason})`)
+  }
   ctx.effect(() => {
     const disposeListener = ctx.on('user-questions/request', (request, next) => {
-      const sessionId = request.agent?.id
-      if (sessionId === undefined || !shouldBridgeOwnQuestion({
+      const ownership = resolveInteractionOwnership({
         hasExtensionConnection: server.hasConnection(),
-        clientSupportsQuestions: server.clientSupportsQuestions(),
-        sessionId,
-        extensionSessions,
-      })) {
+        clientSupports: server.clientSupportsQuestions(),
+        sessionId: request.agent?.id,
+        sources: ownershipSources,
+        ...(parentOf === undefined ? {} : { parentOf }),
+      })
+      if (!ownership.owned) {
+        logDelegation('user-questions', request.agent?.id, ownership.reason)
         return next()
       }
-      return questions.ask(sessionId, request.questions, next, request.signal)
+      return questions.ask(ownership.sessionId, request.questions, next, request.signal)
     }, { prepend: true })
     return () => {
       disposeListener()
       questions.dispose()
     }
   }, 'bridge-browser: user-questions answerer')
+
+  // Host approvals (a hooked tool call / permission ask): same ownership rule,
+  // same sidebar surface, so the user is not sent to dsh web for a decision.
+  ctx.effect(() => {
+    const disposeListener = ctx.on('approval/request', (request, next) => {
+      const ownership = resolveInteractionOwnership({
+        hasExtensionConnection: server.hasConnection(),
+        clientSupports: server.clientSupportsApprovals(),
+        sessionId: request.agent?.id,
+        sources: ownershipSources,
+        ...(parentOf === undefined ? {} : { parentOf }),
+      })
+      if (!ownership.owned) {
+        logDelegation('approval', request.agent?.id, ownership.reason)
+        return next()
+      }
+      return approvals.ask(
+        ownership.sessionId,
+        {
+          toolName: request.toolName,
+          ...(typeof request.callId === 'string' ? { callId: request.callId } : {}),
+          ...(approvalReasonText(request) === undefined ? {} : { reason: approvalReasonText(request) as string }),
+        },
+        next,
+        request.signal,
+      )
+    }, { prepend: true })
+    return () => {
+      disposeListener()
+      approvals.dispose()
+    }
+  }, 'bridge-browser: approval answerer')
 
   const route: WebUpgradeRoute = {
     path: BRIDGE_PATH,

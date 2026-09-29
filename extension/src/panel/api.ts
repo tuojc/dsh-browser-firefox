@@ -64,7 +64,13 @@ interface QuestionMessage {
   frame: ServerFrame
 }
 
-type BackgroundMessage = RpcResultMessage | StatusMessage | StreamFrameMessage | StreamErrorMessage | QuestionMessage
+/** Bridge-pushed host approval frames (approval.requested/approval.resolved). */
+interface ApprovalMessage {
+  type: 'approval'
+  frame: ServerFrame
+}
+
+type BackgroundMessage = RpcResultMessage | StatusMessage | StreamFrameMessage | StreamErrorMessage | QuestionMessage | ApprovalMessage
 
 /** The panel API surface. */
 export interface PanelApi {
@@ -80,6 +86,8 @@ export interface PanelApi {
   onUpdateAvailable(callback: (update: { version: string; url: string } | null) => void): () => void
   /** 订阅桥推送的 ask_user_question 帧（question.requested/question.resolved）。 */
   onQuestion(callback: (frame: ServerFrame) => void): () => void
+  /** 订阅宿主审批推送帧。 */
+  onApproval(callback: (frame: ServerFrame) => void): () => void
   updateSettings(settings: Partial<PanelSettings>): void
   requestStatus(): void
 }
@@ -92,6 +100,7 @@ export function connectPanel(): PanelApi {
   const statusListeners = new Set<(state: BridgeState, caps: BridgeCaps | null, pluginVersion: string | null) => void>()
   const updateListeners = new Set<(update: { version: string; url: string } | null) => void>()
   const questionListeners = new Set<(frame: ServerFrame) => void>()
+  const approvalListeners = new Set<(frame: ServerFrame) => void>()
 
   let port: Port | null = null
   let reconnectPromise: Promise<Port> | null = null
@@ -197,6 +206,10 @@ export function connectPanel(): PanelApi {
         for (const listener of questionListeners) listener(msg.frame)
         break
       }
+      case 'approval': {
+        for (const listener of approvalListeners) listener(msg.frame)
+        break
+      }
       case 'stream.frame': {
         streams.get(msg.id)?.onFrame(msg.frame)
         break
@@ -255,6 +268,10 @@ export function connectPanel(): PanelApi {
     onUpdateAvailable(callback) {
       updateListeners.add(callback)
       return () => { updateListeners.delete(callback) }
+    },
+    onApproval(callback) {
+      approvalListeners.add(callback)
+      return () => { approvalListeners.delete(callback) }
     },
     onQuestion(callback) {
       questionListeners.add(callback)
