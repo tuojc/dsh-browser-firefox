@@ -23,6 +23,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The personal manifest (with its gecko.id) is gitignored and absent on a
+      # fresh clone; the build falls back to manifest.example.json. Guard that it
+      # never gets committed.
+      - name: Guard personal manifest is untracked
+        run: test -z "$(git ls-files extension/manifest.json)"
+
       - name: Typecheck
         run: pnpm run typecheck
 
