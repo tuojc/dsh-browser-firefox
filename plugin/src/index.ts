@@ -50,7 +50,7 @@ import { ApprovalBridge, asApprovalDecisionArgs } from './approvals.ts'
 export const name = 'bridge-browser'
 
 /** Services required by this plugin. */
-export const inject = ['webServer', 'typertGateway', 'tools']
+export const inject = ['webServer', 'typertGateway', 'tools', 'connection']
 
 /** Default per-tool-call budget (ms). */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
@@ -58,7 +58,7 @@ const DEFAULT_TOOL_TIMEOUT_MS = 60_000
 /** Default rendered-snapshot character budget (protects model context). */
 const DEFAULT_SNAPSHOT_MAX_CHARS = 12_000
 
-/** Default cap on interactive inventory items per snapshot. */
+/** Default cap on interactive inventory items. */
 const DEFAULT_MAX_INTERACTIVE_ITEMS = 120
 
 /** Default directory backing the browser extension's session group. */
@@ -156,6 +156,21 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolved = resolveConfig(config)
 
   const tokenRes = await resolveToken(resolved.token)
+  // DSH 0.2.1's gateway validates `request.peer` on every dispatch
+  // (assertPeerLive reads `peer.signal`), so a bridge call that omits it fails
+  // with "Cannot read properties of undefined (reading 'signal')". Mount one
+  // owner Peer for the bridge's lifetime and speak through it on every call.
+  // Hosts without the Peer factory fall back to a minimal owner principal so
+  // the loopback bridge keeps working across both host generations.
+  const bridgePeer = (() => {
+    const connection = (ctx as unknown as { get(name: string): unknown }).get('connection') as
+      | { createPeer?: (options: { principal: { kind: 'owner' } }) => unknown }
+      | undefined
+    if (connection?.createPeer !== undefined) {
+      return connection.createPeer({ principal: { kind: 'owner' } })
+    }
+    return { id: 'dsh-browser-firefox', principal: { kind: 'owner' }, signal: new AbortController().signal }
+  })()
   // Base dispatch: split the slash-joined endpoint and invoke the Remote
   // method; Remote failures are folded into the wire result (never thrown
   // across the bridge), everything else is an internal failure.
@@ -164,7 +179,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const namespace = slash === -1 ? method : method.slice(0, slash)
     const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
     try {
-      const value = await ctx.typertGateway.invoke({ namespace, method: remoteMethod, args, signal })
+      const request = { namespace, method: remoteMethod, args, signal, peer: bridgePeer }
+      const value = await ctx.typertGateway.invoke(request)
       return { ok: true, value }
     } catch (error: unknown) {
       const failure = ctx.typertGateway.wireStream.failure(error)
@@ -241,7 +257,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const slash = method.indexOf('/')
       const namespace = slash === -1 ? method : method.slice(0, slash)
       const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
-      return ctx.typertGateway.stream({ namespace, method: remoteMethod, args, signal })
+      const request = { namespace, method: remoteMethod, args, signal, peer: bridgePeer }
+      return ctx.typertGateway.stream(request)
     },
     answerQuestion: (args) => {
       const parsed = asQuestionAnswerArgs(args)
