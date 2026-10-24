@@ -58,7 +58,7 @@ const DEFAULT_TOOL_TIMEOUT_MS = 60_000
 /** Default rendered-snapshot character budget (protects model context). */
 const DEFAULT_SNAPSHOT_MAX_CHARS = 12_000
 
-/** Default cap on interactive inventory items. */
+/** Default cap on interactive inventory items per snapshot. */
 const DEFAULT_MAX_INTERACTIVE_ITEMS = 120
 
 /** Default directory backing the browser extension's session group. */
