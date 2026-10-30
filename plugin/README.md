@@ -6,6 +6,8 @@
 
 ## 安装
 
+需要 dsh **≥ 0.2.1-rc.5**；配套 Firefox 扩展需同为 **0.5.0**（否则侧边栏会出现版本横幅）。
+
 ```sh
 dsh plugin --profile web add dsh-browser-firefox@latest
 ```

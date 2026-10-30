@@ -1,7 +1,7 @@
 {
   "name": "dsh-browser-firefox",
   "description": "Firefox browser control for DeepSeek Harness: token-authenticated WebSocket bridge + browser_* tools (native-image screenshots) driving the user's own Firefox via the companion AMO extension, with sidebar ask_user_question answering",
-  "version": "0.4.8",
+  "version": "0.5.0",
   "author": "tuojc",
   "license": "MIT",
   "repository": {
@@ -35,38 +35,32 @@
       "types": "./lib/types/protocol.d.ts",
       "default": "./lib/protocol.js"
     },
-    "./invariant": {
-      "types": "./lib/types/invariant.d.ts",
-      "default": "./lib/invariant.js"
-    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
-    "lib/invariant.js",
     "lib/protocol.js",
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "src"
   ],
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-api-gateway": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-api-session-controller": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-api-workspace-controller": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-attachment": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-invariants": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-session": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-user-approval": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.1"
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-api-gateway": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-api-session-controller": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-api-workspace-controller": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-attachment": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-home-paths": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-session": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-user-approval": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-user-questions": "^0.2.1-rc.5"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.4",
+    "@deepseek-ai/schemastery": "^3.18.5",
     "ws": "^8.21.0"
   },
   "scripts": {
@@ -76,26 +70,25 @@
     "prepublishOnly": "pnpm run build"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/cordis-plugin-include": "1.0.9",
-    "@deepseek-ai/cordis-plugin-loader": "1.0.5",
-    "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-api-session-controller": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-api-workspace-controller": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-attachment": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-invariants": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-home-paths": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-user-questions": "0.2.0-rc.1",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/cordis-plugin-include": "1.0.10",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.6",
+    "@deepseek-ai/dsh-api-gateway": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-home-paths": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-user-questions": "0.2.1-rc.5",
     "@types/node": "^22.20.0",
     "@types/ws": "^8.18.1",
     "playwright-core": "^1.61.1",
     "tsdown": "0.22.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8",
-    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.1"
+    "vitest": "^4.1.8"
   }
 }

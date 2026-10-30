@@ -168,6 +168,14 @@ describe('real Loader composition', () => {
     const created = client.frames.find((f): f is Extract<BridgeFrame, { t: 'rpc.result' }> => f.t === 'rpc.result' && f.id === 'c-1')!
     const sessionId = (businessValue(created) as { sessionId: string }).sessionId
     expect(sessionId).toMatch(/^session-[0-9a-f-]{36}$/)
+
+    // dsh 0.2.1 made the Gateway peer mandatory; every call must speak as a
+    // live owner peer (the fake host throws a TypeError otherwise).
+    expect(store.gatewayRequests.length).toBeGreaterThan(0)
+    for (const request of store.gatewayRequests) {
+      expect(request.peer.principal.kind).toBe('owner')
+      expect(request.peer.signal.aborted).toBe(false)
+    }
     // Grouping happened: cwd was replaced by the browser-sessions workspace id,
     // and the workspace accounts the new session.
     const session = store.sessions.get(sessionId)
@@ -186,6 +194,11 @@ describe('real Loader composition', () => {
     expect(baselineFrame.type).toBe('baseline')
     expect(baselineFrame.value.items.map((w) => w.workspaceId)).toContain(workspace!.workspaceId)
     expect(baselineFrame.value.items.find((w) => w.workspaceId === workspace!.workspaceId)!.sessionIds).toContain(sessionId)
+    // Streams carry the same live owner peer as unary calls.
+    const followRequest = store.gatewayRequests.find((request) => request.method === 'workspace/follow')
+    expect(followRequest).toBeDefined()
+    expect(followRequest!.peer.principal.kind).toBe('owner')
+    expect(followRequest!.peer.signal.aborted).toBe(false)
 
     // session/list passes through (args key `_request`).
     send(client.ws, { t: 'rpc', id: 'c-2', method: 'session/list', args: { _request: {} } })

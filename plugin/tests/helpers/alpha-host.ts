@@ -25,12 +25,28 @@ export interface FakeSession {
   events: SessionWireEvent[]
 }
 
+/** The Gateway Peer fields the fake host checks (dsh 0.2.1 requires a live peer). */
+export interface FakeGatewayPeer {
+  readonly signal: AbortSignal
+  readonly principal: { readonly kind: string }
+}
+
+/** One invoke/stream request the fake Gateway received. */
+export interface FakeGatewayRequest {
+  /** Slash-joined endpoint. */
+  method: string
+  /** Required since dsh 0.2.1; the old 0.2.0 operator-peer fallback is gone. */
+  peer: FakeGatewayPeer
+}
+
 /** Observable state the specs assert against. */
 export interface FakeStore {
   sessions: Map<string, FakeSession>
   workspaces: Map<string, WorkspaceView>
   /** Every prompt request the host accepted (post-passthrough). */
   prompts: Array<{ sessionId: string; mode: string; requestId?: string; content: unknown }>
+  /** Every Gateway call, so specs can prove the bridge supplies a live owner peer. */
+  gatewayRequests: FakeGatewayRequest[]
 }
 
 /** Carrier-facing failure shape (matches TypertGatewayWireStream.failure). */
@@ -93,7 +109,17 @@ class LiveQueue<T> {
  * business effects directly.
  */
 export function createFakeAlphaHost(): { plugin: { name: string; apply: (ctx: Context) => void }; store: FakeStore } {
-  const store: FakeStore = { sessions: new Map(), workspaces: new Map(), prompts: [] }
+  const store: FakeStore = { sessions: new Map(), workspaces: new Map(), prompts: [], gatewayRequests: [] }
+
+  /**
+   * Record one Gateway call and mimic dsh 0.2.1's mandatory `peer`: the real
+   * Gateway dereferences `peer.signal` unconditionally, so an absent peer is a
+   * TypeError here too (regression guard for the old dispatch).
+   */
+  const noteGatewayRequest = (method: string, peer: FakeGatewayPeer | undefined): void => {
+    if (peer === undefined) throw new TypeError("Cannot read properties of undefined (reading 'signal')")
+    store.gatewayRequests.push({ method, peer })
+  }
   const workspaceFollowers = new Set<LiveQueue<WorkspaceFollowFrame>>()
   const sessionFollowers = new Map<string, Set<LiveQueue<SessionFollowFrame>>>()
 
@@ -225,10 +251,14 @@ export function createFakeAlphaHost(): { plugin: { name: string; apply: (ctx: Co
       // The one service the bridge consumes: TypertGateway with invoke/stream
       // plus the carrier-facing failure mapper.
       ctx.provide('typertGateway', {
-        invoke: async (request: { namespace: string; method: string; args: Record<string, unknown> }) =>
-          invokeEndpoint(`${request.namespace}/${request.method}`, request.args),
-        stream: async (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) =>
-          streamEndpoint(`${request.namespace}/${request.method}`, request.args, request.signal ?? new AbortController().signal),
+        invoke: async (request: { namespace: string; method: string; args: Record<string, unknown>; peer?: FakeGatewayPeer }) => {
+          noteGatewayRequest(`${request.namespace}/${request.method}`, request.peer)
+          return invokeEndpoint(`${request.namespace}/${request.method}`, request.args)
+        },
+        stream: async (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal; peer?: FakeGatewayPeer }) => {
+          noteGatewayRequest(`${request.namespace}/${request.method}`, request.peer)
+          return streamEndpoint(`${request.namespace}/${request.method}`, request.args, request.signal ?? new AbortController().signal)
+        },
         wireStream: {
           open: async () => { throw new Error('unused in this composition') },
           failure: failureOf,

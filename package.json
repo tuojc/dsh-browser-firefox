@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-firefox-workspace",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Firefox edition of the dsh browser bridge: plugin + WebExtension workspace",
   "author": "tuojc",
   "license": "MIT",
@@ -13,6 +13,6 @@
     "typecheck": "pnpm --filter dsh-browser-firefox run typecheck && pnpm --filter dsh-browser-extension run typecheck"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.0-rc.1"
+    "@deepseek-ai/dsh": "0.2.1-rc.5"
   }
 }

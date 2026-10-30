@@ -42,6 +42,7 @@ import { BRIDGE_CONFIG_PATH, BRIDGE_PATH, type RemoteWireResult } from './protoc
 import { withSessionDeferral } from './session-deferral.ts'
 import { withSessionWorkspace, type RpcDispatch } from './session-workspace.ts'
 import { resolveToken } from './token.ts'
+import { createGatewayPeer } from './gateway-peer.ts'
 import { ExtensionSessionRegistry, FollowedSessions, resolveInteractionOwnership, type DelegateReason } from './extension-sessions.ts'
 import { asQuestionAnswerArgs, QuestionBridge } from './questions.ts'
 import { ApprovalBridge, asApprovalDecisionArgs } from './approvals.ts'
@@ -156,6 +157,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolved = resolveConfig(config)
 
   const tokenRes = await resolveToken(resolved.token)
+  // dsh 0.2.1 made the Gateway Peer mandatory; the bridge's token-authenticated
+  // carrier speaks as the host owner and aborts the peer when this fiber dies.
+  const peer = createGatewayPeer(ctx)
   // Base dispatch: split the slash-joined endpoint and invoke the Remote
   // method; Remote failures are folded into the wire result (never thrown
   // across the bridge), everything else is an internal failure.
@@ -164,7 +168,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const namespace = slash === -1 ? method : method.slice(0, slash)
     const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
     try {
-      const value = await ctx.typertGateway.invoke({ namespace, method: remoteMethod, args, signal })
+      const value = await ctx.typertGateway.invoke({ namespace, method: remoteMethod, args, signal, peer })
       return { ok: true, value }
     } catch (error: unknown) {
       const failure = ctx.typertGateway.wireStream.failure(error)
@@ -241,7 +245,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const slash = method.indexOf('/')
       const namespace = slash === -1 ? method : method.slice(0, slash)
       const remoteMethod = slash === -1 ? '' : method.slice(slash + 1)
-      return ctx.typertGateway.stream({ namespace, method: remoteMethod, args, signal })
+      return ctx.typertGateway.stream({ namespace, method: remoteMethod, args, signal, peer })
     },
     answerQuestion: (args) => {
       const parsed = asQuestionAnswerArgs(args)

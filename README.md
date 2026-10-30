@@ -25,7 +25,7 @@ Firefox 版的 DeepSeek Harness 浏览器操作插件，让模型直接读取并
 
 ### 第 1 步：安装 bridge 插件
 
-> **前置要求**：dsh 版本需 **≥ 0.1.2-alpha.2**（0.1.2 线的 Typert Remote 网关）。npm `latest` 标签目前的 0.1.1-rc.x 不受支持——其网关没有流式接口，会报 `ctx.typertGateway.stream is not a function`。升级宿主请用 `npm install -g @deepseek-ai/dsh@next`。
+> **前置要求**：dsh 版本需 **≥ 0.2.1-rc.5**（0.2.1 线的 Typert Remote 网关）。0.2.0 及更早的 `InvokeRemoteRequest.peer` 语义不兼容，会被 dsh 的兼容性检查跳过。插件与 Firefox 扩展必须同为 **0.5.0**，否则侧边栏顶部会出现版本不一致的黄色横幅。
 
 ```sh
 dsh plugin --profile web add dsh-browser-firefox@latest
